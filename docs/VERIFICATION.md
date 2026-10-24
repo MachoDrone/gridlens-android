@@ -60,3 +60,21 @@ Remaining acceptance is installing from GitHub on the operator's
 phone, checking all Fleet actions in portrait/landscape, background/resume and
 live internet data with the laptop off, then installing a later signed update
 through the Update button while preserving its actual lists and preferences.
+
+## Operator device targets
+
+The first physical installation/test is on a Pixel 10 Pro XL with its factory OS.
+GrapheneOS is a required support target; its acceptance remains unverified. The
+operator can test Pixel 7, Pixel 9 Pro XL and Pixel 10 Pro XL on GrapheneOS, with a
+possible factory-OS Galaxy S22 Ultra check. GrapheneOS-specific investigation is
+deferred until the operator has installed and tested the app there; existing
+protections are not changed preemptively.
+
+During initial download the operator reported a rounded `194.74/194.74 MB` count
+with only Cancel visible. This is consistent with the browser's download UI;
+GridLens's in-app updater displays percentage progress. A fresh anonymous download
+reached EOF with exactly 194,744,285 bytes and the published checksum. That confirms
+the public artifact can transfer completely, but does not establish the state or
+cause of the phone's unfinished download. Check the browser Downloads list or the
+Files app for a completed APK before cancelling/retrying; an incomplete download
+must not be renamed to make it appear complete.
