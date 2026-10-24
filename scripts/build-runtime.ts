@@ -13,6 +13,11 @@ if (run.status !== 0) throw new Error("The original Fleet browser build failed."
 await rm(destination, { recursive: true, force: true });
 await mkdir(destination, { recursive: true });
 await cp(join(vendor, "dist"), join(destination, "web"), { recursive: true });
+// Only Android's output opts into native saved-fleet navigation. The inherited
+// browser tests and desktop/snapshot builds retain their existing behavior.
+const mobileIndex = join(destination, "web/index.html");
+await writeFile(mobileIndex, (await readFile(mobileIndex, "utf8"))
+  .replace("<head>", '<head>\n  <meta name="gridlens-mobile" content="android">'));
 
 await build({
   absWorkingDir: root,
@@ -41,6 +46,8 @@ await build({
 // development sources or private runtime files.
 const notice: string[] = [await readFile(join(vendor, "LICENSE"), "utf8"),
   "\n\n--- Embedded Node.js Mobile runtime ---\n\n" + await readFile(join(root, "licenses/nodejs-mobile-LICENSE.txt"), "utf8"),
+  "\n\n--- JSch 2.28.8 (Android native SSH) ---\n\n" + await readFile(join(root, "licenses/jsch-2.28.8-LICENSE.txt"), "utf8"),
+  "\n\n--- Bouncy Castle 1.86 (Android native cryptography) ---\n\n" + await readFile(join(root, "licenses/bouncycastle-1.86-LICENSE.txt"), "utf8"),
   "\n\n--- Android NDK runtime library notices ---\n\n" + await readFile(join(root, "licenses/android-ndk-NOTICE.txt"), "utf8")];
 async function collectNotices(directory: string): Promise<void> {
   for (const entry of await readdir(directory, { withFileTypes: true })) {

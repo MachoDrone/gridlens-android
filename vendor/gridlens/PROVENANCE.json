@@ -197,7 +197,7 @@
     {
       "path": "src/preview/fleet-config.ts",
       "sourceSha256": "fc315e8361517dbc5911ef3dee1b9e74bca4987c0704ae8f4506480352ef6895",
-      "sha256": "fc315e8361517dbc5911ef3dee1b9e74bca4987c0704ae8f4506480352ef6895"
+      "sha256": "6e73b7cb083c991d2f1c7b9f34620c4701a9346a7810645343265480fe603fcc"
     },
     {
       "path": "src/preview/fleet-transport.ts",
@@ -222,7 +222,7 @@
     {
       "path": "src/preview/main.ts",
       "sourceSha256": "14277fed44c31c870188eba752bb334cdd3420bea2500a1168c98ca51a557af0",
-      "sha256": "14277fed44c31c870188eba752bb334cdd3420bea2500a1168c98ca51a557af0"
+      "sha256": "e8913203a5fad10d69c3761f3458143ba141bfaa4d0a137778a150cca8600411"
     },
     {
       "path": "src/preview/online-roster.ts",
@@ -267,7 +267,7 @@
     {
       "path": "src/server/browser-assets.ts",
       "sourceSha256": "fb8e07ced089b3ba079a4f00c9bfaef4d9a2606b5ea013efaf9a0781bd8896aa",
-      "sha256": "fb8e07ced089b3ba079a4f00c9bfaef4d9a2606b5ea013efaf9a0781bd8896aa"
+      "sha256": "56604d806d1e702d6fcbf490a0ff4a80a9c4e9d3384292d21ff7e1974900c728"
     },
     {
       "path": "src/server/file-snapshot-store.ts",
@@ -367,7 +367,7 @@
     {
       "path": "scripts/preview-server.ts",
       "sourceSha256": "cc1babca33a4e332a7c02aeedd4e48b1d181676c8de4348fb266b6d7cb665e8c",
-      "sha256": "4d1146169f3fe38cd5c69e6deff6f81d373574199205cbbfe2e572ee04dee446"
+      "sha256": "f0fb8eae1dc7a3e69b34570d4cfbc6edb3e248e9cd151ba1ca948ade2b2325b9"
     },
     {
       "path": "scripts/scheduling-priority.ts",
@@ -832,7 +832,7 @@
     {
       "path": "test/preview-server.test.ts",
       "sourceSha256": "a7bd550e262a29d2a869c48076e12a52ba62e6b2028faf5bd76d89ea28ad591e",
-      "sha256": "a7bd550e262a29d2a869c48076e12a52ba62e6b2028faf5bd76d89ea28ad591e"
+      "sha256": "0b7e2374d82975d6a5795a62e2103be750a48592ba0a4d2c2fcf5ddc60e106da"
     },
     {
       "path": "test/provider-cancellation.test.ts",
@@ -963,13 +963,23 @@
       "path": "docs/optimal-tool-call-considerations.md",
       "sourceSha256": "ad5aca53763e7259a9f9f1031b053d314201bd25e539c83652aadfd8054af22d",
       "sha256": "ad5aca53763e7259a9f9f1031b053d314201bd25e539c83652aadfd8054af22d"
+    },
+    {
+      "path": "src/preview/mobile-scenarios.ts",
+      "sourceSha256": null,
+      "sha256": "1f18e41952e811aa99c574d09923a26f6c8bc68b2d36d5939fc1d4dca57fa134"
     }
   ],
   "androidAdaptations": {
     "paths": [
       "scripts/online-retention.ts",
-      "scripts/preview-server.ts"
+      "scripts/preview-server.ts",
+      "src/preview/fleet-config.ts",
+      "src/preview/main.ts",
+      "src/preview/mobile-scenarios.ts",
+      "src/server/browser-assets.ts",
+      "test/preview-server.test.ts"
     ],
-    "description": "Request authorization is installed before the Android loopback listener starts. Native app roster imports update fixed selections and retention without recreating providers, budgets or caches. The desktop CLI and all browser assets remain unchanged. The bundler disables only the vendored desktop CLI entry guard in the emitted Android artifact."
+    "description": "Android authorization, mutable imported/saved rosters with shared providers, and marker-gated mobile scenario selection/native navigation; other Fleet display and observation semantics remain unchanged. New Android-only source has null sourceSha256. The Android bundler also disables the vendored desktop CLI entry guard only in its emitted runtime."
   }
 }

@@ -45,6 +45,7 @@ public final class MainActivity extends Activity {
     private TextView status;
     private Button recovery;
     private UpdateController updates;
+    private DiscoveryController discovery;
     private String origin;
     private String token;
     private String importScenario;
@@ -87,16 +88,21 @@ public final class MainActivity extends Activity {
         title.setTypeface(null, android.graphics.Typeface.BOLD);
         toolbar.addView(title, new LinearLayout.LayoutParams(0, dp(52), 1));
         title.setGravity(Gravity.CENTER_VERTICAL);
+        Button fleets = new Button(this);
+        fleets.setText(R.string.fleets_button);
+        fleets.setContentDescription("Network discovery and saved fleets");
+        fleets.setOnClickListener(view -> { if (discovery != null) discovery.show(null); else Toast.makeText(this, "GridLens is still starting.", Toast.LENGTH_SHORT).show(); });
+        toolbar.addView(fleets, new LinearLayout.LayoutParams(dp(76), dp(48)));
         Button hosts = new Button(this);
         hosts.setText(R.string.hosts_button);
         hosts.setContentDescription("Import host address list");
         hosts.setOnClickListener(view -> chooseRoster());
-        toolbar.addView(hosts, new LinearLayout.LayoutParams(dp(84), dp(48)));
+        toolbar.addView(hosts, new LinearLayout.LayoutParams(dp(76), dp(48)));
         Button update = new Button(this);
         update.setText(R.string.update_button);
         update.setContentDescription("Check for an Android app update");
         update.setOnClickListener(view -> updates.checkForUpdate());
-        toolbar.addView(update, new LinearLayout.LayoutParams(dp(92), dp(48)));
+        toolbar.addView(update, new LinearLayout.LayoutParams(dp(84), dp(48)));
         root.addView(toolbar);
         status = new TextView(this);
         status.setText(R.string.starting_runtime);
@@ -133,7 +139,22 @@ public final class MainActivity extends Activity {
         webView.setWebViewClient(new WebViewClient() {
             @Override public void onPageStarted(WebView view, String url, android.graphics.Bitmap icon) { pageFailed = false; }
             @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-                if (local(request.getUrl())) return false;
+                if (local(request.getUrl())) {
+                    Uri destination = request.getUrl();
+                    if ("/mobile/discovery".equals(destination.getPath()) || "/mobile/select".equals(destination.getPath())) {
+                        if (request.isForMainFrame() && request.hasGesture() && discovery != null) {
+                            if ("/mobile/discovery".equals(destination.getPath())) {
+                                String fleet = destination.getQueryParameter("fleet");
+                                if (fleet == null || fleet.matches("[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}")) discovery.show(fleet);
+                            } else {
+                                String scenario = destination.getQueryParameter("scenario");
+                                if (scenario != null) discovery.selectScenario(scenario);
+                            }
+                        }
+                        return true;
+                    }
+                    return false;
+                }
                 if (request.isForMainFrame() && request.hasGesture()) openExternal(request.getUrl());
                 return true;
             }
@@ -196,11 +217,15 @@ public final class MainActivity extends Activity {
                 CookieManager.getInstance().setCookie(origin, "gridlens_session=" + token + "; Path=/; HttpOnly; SameSite=Strict", success -> {
                     if (destroyed) return;
                     if (!success) { showStatus("Could not open the private on-phone session."); return; }
-                    String scenario = getSharedPreferences("runtime", MODE_PRIVATE).getString("scenario", "online-gpu-hosts");
-                    String initial = origin + "/?scenario=" + Uri.encode(scenario);
-                    if (savedUrl != null && local(Uri.parse(savedUrl))) initial = savedUrl;
-                    if (BuildConfig.DEBUG && "fresh".equals(getIntent().getStringExtra("scenario"))) initial = origin + "/?scenario=fresh";
-                    webView.loadUrl(initial);
+                    try {
+                        discovery = new DiscoveryController(this, origin, token, this::openScenario);
+                    } catch (Exception unavailable) {
+                        showStatus("Native discovery storage is unavailable. Saved public fleets can still be selected in Scenario.");
+                    }
+                    if (BuildConfig.DEBUG && "fresh".equals(getIntent().getStringExtra("scenario"))) openScenario("fresh");
+                    else if (savedUrl != null && local(Uri.parse(savedUrl))) webView.loadUrl(savedUrl);
+                    else if (discovery != null) discovery.restoreSelection("network-discovery");
+                    else openScenario("network-discovery");
                 });
                 return;
             }
@@ -239,6 +264,7 @@ public final class MainActivity extends Activity {
 
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
+        if (discovery != null && discovery.activityResult(request, result, data)) return;
         if (request != IMPORT_HOSTS || result != RESULT_OK || data == null || data.getData() == null || importScenario == null) return;
         Uri uri = data.getData();
         String scenario = importScenario;
@@ -280,8 +306,8 @@ public final class MainActivity extends Activity {
                 runOnUiThread(() -> {
                     if (destroyed) return;
                     Toast.makeText(this, "Imported " + count + " host addresses.", Toast.LENGTH_LONG).show();
-                    clearHistoryAfterLoad = true;
-                    webView.loadUrl(origin + "/?scenario=" + scenario);
+                    if (discovery != null) discovery.selectScenario(scenario);
+                    else openScenario(scenario);
                 });
             } catch (Exception error) {
                 runOnUiThread(() -> {
@@ -295,6 +321,15 @@ public final class MainActivity extends Activity {
         });
     }
 
+    private void openScenario(String scenario) {
+        if (destroyed || origin == null) return;
+        clearHistoryAfterLoad = true;
+        webView.loadUrl(origin + "/?scenario=" + Uri.encode(scenario));
+    }
+    @Override protected void onStop() {
+        if (discovery != null) discovery.stopped();
+        super.onStop();
+    }
     private void suspendPage() { webView.evaluateJavascript("window.dispatchEvent(new PageTransitionEvent('pagehide'));", null); }
     @Override protected void onPause() {
         paused = true;
@@ -327,6 +362,7 @@ public final class MainActivity extends Activity {
         handler.removeCallbacksAndMessages(null);
         io.shutdownNow();
         if (updates != null) updates.destroy();
+        if (discovery != null) discovery.destroy();
         webView.stopLoading();
         webView.destroy();
         super.onDestroy();

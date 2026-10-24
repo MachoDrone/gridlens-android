@@ -1,9 +1,10 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { mkdir, rename, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startPreviewServer } from "../vendor/gridlens/scripts/preview-server.ts";
+import { SavedFleets, atomicPrivateJson, parseUniqueJson } from "./saved-fleets.ts";
 import { isMetadataAddress } from "../vendor/gridlens/src/fleet/host-metadata.ts";
 
 export const MAX_ROSTER_BYTES = 512 * 1024;
@@ -74,16 +75,9 @@ async function readBody(request: IncomingMessage): Promise<unknown> {
       if (length > MAX_ROSTER_BYTES) throw new Error("The import is larger than 512 KiB.");
       parts.push(bytes);
     }
-    try { return JSON.parse(Buffer.concat(parts).toString("utf8")); }
+    try { return parseUniqueJson(Buffer.concat(parts).toString("utf8")); }
     catch { throw new Error("Choose a valid JSON array of public host addresses."); }
   } finally { clearTimeout(timeout); }
-}
-
-/** Atomic app-private state replacement; never writes developer/laptop roster inputs. */
-async function atomicJson(filename: string, value: object): Promise<void> {
-  const temporary = `${filename}.${randomBytes(8).toString("hex")}.tmp`;
-  await writeFile(temporary, JSON.stringify(value) + "\n", { mode: 0o600, flag: "wx" });
-  await rename(temporary, filename);
 }
 
 export async function startAndroidRuntime({ dataDirectory, directory = fileURLToPath(new URL("./web/", import.meta.url)),
@@ -92,7 +86,9 @@ export async function startAndroidRuntime({ dataDirectory, directory = fileURLTo
   const privateDirectory = resolve(dataDirectory);
   await mkdir(privateDirectory, { recursive: true, mode: 0o700 });
   const token = randomBytes(32).toString("hex");
-  const active = new Map<ServerResponse, Scenario>();
+  const savedFleets = await SavedFleets.load(privateDirectory, providers.now);
+  const active = new Map<ServerResponse, string>();
+  let updateSavedPins: (() => void) | undefined;
   const importedThisProcess = new Set<string>();
   let replaceRoster: ((scenario: Scenario, addresses: readonly string[]) => void) | undefined;
   let importChain = Promise.resolve();
@@ -116,6 +112,23 @@ export async function startAndroidRuntime({ dataDirectory, directory = fileURLTo
       return false;
     }
     const url = request.url ?? "";
+    if (url === "/mobile/fleets" && request.method === "GET") {
+      reply(response, 200, savedFleets.list());
+      return false;
+    }
+    if (url === "/mobile/fleets" && request.method === "POST" && native) {
+      void readBody(request).then(body => savedFleets.mutate(body)).then(result => {
+        if (result.changedId) {
+          for (const [pending, selected] of active) if (selected === `fleet:${result.changedId}`) pending.destroy();
+          updateSavedPins?.();
+        }
+        reply(response, 200, { ok: true, ...result.listing, ...(result.fleetId ? { fleetId: result.fleetId } : {}) });
+      }, error => {
+        reply(response, 400, { error: error instanceof Error ? error.message : "The saved fleet request is invalid." });
+        request.resume();
+      });
+      return false;
+    }
     if (url.startsWith("/mobile/")) {
       const match = /^\/mobile\/rosters\/(supplied|real200)$/.exec(url);
       if (!match || request.method !== "POST" || !native) {
@@ -132,7 +145,7 @@ export async function startAndroidRuntime({ dataDirectory, directory = fileURLTo
             return;
           }
           if (!replaceRoster) throw new Error("The local Fleet runtime is not ready.");
-          await atomicJson(rosterFile(scenario), addresses);
+          await atomicPrivateJson(rosterFile(scenario), addresses);
           // Cancel the old selection before updating admission; provider instances,
           // actual observation times and their request allowances remain unchanged.
           for (const [pending, selected] of active) if (selected === scenario) pending.destroy();
@@ -150,7 +163,7 @@ export async function startAndroidRuntime({ dataDirectory, directory = fileURLTo
     if (url.startsWith("/preview/")) {
       const scenario = new URL(url, origin).searchParams.get("scenario");
       if (scenario !== "online-gpu-hosts") {
-        active.set(response, scenario === "real200" ? "real200" : "supplied");
+        active.set(response, scenario?.startsWith("fleet:") ? scenario : scenario === "real200" ? "real200" : "supplied");
         response.once("close", () => active.delete(response));
       }
     }
@@ -159,7 +172,15 @@ export async function startAndroidRuntime({ dataDirectory, directory = fileURLTo
   const options: PreviewOptions = {
     ...providers,
     directory, port: preferredPort, hostsFile: rosterFile("supplied"), real200HostsFile: rosterFile("real200"),
-    mobile: { authorize, registerRosterUpdater: update => { replaceRoster = update; } },
+    mobile: {
+      authorize, registerRosterUpdater: update => { replaceRoster = update; },
+      savedFleet: id => {
+        const fleet = savedFleets.get(id);
+        return fleet ? { addresses: fleet.hosts.map(host => host.address), revision: JSON.stringify(fleet.hosts.map(host => host.address)) } : undefined;
+      },
+      savedAddresses: () => savedFleets.pinned(),
+      registerSavedUpdater: update => { updateSavedPins = update; },
+    },
   };
   let server: Server;
   try { server = await startPreviewServer(options); }
@@ -171,7 +192,7 @@ export async function startAndroidRuntime({ dataDirectory, directory = fileURLTo
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("The private Fleet listener did not start.");
   const port = address.port;
-  try { await atomicJson(join(privateDirectory, "runtime.json"), { port, token }); }
+  try { await atomicPrivateJson(join(privateDirectory, "runtime.json"), { port, token }); }
   catch (error) { server.closeAllConnections(); server.close(); throw error; }
   return { server, port, token };
 }

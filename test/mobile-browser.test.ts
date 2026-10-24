@@ -55,3 +55,64 @@ test("the guarded Android runtime preserves Fleet actions and saved preferences 
     await rm(dataDirectory, { recursive: true, force: true });
   }
 });
+
+test("Android defaults to idle discovery and reopens saved fleets without discovery or native mutations", { timeout: 120_000 }, async () => {
+  const dataDirectory = await mkdtemp(join(tmpdir(), "gridlens-saved-phone-"));
+  const reads: string[][] = [];
+  const empty = async (addresses: readonly string[]) => { reads.push([...addresses]); return { hosts: [], nextRefreshAtMs: Date.now() + 60000 }; };
+  const runtime = await startAndroidRuntime({ dataDirectory, directory: resolve("dist/runtime/web"), preferredPort: 0,
+    providers: { metadataProvider: empty, nodeInfoProvider: empty, jobProvider: empty, queueProvider: empty,
+      solProvider: empty, nosProvider: empty, stakingProvider: empty } });
+  const origin = `http://127.0.0.1:${runtime.port}`;
+  const browser = await playwright.chromium.launch({ headless: true,
+    ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : {}) });
+  try {
+    const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+    const forbidden: string[] = [];
+    await context.route("**/*", route => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (url.origin !== origin || request.method() !== "GET" || /\/mobile\/(discovery|select)/.test(url.pathname)) {
+        forbidden.push(request.url()); return route.abort();
+      }
+      return route.continue();
+    });
+    await context.addCookies([{ name: SESSION_COOKIE, value: runtime.token, url: origin, httpOnly: true, sameSite: "Strict" }]);
+    const page = await context.newPage();
+    const errors: string[] = [];
+    page.on("pageerror", error => errors.push(error.message));
+    await page.goto(origin);
+    await page.locator("#mobile-network-search").waitFor();
+    assert.equal(await page.locator("#scenario").inputValue(), "network-discovery");
+    assert.equal(await page.locator("#mobile-network-search").innerText(), "Search network");
+    await page.locator(".empty-content").filter({ hasText: "Search network to discover" }).waitFor();
+    assert.equal(reads.length, 0, "launch does not contact any provider for empty discovery");
+    assert.equal(await page.locator("#scenario option[value=supplied]").count(), 1);
+    const address = "1".repeat(32);
+    const created = await fetch(origin + "/mobile/fleets", { method: "POST", headers: {
+      "X-GridLens-Token": runtime.token, "Content-Type": "application/json" },
+      body: JSON.stringify({ op: "create", name: "Customer <North>", addresses: [address] }) });
+    assert.equal(created.status, 200);
+    const { fleetId } = await created.json() as { fleetId: string };
+    await page.reload();
+    await page.locator('#fleet-rows > tr[data-host]').waitFor();
+    assert.equal(await page.locator("#scenario").inputValue(), `fleet:${fleetId}`);
+    assert.equal(await page.locator("#scenario option:checked").innerText(), "Customer <North> (1)");
+    assert.equal(await page.locator("#mobile-network-search").innerText(), "Rescan");
+    assert.equal(await page.locator("#mobile-network-search").getAttribute("href"), `/mobile/discovery?fleet=${fleetId}`);
+    assert.match(await page.locator("#mobile-fleet-status").innerText(), /discovery dates do not establish fresh measurements/);
+    await page.locator("#preview-tools > summary").click();
+    await page.locator("#refresh-view").click();
+    await page.reload();
+    await page.locator('#fleet-rows > tr[data-host]').waitFor();
+    assert(reads.length > 0 && reads.every(hosts => hosts.every(host => host === address)));
+    assert.deepEqual(forbidden, [], "launch/reopen/refresh make no discovery, native mutations or external browser requests");
+    assert.deepEqual(errors, []);
+    await context.close();
+  } finally {
+    await browser.close();
+    runtime.server.closeAllConnections();
+    await new Promise<void>(accept => runtime.server.close(() => accept()));
+    await rm(dataDirectory, { recursive: true, force: true });
+  }
+});

@@ -51,6 +51,10 @@ const assets = BROWSER_ASSETS;
 export interface MobilePreviewHooks {
   authorize: (request: IncomingMessage, response: ServerResponse) => boolean;
   registerRosterUpdater: (update: (scenario: "supplied" | "real200", addresses: readonly string[]) => void) => void;
+  /** Mobile-only named public rosters. No discovery or SSH occurs here. */
+  savedFleet?: (id: string) => { addresses: string[]; revision: string } | undefined;
+  savedAddresses?: () => readonly string[];
+  registerSavedUpdater?: (update: () => void) => void;
 }
 
 export function previewPort(arguments_: readonly string[]): number {
@@ -161,7 +165,7 @@ export async function startPreviewServer(
   }
   const marketQueueProvider = createMarketQueueProvider({ activityPriority: scheduling.marketPriority });
   const onlineRetention = createOnlineRetention({
-    pinned: [...suppliedInput.addresses, ...real200Input.addresses], now,
+    pinned: [...suppliedInput.addresses, ...real200Input.addresses, ...(mobile?.savedAddresses?.() ?? [])], now,
     caches: () => [provider?.retention, nodeProvider?.retention, jobsProvider?.retention, queuesProvider?.retention,
       balancesProvider?.retention, tokensProvider?.retention, stakesProvider?.retention,
       marketQueueProvider.retention, scheduling.retention],
@@ -170,7 +174,10 @@ export async function startPreviewServer(
     inputs[scenario].addresses = [...addresses];
     inputs[scenario].error = null;
     // Import changes selection only; caches, budgets and provider backoff survive.
-    onlineRetention.replacePinned([...inputs.supplied.addresses, ...inputs.real200.addresses]);
+    onlineRetention.replacePinned([...inputs.supplied.addresses, ...inputs.real200.addresses, ...(mobile?.savedAddresses?.() ?? [])]);
+  });
+  mobile?.registerSavedUpdater?.(() => {
+    onlineRetention.replacePinned([...inputs.supplied.addresses, ...inputs.real200.addresses, ...(mobile.savedAddresses?.() ?? [])]);
   });
   const sharedRoutes = createSharedProgressRead<string, Snapshot>(mergeHostUpdates);
   type Read = (addresses: readonly string[], signal: AbortSignal, onUpdate: (update: Snapshot) => void) => Promise<Snapshot>;
@@ -331,8 +338,17 @@ export async function startPreviewServer(
     }
     const parameters = new URLSearchParams((request.url ?? "").split("?").slice(1).join("?"));
     const scenarios = parameters.getAll("scenario");
+    const savedScenario = mobile && scenarios.length === 1 && scenarios[0]!.startsWith("fleet:") ? scenarios[0]! : null;
+    const emptyDiscovery = mobile && scenarios.length === 1 && scenarios[0] === "network-discovery";
+    const savedFleet = savedScenario ? mobile?.savedFleet?.(savedScenario.slice(6)) : undefined;
+    if (savedScenario && !savedFleet && (path === "/preview/hosts.json" || Object.hasOwn(routes, path))) {
+      const body = JSON.stringify({ addresses: [], hosts: [], error: "Choose a known saved fleet." });
+      response.writeHead(404, { "Content-Type": "application/json; charset=utf-8", "Content-Length": Buffer.byteLength(body) });
+      response.end(request.method === "HEAD" ? undefined : body);
+      return;
+    }
     if ((path === "/preview/hosts.json" || Object.hasOwn(routes, path)) &&
-      (scenarios.length > 1 || scenarios.length === 1 && !["supplied", "real200", "online-gpu-hosts"].includes(scenarios[0]!))) {
+      (scenarios.length > 1 || scenarios.length === 1 && !savedScenario && !emptyDiscovery && !["supplied", "real200", "online-gpu-hosts"].includes(scenarios[0]!))) {
       const body = JSON.stringify({ addresses: [], hosts: [], error: "Unknown preview scenario. Choose supplied, real200 or online-gpu-hosts." });
       response.writeHead(400, { "Content-Type": "application/json; charset=utf-8", "Content-Length": Buffer.byteLength(body) });
       response.end(request.method === "HEAD" ? undefined : body);
@@ -349,7 +365,8 @@ export async function startPreviewServer(
       response.end(request.method === "HEAD" ? undefined : body);
       return;
     }
-    const input = online ? peekOnline() : inputs[scenario];
+    const input: HostAddressInput | OnlineHostsSnapshot = savedFleet ? { addresses: savedFleet.addresses, error: null }
+      : emptyDiscovery ? { addresses: [], error: null } : online ? peekOnline() : inputs[scenario];
     if (path === "/preview/hosts.json") {
       const sendInput = (value: HostAddressInput | OnlineHostsSnapshot): void => {
         if (response.destroyed || response.writableEnded) return;
@@ -470,7 +487,7 @@ export async function startPreviewServer(
         if (complete) response.end();
       };
       const selectionKey = historySelection ? `:${JSON.stringify([...addresses].sort())}:${historySelection.refresh}` : "";
-      void sharedRoutes(`${scenario}:${onlineRevision ?? ""}:${path}${watch ? ":watch" : ""}${selectionKey}`,
+      void sharedRoutes(`${savedScenario ?? scenario}:${savedFleet?.revision ?? onlineRevision ?? ""}:${path}${watch ? ":watch" : ""}${selectionKey}`,
         (signal, emit) => read(addresses, signal, emit), consumer.signal,
         progressive ? snapshot => stream(snapshot, false) : undefined,
       ).then(

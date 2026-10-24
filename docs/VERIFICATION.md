@@ -78,3 +78,50 @@ the public artifact can transfer completely, but does not establish the state or
 cause of the phone's unfinished download. Check the browser Downloads list or the
 Files app for a completed APK before cancelling/retrying; an incomplete download
 must not be renamed to make it appear complete.
+
+## Network Discovery candidate 0.2.0 (version code 3)
+
+This candidate adds native network discovery and saved fleets. It is prepared for
+an explicitly requested GitHub prerelease download on the factory-OS Pixel 10 Pro
+XL. It is not stable promotion: source `main`, GitHub Latest and the normal Update
+channel remain on the previous release until physical acceptance.
+
+Verified locally for this candidate:
+
+- 31 mobile/runtime/release tests, including saved-fleet persistence/recovery,
+  native-only mutations, known-ID selection, retained membership and idle launch.
+- Full `npm run check` passed: 816 inherited application Node tests and all
+  332 browser tests, alongside the 31 mobile/runtime tests above.
+- 37 native unit tests in each debug and release configuration; release lint
+  reports no issues. Debug, instrumentation and signed release APK builds pass.
+- An isolated API 36 x86_64 emulator ran the actual Node/WebView smoke and the
+  new Android Keystore checks: encrypted persistence, forget, explicit recovery
+  after key invalidation (including a save with previously cached credentials),
+  preserved network profile/trust, and generated
+  RSA/ECDSA/Ed25519 plain/encrypted imports and signature verification.
+  Launch, pause/resume and idle Network Discovery refresh kept native search and
+  connection counters at zero. Native Scenario navigation from Fresh to the
+  empty Supplied Host Addresses roster was also exercised with touch input.
+- The release APK has the existing signing certificate, valid signatures and
+  16 KiB ZIP alignment. Every embedded runtime file matches its integrity
+  manifest and the tested runtime output. No fleet/credential stores are bundled.
+
+The first emulator smoke timed out waiting for a WebView JavaScript callback;
+an unchanged test rerun passed after startup. The emulator also showed a System
+UI not-responding dialog during later manual interaction. Those observations are
+not claimed as physical-device results or attributed to an application defect.
+The first full browser run passed 331/332; one compositor-marker assertion failed
+although the captured image still showed navigation. The final full check passed without concurrent emulator/native-build work,
+with no assertion or timeout weakening. Record both observations rather than treating the first runs as passes.
+
+Pure route-policy and socket/SSH fixture checks cover /16 expansion, full-tunnel
+ambiguity, explicit IPv6, network identity changes, concurrency, host-key changes,
+authentication failure, sudo denial, wrappers, API fallback and partial inventory.
+They do not establish Android VPN routing or callback behavior on actual phones.
+Physical Wi-Fi/VPN transitions, authorized real-PC discovery, GrapheneOS, and this
+candidate's real app-update preservation remain pending. Use
+[DISCOVERY_ACCEPTANCE.md](DISCOVERY_ACCEPTANCE.md); retain normal OS protections.
+
+Candidate APK: 197,209,359 bytes; SHA-256
+`3e67ac56815a8b0eea568acb0d90371366f6a59bab3b711c40865f93de79cdf0`.
+It is distributed as a prerelease download, without an Update manifest.

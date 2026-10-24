@@ -18,6 +18,7 @@ data meanings, limits or freshness need the same isolated application checks.
 | Android build tools | 35.0.0 |
 | NDK / CMake | 27.3.13750724 / 3.22.1 |
 | APK ABIs | arm64-v8a, x86_64 |
+| Native SSH / cryptography | JSch 2.28.8 / Bouncy Castle 1.86 |
 
 Install development tools in user-owned directories. No host package installation,
 root access, Docker, host services, networking or VPN changes are required.
@@ -52,6 +53,11 @@ adb shell am instrument -w com.gridlens.android.test/com.gridlens.android.SmokeI
 
 The instrumented import intentionally uses synthetic addresses. Never run it
 against an operator's application data. Do not clear someone else's app storage.
+Discovery instrumentation uses a separate no-backup namespace and generated
+keys to verify actual Android Keystore persistence, forgetting, invalidation and
+RSA/ECDSA/Ed25519 import compatibility. JVM SSH tests use an in-process Apache
+MINA fixture, with fixed synthetic container responses and disposable credentials.
+See [Network Discovery](NETWORK_DISCOVERY.md) and [saved-fleet API](SAVED_FLEETS_API.md).
 
 ## Release signing
 
@@ -116,6 +122,13 @@ snapshot was taken from the operator's current working tree, including in-progre
 Jobs/Country changes, rather than pretending those changes were already in the
 upstream commit. Mobile adaptations are recorded separately. Keep both the source
 and download repositories on `main`; do not force-push or modify desktop branches.
+
+Network Discovery physical testing uses an explicit exception to stable
+publication: source candidate branch `review/android-network-discovery` and a
+signed `v0.2.0-rc.1` prerelease in the downloads repository. The prerelease omits
+`update.json`, is not GitHub's Latest release, and does not advance source `main`
+or the automatic Update channel. Promote only after the required physical
+acceptance, with the candidate's exact source and APK evidence recorded.
 
 ## Runtime boundaries
 

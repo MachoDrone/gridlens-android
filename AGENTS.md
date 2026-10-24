@@ -16,11 +16,14 @@ does not establish GrapheneOS or physical-device compatibility.
 
 Read README.md and docs/DEVELOPMENT.md. Never include operator rosters, wallet keys,
 runtime data, signing keys or local evidence in Git or APKs. Only public addresses
-explicitly imported by the operator belong in the phone's private data directory.
+explicitly imported or verified by user-initiated native discovery belong in
+public fleet stores. Native SSH credentials belong only in the encrypted
+no-backup vault, never Node or WebView.
 Do not access existing Nosana/Solana keys, change host networking or install host services.
 
-Keep vendored browser sources byte-identical to the recorded source snapshot.
-Document and test native/runtime adaptations. Use the pinned Node/npm and Android
+Keep vendored sources byte-identical except the explicit hashed adaptations in
+`vendor/gridlens/ANDROID_ADAPTATIONS.md`. Document and test native/runtime and
+marker-gated mobile scenario adaptations. Use the pinned Node/npm and Android
 toolchains. Run `npm run check`, the vendored application checks, Android unit tests
 and an APK build before release. Keep emulator and physical-device evidence separate.
 

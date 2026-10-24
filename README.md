@@ -8,6 +8,13 @@ continues independently.
 
 **[Download the signed Android APK](https://github.com/MachoDrone/gridlens-android-releases/releases/latest/download/gridlens-android.apk)**
 
+**Network Discovery test candidate:** [download v0.2.0-rc.1](https://github.com/MachoDrone/gridlens-android-releases/releases/download/v0.2.0-rc.1/gridlens-android.apk).
+The instructions below describe this candidate. The normal Update channel remains
+on v0.1.0 while physical acceptance is pending; that earlier version opens Online
+GPU Hosts. The candidate uses the same application/signing identity for an
+in-place update. Install over v0.1.0 without uninstalling; actual update-data
+preservation is part of [physical acceptance](docs/DISCOVERY_ACCEPTANCE.md).
+
 Android 8.0 or newer is required. This build includes arm64 phones and x86_64
 emulators. It does not include 32-bit Android or an iPhone application. The first
 release is an early Android build; see [verification](docs/VERIFICATION.md) for
@@ -16,8 +23,20 @@ what was actually checked.
 ## Use it
 
 Install the APK and open GridLens. Android may ask you to allow installations from
-your browser. The app opens Online GPU Hosts, which discovers public hosts without
-your laptop, a hosted GridLens server, a GitHub login or wallet credentials.
+your browser. The app opens **Network Discovery**. Choose **Search network** to
+find reachable SSH services on Wi-Fi or your existing VPN, select computers and
+review their SSH identities in native Android screens. Save a named fleet from
+verified public Nosana addresses. Reopening it refreshes public Fleet data over
+ordinary internet without another network scan or SSH login. Scans never start
+automatically. **Fleets** manages saved fleets, network profiles and credentials.
+
+SSH passwords and imported keys stay native and can be remembered encrypted with
+Android Keystore. **Forget credentials** leaves saved fleets available. Container
+inventory is read-only, with explicit per-PC sudo approval when necessary.
+Full-tunnel VPNs may require learning the destination range once on-site or
+entering it; GridLens does not guess all private networks or configure VPNs.
+See [Network Discovery](docs/NETWORK_DISCOVERY.md) for supported layouts, limits
+and physical acceptance. Online GPU Hosts remains an optional public scenario.
 
 Use **Hosts** to import a JSON array of public host addresses for **Supplied Host
 Addresses** or **Real200**. Select the list with Android's file picker. Only public
@@ -27,6 +46,7 @@ keep the existing provider caches and limits. The APK contains no operator roste
 
 The Fleet table, Jobs history, country display, sorting, display controls, touch
 navigation and freshness rules come from the recorded desktop source snapshot.
+Android's Scenario selector adds Network Discovery and named saved fleets.
 Phone and laptop have independent preferences, rosters and public-reader caches;
 they do not synchronize. Unknown columns remain unknown. Provider limits and
 network outages can leave values pending or stale on either device.
@@ -60,8 +80,9 @@ flowchart LR
 The local server binds only to phone loopback. Every request requires the app's
 random session token and valid local Host/origin. The WebView loads bundled
 GridLens content; external HTTPS links open the browser. No JavaScript-to-native
-privileged bridge is exposed. Going into the background suspends visible-page
-collection; this is not an always-running background monitoring service.
+privileged bridge is exposed. Fixed user-initiated navigation opens native fleet
+management; web content cannot supply SSH commands or credentials. Going into the
+background suspends visible-page collection; this is not an always-running background monitoring service.
 
 The native runtime is the full [fogtape Node.js Mobile 24.22.1-0 build](https://github.com/fogtape/nodejs-mobile/releases/tag/v24.22.1-0),
 an explicitly pinned upstream prerelease based on Node 24.22.1. Its archive hash

@@ -69,6 +69,22 @@ public final class SmokeInstrumentation extends Instrumentation {
             JSONObject resumedPage = new JSONObject((String) new JSONTokener(resumed).nextValue());
             require(resumedPage.getInt("rows") >= 8, "Lifecycle resume lost Fleet");
             verifyUpdaterRejections(current);
+            DiscoveryVerification.verify(getTargetContext());
+            require(DiscoveryNetwork.startedSearchesForTesting() == 0 && DiscoveryNetwork.startedConnectionsForTesting() == 0,
+                "Launch or ordinary Fleet operations started network discovery/SSH");
+            runOnMainSync(() -> current.webViewForTesting().loadUrl(origin + "/?scenario=network-discovery"));
+            long discoveryDeadline = android.os.SystemClock.elapsedRealtime() + 15000;
+            boolean discoveryReady = false;
+            while (android.os.SystemClock.elapsedRealtime() < discoveryDeadline) {
+                String readyPage = javascript(current, "document.querySelector('#mobile-network-search')?.textContent || ''");
+                if ("\"Search network\"".equals(readyPage)) { discoveryReady = true; break; }
+                Thread.sleep(100);
+            }
+            require(discoveryReady, "Android discovery landing screen did not load");
+            javascript(current, "document.getElementById('refresh-view').click()");
+            runOnMainSync(() -> { callActivityOnPause(current); callActivityOnResume(current); });
+            require(DiscoveryNetwork.startedSearchesForTesting() == 0 && DiscoveryNetwork.startedConnectionsForTesting() == 0,
+                "Opening/resuming/refreshing Network Discovery started a search");
             result.putString("stream", "PASS: embedded Node/WebView boot, eight synthetic hosts, loopback authentication, roster validation/persistence, pause/resume, actual Android APK rejection and narrow update provider. No live provider or GitHub requests.\n");
             finish(Activity.RESULT_OK, result);
         } catch (Exception | AssertionError error) {

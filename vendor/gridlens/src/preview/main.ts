@@ -1,4 +1,5 @@
 import "./sidebar.ts";
+import { isSavedFleetScenario, readMobileScenarios } from "./mobile-scenarios.ts";
 import { bindFleetViewport } from "./viewport.ts";
 import { bindFleetTableScroll } from "./table-scroll.ts";
 import { startConnectionIndicator } from "./connection.ts";
@@ -59,7 +60,9 @@ bindFleetTableScroll(document.querySelector<HTMLElement>(".fleet-table-wrap")!);
 bindFleetViewport(document.querySelector<HTMLElement>(".fleet-title-row")!);
 // Service reachability is independent of source freshness and host API status.
 const fleetConfig = readFleetConfig(document);
-const requestedScenario = fleetConfig.sourceMode === "snapshot" ? null : new URLSearchParams(location.search).get("scenario");
+const mobileScenarios = await readMobileScenarios(document);
+const requestedScenario = fleetConfig.sourceMode === "snapshot" ? null
+  : new URLSearchParams(location.search).get("scenario") ?? (mobileScenarios.enabled ? mobileScenarios.selectedScenario : null);
 const evidenceClock = createEvidenceClock();
 const liveNow = () => evidenceClock.now();
 // Expiry uses a conservative time bound. Elapsed clocks, source validation and
@@ -769,6 +772,26 @@ element("queued-duration-layout-toggle").addEventListener("click", () => {
 });
 
 const select = element<HTMLSelectElement>("scenario");
+if (mobileScenarios.enabled) {
+  const discoveryOption = document.createElement("option");
+  discoveryOption.value = "network-discovery";
+  discoveryOption.textContent = "Network Discovery";
+  select.append(discoveryOption);
+  for (const fleet of mobileScenarios.fleets) {
+    const option = document.createElement("option");
+    option.value = `fleet:${fleet.id}`;
+    option.textContent = `${fleet.name} (${fleet.count})`;
+    select.append(option);
+  }
+  // An unreadable/deleted selection fails visibly at its known-ID roster read.
+  // Never fall through to the imported roster or an unrelated saved fleet.
+  if (isSavedFleetScenario(requestedScenario) && !mobileScenarios.fleets.some(fleet => `fleet:${fleet.id}` === requestedScenario)) {
+    const option = document.createElement("option");
+    option.value = requestedScenario;
+    option.textContent = "Unavailable saved fleet";
+    select.append(option);
+  }
+}
 const suppliedOption = document.createElement("option");
 suppliedOption.value = "supplied";
 suppliedOption.textContent = "Supplied Host Addresses";
@@ -802,7 +825,29 @@ if (fleetConfig.sourceMode === "snapshot") {
 // Switching live scenarios starts a new page. Only Online GPU Hosts maintains
 // membership dynamically, with each data read bound to a server-issued revision.
 const liveScenario = requestedScenario === "online-gpu-hosts" ? "online-gpu-hosts"
-  : requestedScenario === "real200" ? "real200" : "supplied";
+  : requestedScenario === "real200" ? "real200"
+  : mobileScenarios.enabled && requestedScenario === "network-discovery" ? "network-discovery"
+  : mobileScenarios.enabled && isSavedFleetScenario(requestedScenario) ? requestedScenario : "supplied";
+const savedFleet = mobileScenarios.fleets.find(fleet => `fleet:${fleet.id}` === liveScenario);
+const networkDiscoveryScenario = liveScenario === "network-discovery";
+const discoveredScenario = isSavedFleetScenario(liveScenario);
+if (mobileScenarios.enabled) {
+  const notice = document.createElement("p");
+  notice.id = "mobile-fleet-status";
+  notice.className = "scenario-description";
+  notice.setAttribute("role", "status");
+  notice.textContent = mobileScenarios.error ?? (discoveredScenario
+    ? `Saved fleet. Last verified discovery: ${savedFleet?.lastDiscoveredAtMs ? new Date(savedFleet.lastDiscoveredAtMs).toISOString() : "unavailable"}. Refresh reads public data; discovery dates do not establish fresh measurements.`
+    : "Search your network to find computers, then select and trust their SSH identities in Android. Saved fleets refresh over ordinary internet access.");
+  const search = document.createElement("a");
+  search.id = "mobile-network-search";
+  search.href = `/mobile/discovery${discoveredScenario ? `?fleet=${encodeURIComponent(liveScenario.slice(6))}` : ""}`;
+  search.textContent = discoveredScenario ? "Rescan" : "Search network";
+  search.hidden = !networkDiscoveryScenario && !discoveredScenario;
+  select.parentElement!.append(search);
+  select.parentElement!.after(notice);
+  notice.hidden = !mobileScenarios.error && !networkDiscoveryScenario && !discoveredScenario;
+}
 const onlineScenario = liveScenario === "online-gpu-hosts";
 let onlineStatus: OnlineRosterStatus | undefined;
 let onlineRosterError: string | null = null;
@@ -2436,6 +2481,10 @@ function renderSuppliedStatus(nodeProjectionTime: number): void {
   setText(element("scenario-description"), fleetConfig.sourceMode === "snapshot"
     ? "The source supplies this fleet’s host list. Reload to read a changed roster; refreshing values preserves the current roster."
     : onlineScenario ? "Online GPU Hosts checks Explorer’s queued/running candidates and shows only hosts with a current, validated API Online result. Online proof expires after 30 seconds; offline, unknown and expired results are hidden while their checks continue. Discovery refreshes every minute while viewed; removal from its candidate list requires two complete checks. Diagnostics cover all Explorer candidates, including hidden hosts. Duration reuses cached timing collected for Supplied Host Addresses or Real200; this scenario starts no job lookups. API reachability does not establish GPU health or current job activity. Shared request limits can leave readings pending or stale. No host file or restart is required when membership changes."
+    : mobileScenarios.enabled ? discoveredScenario
+      ? "Saved public host addresses use the existing shared providers, limits and source freshness. Reopening or refreshing never connects to SSH. Rescan merges verified discoveries; removal is explicit in Fleets."
+      : networkDiscoveryScenario ? "Search network opens native discovery. No scan starts automatically. Credentials stay in Android; they never enter this page."
+      : "Use Hosts to import public addresses. Imports remain separate from discovered fleets."
     : `${liveScenario === "real200" ? "Real200 uses its separate supplied Host Address list; the count above reflects the file contents. " : ""}Addresses are read when the preview starts. Edit the supplied file outside the app and restart the preview to load changes.`);
 }
 
@@ -2546,7 +2595,11 @@ function renderSupplied(): void {
     cell.className = "empty-message";
     const message = document.createElement("span");
     message.className = "empty-content";
-    message.textContent = onlineScenario ? inputLoading ? "Finding Online GPU Hosts…" : inputError
+    message.textContent = mobileScenarios.enabled && (networkDiscoveryScenario || discoveredScenario)
+      ? inputLoading ? "Loading saved fleet…" : inputError ? "This saved fleet is unavailable. Open Fleets to review it."
+        : networkDiscoveryScenario ? "Search network to discover and save your fleet."
+        : "This saved fleet has no public host addresses. Use Rescan to add verified discoveries."
+      : onlineScenario ? inputLoading ? "Finding Online GPU Hosts…" : inputError
       ? "Online GPU host discovery is unavailable. Retrying automatically."
       : suppliedAddresses.length === 0 ? "Nosana’s indexer currently reports no queued or running candidates. The list updates automatically."
         : "No Explorer candidates have a current API Online confirmation. Offline and unconfirmed hosts are hidden; checks continue automatically while viewed."
@@ -2589,7 +2642,8 @@ function renderSupplied(): void {
 function render(): void {
   renderDisplaySettings();
   setText(element("data-label"), fleetConfig.sourceMode === "snapshot" ? fleetConfig.sourceLabel
-    : supplied ? onlineScenario ? "Online GPU Hosts" : liveScenario === "real200" ? "Real200" : "Supplied addresses" : "Sample data");
+    : supplied ? onlineScenario ? "Online GPU Hosts" : discoveredScenario ? savedFleet?.name ?? "Saved fleet"
+      : networkDiscoveryScenario ? "Network Discovery" : liveScenario === "real200" ? "Real200" : "Supplied addresses" : "Sample data");
   setText(element("connection-note"), fleetConfig.sourceMode === "snapshot" ? "Original observation times preserved"
     : supplied ? "Public Nosana metadata" : "No live connections");
   setText(element("fleet-caption"), fleetConfig.sourceMode === "snapshot"
@@ -2716,8 +2770,15 @@ function render(): void {
 
 select.addEventListener("change", () => {
   const scenario = SCENARIOS.find((value) => value.id === select.value);
-  const nextLive = select.value === "supplied" || select.value === "real200" || select.value === "online-gpu-hosts" ? select.value : null;
+  const nextLive = select.value === "supplied" || select.value === "real200" || select.value === "online-gpu-hosts"
+    || mobileScenarios.enabled && (select.value === "network-discovery" || isSavedFleetScenario(select.value)) ? select.value : null;
   if (!scenario && nextLive === null) return;
+  if (mobileScenarios.enabled && nextLive !== null) {
+    pageHidden = true;
+    resumeVisibleView();
+    location.assign(`/mobile/select?scenario=${encodeURIComponent(nextLive)}`);
+    return;
+  }
   if (nextLive !== null && nextLive !== liveScenario) {
     pageHidden = true;
     resumeVisibleView();
