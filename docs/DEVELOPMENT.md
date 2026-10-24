@@ -91,11 +91,20 @@ release secrets in GitHub Actions:
 
 The workflow uses its repository-scoped `GITHUB_TOKEN`; no personal GitHub token
 or GitHub credential is embedded in the phone app. It checks out public Android
-`main`, skips existing version tags, verifies the application, builds/signs the
+`main`, verifies complete existing version tags, verifies the application, builds/signs the
 APK and publishes `gridlens-android.apk`, `update.json` and `SHA256SUMS.txt` as
 a GitHub Release. Keys are decoded into the runner's temporary directory and
 removed after signing. Source commits and test results are identified in release
-notes. Scheduled runs may be delayed; an immediate publish can be started with:
+notes. A successful source CI run for the exact checked-out revision can supply
+the application-check evidence; absent or inconclusive evidence runs the complete
+checks in the release job. Android unit tests, lint, signing and artifact checks
+still run for every newly built release. The SDK is installed explicitly under
+the runner's temporary directory, with the command-line archive's size/checksum
+verified before use. Unpublished drafts are found through authenticated release
+listings when GitHub's tag endpoint does not yet expose them; verified draft
+assets are published only after every required upload succeeds.
+
+Scheduled runs may be delayed; an immediate publish can be started with:
 
 ```sh
 gh workflow run release.yml --repo MachoDrone/gridlens-android-releases
