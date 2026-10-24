@@ -2,7 +2,7 @@ import { appendFile, readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
-import { createManifest, isAbsentStatus, parseManifest, parseRelease, parseVersion, RELEASE_ASSETS,
+import { createManifest, isAbsentStatus, lookupReleaseByTag, parseManifest, parseRelease, parseVersion, RELEASE_ASSETS,
   RELEASE_MARKER, RELEASE_REPOSITORY, requireNewerVersion, requireOwnedDraft, verifyAssets } from "./release-policy.ts";
 import type { Manifest, PublishedRelease } from "./release-policy.ts";
 
@@ -67,7 +67,7 @@ function gh(arguments_: string[]): void {
 
 // Confirm repository access first: a release 404 must not stand in for an inaccessible repository.
 await api("");
-const existing = await release(`/releases/tags/${tag}`);
+const existing = await lookupReleaseByTag(tag, api);
 const latest = await release("/releases/latest");
 const published = latest === null ? null : await verifyPublished(latest);
 const mode = process.argv[2];
@@ -116,7 +116,7 @@ if (mode === "select") {
     }
     // Only this unpublished draft can be replaced; a published APK is immutable here.
     gh(["release", "upload", tag, ...RELEASE_ASSETS.map(name => resolve(directory, name)), "--clobber"]);
-    const staged = await release(`/releases/tags/${tag}`);
+    const staged = await lookupReleaseByTag(tag, api);
     if (!staged) throw new Error("GitHub did not return the staged release.");
     requireOwnedDraft(staged);
     verifyAssets(staged, expected);

@@ -69,6 +69,28 @@ export function parseRelease(value: unknown): PublishedRelease {
   return { tag_name: release.tag_name, draft: release.draft, prerelease: release.prerelease, body: release.body, assets };
 }
 
+/** GitHub's tag endpoint can omit an unpublished draft whose tag does not exist yet. */
+export async function lookupReleaseByTag(tag: string,
+  api: (path: string, allowAbsent?: boolean) => Promise<unknown | null>): Promise<PublishedRelease | null> {
+  if (!/^v\d+\.\d+\.\d+$/.test(tag)) throw new Error("Invalid Android release tag.");
+  const checked = (value: unknown): PublishedRelease => {
+    const candidate = parseRelease(value);
+    if (candidate.tag_name !== tag) throw new Error("GitHub returned a different release tag.");
+    if (candidate.draft) requireOwnedDraft(candidate);
+    return candidate;
+  };
+  // The transport returns null only for a real 404; all denied/network/server errors propagate.
+  const exact = await api(`/releases/tags/${tag}`, true);
+  if (exact !== null) return checked(exact);
+  const listed = await api("/releases?per_page=100");
+  if (!Array.isArray(listed) || listed.length > 100) throw new Error("GitHub returned an invalid bounded release list.");
+  const matches = listed.filter(item => object(item).tag_name === tag);
+  if (matches.length > 1) throw new Error("GitHub returned ambiguous duplicate releases for this tag.");
+  if (matches.length === 1) return checked(matches[0]);
+  if (listed.length === 100) throw new Error("The bounded release list could not establish absence of an older draft.");
+  return null;
+}
+
 export function requireNewerVersion(candidate: Version, latest: Manifest | null): void {
   if (latest !== null && candidate.versionCode <= latest.versionCode) {
     throw new Error(`Android versionCode must exceed published code ${latest.versionCode}; no release was changed.`);

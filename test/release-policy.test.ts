@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
-import { createManifest, isAbsentStatus, parseManifest, parseRelease, parseVersion, RELEASE_MARKER,
+import { createManifest, isAbsentStatus, lookupReleaseByTag, parseManifest, parseRelease, parseVersion, RELEASE_MARKER,
   requireNewerVersion, requireOwnedDraft, verifyAssets } from "../tools/release-policy.ts";
 
 const apk = Buffer.from("isolated APK fixture");
@@ -84,4 +84,47 @@ test("a partial upload cannot be published or mistaken for a completed idempoten
   assert.throws(() => verifyAssets({ ...complete, assets: complete.assets.map(item => ({ ...item, state: "starter" })) }, required));
   assert.throws(() => verifyAssets({ ...complete, assets: complete.assets.map(item => ({ ...item, digest: "sha256:wrong" })) }, required));
   assert.throws(() => verifyAssets({ ...complete, assets: [...complete.assets, complete.assets[0]!] }, required));
+});
+
+test("draft publication recovers tag-endpoint 404 through the authenticated bounded release list", async () => {
+  const draft = { tag_name: "v0.2.0", draft: true, prerelease: false, body: RELEASE_MARKER, assets: [] };
+  const requests: string[] = [];
+  const found = await lookupReleaseByTag("v0.2.0", async (path, allowAbsent) => {
+    requests.push(path);
+    if (path === "/releases/tags/v0.2.0") { assert.equal(allowAbsent, true); return null; }
+    assert.equal(path, "/releases?per_page=100");
+    assert.equal(allowAbsent, undefined);
+    return [{ ...draft, tag_name: "v0.1.0" }, draft];
+  });
+  assert.deepEqual(found, draft);
+  assert.deepEqual(requests, ["/releases/tags/v0.2.0", "/releases?per_page=100"]);
+});
+
+test("published release lookup takes the exact-tag fast path without listing drafts", async () => {
+  const published = { tag_name: "v0.2.0", draft: false, prerelease: false, body: "Published", assets: [] };
+  let requests = 0;
+  assert.deepEqual(await lookupReleaseByTag("v0.2.0", async path => {
+    requests++;
+    assert.equal(path, "/releases/tags/v0.2.0");
+    return published;
+  }), published);
+  assert.equal(requests, 1);
+});
+
+test("denied or failed exact lookup never falls back as if the release were absent", async () => {
+  for (const status of [403, 429, 500]) {
+    let requests = 0;
+    await assert.rejects(lookupReleaseByTag("v0.2.0", async () => { requests++; isAbsentStatus(status); return null; }));
+    assert.equal(requests, 1);
+  }
+  await assert.rejects(lookupReleaseByTag("v0.2.0", async () => { throw new Error("Network failure"); }));
+});
+
+test("draft lookup rejects ambiguous duplicates, unrelated drafts, and unproven bounded absence", async () => {
+  const draft = { tag_name: "v0.2.0", draft: true, prerelease: false, body: RELEASE_MARKER, assets: [] };
+  for (const list of [[draft, draft], [{ ...draft, body: "Operator draft" }],
+    Array.from({ length: 100 }, () => ({ ...draft, tag_name: "v0.1.0" }))]) {
+    await assert.rejects(lookupReleaseByTag("v0.2.0", async path => path.startsWith("/releases/tags/") ? null : list));
+  }
+  assert.equal(await lookupReleaseByTag("v0.2.0", async path => path.startsWith("/releases/tags/") ? null : []), null);
 });
