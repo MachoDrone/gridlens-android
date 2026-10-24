@@ -1,0 +1,22 @@
+name: Check Android source
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.14.1
+      - run: npm install --global npm@11.11.0
+      - run: npm ci --ignore-scripts
+      - run: npm run deps:vendor
+      - run: npx --no-install playwright install --with-deps chromium
+        working-directory: vendor/gridlens
+      - run: npm run check

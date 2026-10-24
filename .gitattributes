@@ -1,0 +1,3 @@
+# Preserve upstream license text and valid unified-diff context lines verbatim.
+licenses/*.txt -whitespace
+vendor/*.patch -whitespace

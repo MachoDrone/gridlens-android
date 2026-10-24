@@ -1,0 +1,83 @@
+--- a/scripts/preview-server.ts
++++ b/scripts/preview-server.ts
+@@ -2,7 +2,7 @@
+ import { selectJobHistoryHosts } from "../src/server/job-history-selection.ts";
+ import { readFileSync } from "node:fs";
+ import { createServer } from "node:http";
+-import type { Server } from "node:http";
++import type { IncomingMessage, Server, ServerResponse } from "node:http";
+ import { resolve } from "node:path";
+ import { fileURLToPath } from "node:url";
+ import { hostAddressFilePath, loadHostAddressFile, real200HostAddressFilePath } from "./host-address-file.ts";
+@@ -47,6 +47,12 @@
+ const defaultDirectory = fileURLToPath(new URL("../dist/", import.meta.url));
+ const assets = BROWSER_ASSETS;
+ 
++/** Android composition hooks; absent in the unchanged desktop composition. */
++export interface MobilePreviewHooks {
++  authorize: (request: IncomingMessage, response: ServerResponse) => boolean;
++  registerRosterUpdater: (update: (scenario: "supplied" | "real200", addresses: readonly string[]) => void) => void;
++}
++
+ export function previewPort(arguments_: readonly string[]): number {
+   if (arguments_.length === 0) return 4173;
+   const value = arguments_[1];
+@@ -62,7 +68,7 @@
+ 
+ /** Developer-only preview. Port zero is allowed for isolated tests. */
+ export async function startPreviewServer(
+-  { directory = defaultDirectory, port = 4173, hostsFile, real200HostsFile, onHostsInputError, metadataProvider, nodeInfoProvider, jobProvider, queueProvider, solProvider, nosProvider, stakingProvider, onlineProvider, now = Date.now }: {
++  { directory = defaultDirectory, port = 4173, hostsFile, real200HostsFile, onHostsInputError, metadataProvider, nodeInfoProvider, jobProvider, queueProvider, solProvider, nosProvider, stakingProvider, onlineProvider, mobile, now = Date.now }: {
+     directory?: string;
+     port?: number;
+     hostsFile?: string;
+@@ -76,6 +82,7 @@
+     nosProvider?: NosProvider;
+     stakingProvider?: StakingProvider;
+     onlineProvider?: OnlineHostsProvider;
++    mobile?: MobilePreviewHooks;
+     /** Wire-envelope/cache-read time only; never renews evidence or active provider scheduling. */
+     now?: () => number;
+   } = {},
+@@ -159,6 +166,12 @@
+       balancesProvider?.retention, tokensProvider?.retention, stakesProvider?.retention,
+       marketQueueProvider.retention, scheduling.retention],
+   });
++  mobile?.registerRosterUpdater((scenario, addresses) => {
++    inputs[scenario].addresses = [...addresses];
++    inputs[scenario].error = null;
++    // Import changes selection only; caches, budgets and provider backoff survive.
++    onlineRetention.replacePinned([...inputs.supplied.addresses, ...inputs.real200.addresses]);
++  });
+   const sharedRoutes = createSharedProgressRead<string, Snapshot>(mergeHostUpdates);
+   type Read = (addresses: readonly string[], signal: AbortSignal, onUpdate: (update: Snapshot) => void) => Promise<Snapshot>;
+   const getNodeProvider = (): NodeInfoProvider => nodeProvider ??= createReconciledNodeInfoProvider({
+@@ -296,6 +309,7 @@
+     },
+   };
+   const server = createServer((request, response) => {
++    if (mobile && !mobile.authorize(request, response)) return;
+     response.setHeader("Cache-Control", "no-store");
+     response.setHeader("X-Content-Type-Options", "nosniff");
+     if (request.method !== "GET" && request.method !== "HEAD") {
+--- a/scripts/online-retention.ts
++++ b/scripts/online-retention.ts
+@@ -75,6 +75,18 @@
+   }
+ 
+   return {
++    /** Android roster imports retain departed identities through their existing cooldowns. */
++    replacePinned(addresses: readonly string[]): void {
++      const next = new Set(addresses);
++      const time = now();
++      for (const address of fixed) {
++        if (!next.has(address) && !retiredAt.has(address)) retiredAt.set(address, current.has(address) ? null : time);
++      }
++      fixed.clear();
++      for (const address of next) { fixed.add(address); retiredAt.delete(address); }
++      // No prune here: active fixed-roster reads are canceled by the importer
++      // before the replacement, and retained entries must keep their deadlines.
++    },
+     get size(): number { return retiredAt.size; },
+     get retiredSize(): number { return [...retiredAt.values()].filter(value => value !== null).length; },
+     prune,
