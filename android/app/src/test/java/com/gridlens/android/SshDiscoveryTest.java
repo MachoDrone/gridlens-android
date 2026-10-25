@@ -52,6 +52,7 @@ public final class SshDiscoveryTest {
                 public void destroy(ChannelSession channel) { }
             });
             outputs.put(DiscoveryPolicy.inventoryCommand("docker", null, false), NODE + PROXY);
+            outputs.put(DiscoveryPolicy.nodeApiCommand("docker", null, "a".repeat(64), false), ADDRESS + "\n");
             outputs.put(PcMetadata.NAME_COMMAND, "fixture-pc\n");
             outputs.put(PcMetadata.ADDRESSES_COMMAND, "192.0.2.10 198.51.100.5 fd42::10\n");
             server.start();
@@ -78,9 +79,14 @@ public final class SshDiscoveryTest {
         try (Fixture fixture = new Fixture(); SshDiscovery.Credential credential = new SshDiscovery.Credential("operator", bytes("fixture-password"), null, null)) {
             fixture.outputs.put(DiscoveryPolicy.inventoryCommand("docker", null, false), NODE + PROXY + WRAPPER);
             fixture.outputs.put(DiscoveryPolicy.inventoryCommand("docker", "c".repeat(64), false), NODE + PROXY.replace(ADDRESS, "1".repeat(31) + "2"));
+            fixture.outputs.put(DiscoveryPolicy.nodeApiCommand("docker", "c".repeat(64), "a".repeat(64), false), "1".repeat(31) + "2\n");
             SshDiscovery.Result result = SshDiscovery.inventory(fixture, fixture.candidate(), SshDiscovery.inspectIdentity(fixture, fixture.candidate()), credential, null);
             assertEquals(SshDiscovery.Status.SUCCESS, result.status); assertEquals(2, result.addresses.size()); assertEquals(0, result.unresolved);
-            assertEquals(Arrays.asList(DiscoveryPolicy.inventoryCommand("docker", null, false), DiscoveryPolicy.inventoryCommand("docker", "c".repeat(64), false), DiscoveryPolicy.inventoryCommand("podman", null, false), PcMetadata.NAME_COMMAND, PcMetadata.ADDRESSES_COMMAND), fixture.commands);
+            assertEquals(Arrays.asList(DiscoveryPolicy.inventoryCommand("docker", null, false), DiscoveryPolicy.nodeApiCommand("docker", null, "a".repeat(64), false), DiscoveryPolicy.inventoryCommand("docker", "c".repeat(64), false), DiscoveryPolicy.nodeApiCommand("docker", "c".repeat(64), "a".repeat(64), false), DiscoveryPolicy.inventoryCommand("podman", null, false), PcMetadata.NAME_COMMAND, PcMetadata.ADDRESSES_COMMAND), fixture.commands);
+            assertEquals(2, result.bindings.size());
+            assertEquals("docker", result.bindings.get(0).runtime);
+            assertEquals("podman", result.bindings.get(1).runtime);
+            assertEquals("c".repeat(64), result.bindings.get(1).wrapperId);
             assertEquals("fixture-pc", result.pcMetadata.pcName);
             assertEquals(Arrays.asList("192.0.2.10", "198.51.100.5", "fd42:0:0:0:0:0:0:10"), result.pcMetadata.ipAddresses);
             assertTrue(result.pcMetadata.pcId.matches("[a-f0-9]{64}"));
@@ -166,6 +172,7 @@ public final class SshDiscoveryTest {
             SshDiscovery.Identity identity = SshDiscovery.inspectIdentity(fixture, fixture.candidate());
             assertEquals(SshDiscovery.Status.CONTAINER_ACCESS_REQUIRED, SshDiscovery.inventory(fixture, fixture.candidate(), identity, credential, bytes("denied")).status);
             fixture.outputs.put(DiscoveryPolicy.inventoryCommand("docker", null, false), NODE);
+            fixture.outputs.remove(DiscoveryPolicy.nodeApiCommand("docker", null, "a".repeat(64), false));
             SshDiscovery.Result result = SshDiscovery.inventory(fixture, fixture.candidate(), identity, credential, null);
             assertEquals(1, result.unresolved); assertTrue(result.addresses.isEmpty());
         }
@@ -236,6 +243,110 @@ public final class SshDiscoveryTest {
             SshDiscovery.Identity identity = SshDiscovery.inspectIdentity(fixture, fixture.candidate()); fixture.cancelled.set(true);
             assertEquals(SshDiscovery.Status.CANCELLED, SshDiscovery.inventory(fixture, fixture.candidate(), identity, credential, null).status);
             assertEquals(0, fixture.passwords.get());
+        }
+    }
+    @Test public void monitoringRechecksImmutableContainerAndOwnerWithoutRediscovery() throws Exception {
+        NodeBinding binding = new NodeBinding("docker", null, "a".repeat(64), ADDRESS);
+        try (Fixture fixture = new Fixture(); SshDiscovery.Credential credential = new SshDiscovery.Credential("operator", bytes("fixture-password"), null, null)) {
+            fixture.outputs.put(DiscoveryPolicy.bindingInspectionCommand(binding, false), binding.nodeContainerId + "\ttrue\tnosana/nosana-node:latest\tbridge\n");
+            SshDiscovery.Identity identity = SshDiscovery.inspectIdentity(fixture, fixture.candidate());
+            List<SshDiscovery.MonitoringResult> result = SshDiscovery.monitor(fixture, fixture.candidate(), identity, credential, null, List.of(binding), null, null, false, false, false, Map.of());
+            assertEquals("active", result.get(0).status);
+            assertEquals(List.of(DiscoveryPolicy.bindingInspectionCommand(binding, false), DiscoveryPolicy.bindingAddressCommand(binding, false)), fixture.commands);
+            fixture.outputs.put(DiscoveryPolicy.bindingAddressCommand(binding, false), "1".repeat(31) + "2\n");
+            result = SshDiscovery.monitor(fixture, fixture.candidate(), identity, credential, null, List.of(binding), "never-used", "never-used", true, true, true, Map.of());
+            assertEquals("binding-changed", result.get(0).status); assertTrue(result.get(0).suspendRewards);
+            assertTrue(result.get(0).gpuJson.contains("binding-mismatch")); assertNull(result.get(0).rewardsJson);
+            assertFalse(fixture.commands.stream().anyMatch(command -> command.contains("gridlens-approved-rewards") || command.contains(" run --detach ")));
+        }
+    }
+    @Test public void monitoringDoesNotGuessGpuMappingOrUseHostNetwork() throws Exception {
+        NodeBinding binding = new NodeBinding("docker", null, "a".repeat(64), ADDRESS);
+        String gpu = "GPU-00000000-1111-2222-3333-444444444444";
+        try (Fixture fixture = new Fixture(); SshDiscovery.Credential credential = new SshDiscovery.Credential("operator", bytes("fixture-password"), null, null)) {
+            fixture.outputs.put(DiscoveryPolicy.bindingInspectionCommand(binding, false), binding.nodeContainerId + "\ttrue\tnosana/nosana-node:latest\tbridge\n");
+            fixture.outputs.put(DiscoveryPolicy.bindingGpuCommand(binding, false), gpu + "\n");
+            fixture.outputs.put(DiscoveryPolicy.bindingGpuInfoCommand(binding, false), gpu.replace("444444444444", "555555555555") + "\n");
+            SshDiscovery.Identity identity = SshDiscovery.inspectIdentity(fixture, fixture.candidate());
+            SshDiscovery.MonitoringResult result = SshDiscovery.monitor(fixture, fixture.candidate(), identity, credential, null, List.of(binding), null, "fixture", true, false, true, Map.of()).get(0);
+            assertTrue(result.gpuJson.contains("binding-mismatch"));
+            assertFalse(fixture.commands.stream().anyMatch(command -> command.contains(" run --detach ")));
+            fixture.outputs.put(DiscoveryPolicy.bindingInspectionCommand(binding, false), binding.nodeContainerId + "\ttrue\tnosana/nosana-node:latest\thost\n");
+            result = SshDiscovery.monitor(fixture, fixture.candidate(), identity, credential, null, List.of(binding), null, "fixture", true, false, true, Map.of()).get(0);
+            assertEquals("unsupported", result.status);
+            assertFalse(fixture.commands.stream().anyMatch(command -> command.contains("--network host")));
+        }
+    }
+    @Test public void nestedNodeUsesOnlyVerifiedIsolatedWrapperNamespace() throws Exception {
+        NodeBinding binding = new NodeBinding("podman", "c".repeat(64), "a".repeat(64), ADDRESS);
+        String gpu = "GPU-00000000-1111-2222-3333-444444444444";
+        try (Fixture fixture = new Fixture(); SshDiscovery.Credential credential = new SshDiscovery.Credential("operator", bytes("fixture-password"), null, null)) {
+            fixture.outputs.put(DiscoveryPolicy.wrapperInspectionCommand(binding, false), binding.wrapperId + "\ttrue\tnosana/podman:latest\tbridge\n");
+            fixture.outputs.put(DiscoveryPolicy.bindingInspectionCommand(binding, false), binding.nodeContainerId + "\ttrue\tnosana/nosana-node:latest\thost\n");
+            fixture.outputs.put(DiscoveryPolicy.bindingAddressCommand(binding, false), ADDRESS + "\n");
+            fixture.outputs.put(DiscoveryPolicy.bindingGpuCommand(binding, false), gpu + "\n");
+            fixture.outputs.put(DiscoveryPolicy.bindingGpuInfoCommand(binding, false), gpu + "\n");
+            NodeGpuCollector policy = new NodeGpuCollector(binding, binding.wrapperId, List.of(gpu), null);
+            fixture.outputs.put(policy.listContainer(false), "");
+            SshDiscovery.Identity identity = SshDiscovery.inspectIdentity(fixture, fixture.candidate());
+            SshDiscovery.MonitoringResult result = SshDiscovery.monitor(fixture, fixture.candidate(), identity, credential, null, List.of(binding), null, "fixture", false, false, true, Map.of()).get(0);
+            assertTrue(result.gpuJson.contains("not-enabled"));
+            assertTrue(fixture.commands.contains(policy.listContainer(false)));
+            assertFalse(fixture.commands.stream().anyMatch(command -> command.contains(" run --detach ")));
+        }
+    }
+    @Test public void rewardsPermissionIsScopedToExactAddressAndChangedSshKeySendsNothing() throws Exception {
+        NodeBinding binding = new NodeBinding("docker", null, "a".repeat(64), ADDRESS);
+        try (Fixture fixture = new Fixture(); Fixture other = new Fixture(); SshDiscovery.Credential credential = new SshDiscovery.Credential("operator", bytes("fixture-password"), null, null)) {
+            fixture.outputs.put(DiscoveryPolicy.bindingInspectionCommand(binding, false), binding.nodeContainerId + "\ttrue\tnosana/nosana-node:latest\tbridge\n");
+            SshDiscovery.Identity identity = SshDiscovery.inspectIdentity(fixture, fixture.candidate());
+            SshDiscovery.MonitoringResult result = SshDiscovery.monitor(fixture, fixture.candidate(), identity, credential, null, List.of(binding), "must-not-execute", null, false, true, false, Map.of(), Set.of()).get(0);
+            assertNull(result.rewardsJson);
+            assertFalse(fixture.commands.stream().anyMatch(command -> command.contains("must-not-execute")));
+            result = SshDiscovery.monitor(other, other.candidate(), identity, credential, null, List.of(binding), "must-not-execute", null, false, true, false, Map.of()).get(0);
+            assertEquals("identity-changed", result.status);
+            assertEquals(0, other.passwords.get()); assertTrue(other.commands.isEmpty());
+        }
+    }
+    private static RewardsReader.Binding monitoringRewardFixture(Fixture fixture, NodeBinding binding, String status) {
+        fixture.outputs.put(DiscoveryPolicy.bindingInspectionCommand(binding, false), binding.nodeContainerId + "\ttrue\tnosana/nosana-node:latest\tbridge\n");
+        fixture.outputs.put(DiscoveryPolicy.bindingAddressCommand(binding, false), binding.address + "\n");
+        RewardsReader.Binding reward = new RewardsReader.Binding(binding.runtime, binding.wrapperId, binding.nodeContainerId, binding.address);
+        fixture.outputs.put(RewardsReader.inspectNode(reward, false), binding.nodeContainerId + "\ttrue\tnosana/nosana-node:latest\n");
+        fixture.outputs.put(RewardsReader.identityCommand(reward, false), binding.address + "\n");
+        fixture.outputs.put(RewardsReader.readCommand("fixture-reward", reward, false), "{\"schema\":1,\"address\":\"" + binding.address + "\",\"observedAtMs\":" + System.currentTimeMillis() + ",\"status\":\"" + status + "\""
+                + (status.equals("rate-limited") ? ",\"retryAfterSeconds\":300" : ",\"amount\":\"1.000000\"") + "}");
+        return reward;
+    }
+    @Test public void providerPauseIsPersistedBeforeNextBindingAndStopsBatchRewardReads() throws Exception {
+        NodeBinding first = new NodeBinding("docker", null, "a".repeat(64), ADDRESS);
+        NodeBinding second = new NodeBinding("docker", null, "b".repeat(64), "1".repeat(31) + "2");
+        try (Fixture fixture = new Fixture(); SshDiscovery.Credential credential = new SshDiscovery.Credential("operator", bytes("fixture-password"), null, null)) {
+            monitoringRewardFixture(fixture, first, "rate-limited");
+            RewardsReader.Binding next = monitoringRewardFixture(fixture, second, "ok");
+            AtomicBoolean sawPause = new AtomicBoolean();
+            List<SshDiscovery.MonitoringResult> result = SshDiscovery.monitor(fixture, fixture.candidate(), SshDiscovery.inspectIdentity(fixture, fixture.candidate()), credential,
+                    null, List.of(first, second), "fixture-reward", null, false, true, false, Map.of(), null,
+                    current -> { if (current.retryAfterSeconds > 0) { assertFalse(fixture.commands.contains(DiscoveryPolicy.bindingInspectionCommand(second, false))); sawPause.set(true); } }, () -> true);
+            assertTrue(sawPause.get()); assertEquals(300, result.get(0).retryAfterSeconds);
+            assertNull(result.get(1).rewardsJson);
+            assertFalse(fixture.commands.contains(RewardsReader.readCommand("fixture-reward", next, false)));
+        }
+    }
+    @Test public void persistenceFailureOrGlobalPausePreventsFurtherKeyUse() throws Exception {
+        NodeBinding first = new NodeBinding("docker", null, "a".repeat(64), ADDRESS);
+        NodeBinding second = new NodeBinding("docker", null, "b".repeat(64), "1".repeat(31) + "2");
+        try (Fixture fixture = new Fixture(); SshDiscovery.Credential credential = new SshDiscovery.Credential("operator", bytes("fixture-password"), null, null)) {
+            RewardsReader.Binding one = monitoringRewardFixture(fixture, first, "ok");
+            RewardsReader.Binding two = monitoringRewardFixture(fixture, second, "ok");
+            SshDiscovery.Identity identity = SshDiscovery.inspectIdentity(fixture, fixture.candidate());
+            SshDiscovery.monitor(fixture, fixture.candidate(), identity, credential, null, List.of(first, second), "fixture-reward", null,
+                    false, true, false, Map.of(), null, current -> {}, () -> false);
+            assertFalse(fixture.commands.contains(RewardsReader.readCommand("fixture-reward", one, false)));
+            assertThrows(RuntimeException.class, () -> SshDiscovery.monitor(fixture, fixture.candidate(), identity, credential, null,
+                    List.of(first, second), "fixture-reward", null, false, true, false, Map.of(), null,
+                    current -> { throw new IllegalStateException("fixture save failure"); }, () -> true));
+            assertFalse(fixture.commands.contains(RewardsReader.readCommand("fixture-reward", two, false)));
         }
     }
 }

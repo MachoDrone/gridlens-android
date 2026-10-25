@@ -99,3 +99,25 @@ not overwrite the corrupt bytes. If both revisions are unreadable, files remain
 untouched and mutations are disabled. A persistence failure disables further writes
 until restart reconciles the on-disk revision. Recovery can lose the latest failed
 or corrupted revision; it does not invent discovery or measurement freshness.
+
+## Native monitoring observations (0.2.2)
+
+`POST /mobile/observations` requires the native token and accepts at most 2 MiB:
+`{schema:1,fleetId,updates:[{address,binding,rewards?,gpu?,monitoring?}]}`. The known
+saved fleet owns every distinct updated address. Exact bindings contain pcId,
+runtime, wrapperId and nodeContainerId, without credentials. Rewards contain
+only public identity, exact six-decimal NOS, source time, status and bounded
+retry delay. GPU schema 2 contains verified UUIDs, source clock/window, status,
+truncation and compact samples `[atMs,uuidIndex,supportedMask,activeMask,counters4]`.
+Monitoring status is an enum plus original check time; no raw errors are allowed.
+The complete batch is validated before writes. A persistence failure stops writes;
+restart reconciles each durable per-host journal without renewing source time.
+
+Browser-authenticated `GET /mobile/observations?fleet=<known UUID>` returns cached
+summaries without sample arrays. Adding `&address=<saved public address>` returns
+that host's bounded timeline. These reads never perform SSH or provider calls.
+Binding changes clear incompatible retained evidence; failures preserve last
+successful reward amounts and GPU samples. Sample merges deduplicate actual
+source points. Data stays app-private and is purged when its fleet/host is removed.
+Private native approval/credential state is stored separately in Android Keystore
+protected storage and is never accepted or exposed by these endpoints.

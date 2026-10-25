@@ -1,5 +1,11 @@
 # PC inventory and GPU recordings on Android
 
+**Current flow (0.2.2):** [Enable / repair monitoring](REWARDS_AND_GPU_TELEMETRY_GAPS.md)
+reuses saved SSH connections and supplies exact rewards plus node-bound GPU
+observations automatically while the saved fleet is open. Routine Rescan is no
+longer required. The remainder of this page records the original 0.2.1 PC-level
+recorder and its historical limitations; existing recordings are preserved.
+
 Android 0.2.1 connects the existing PC and IP Fleet columns to native SSH discovery.
 Use **Rescan** once on older saved fleets: their old records contain only public
 Nosana addresses. Existing fleet membership, selection and credentials survive

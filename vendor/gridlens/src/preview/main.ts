@@ -1,3 +1,5 @@
+import { createMobileMonitoring } from "./mobile-monitoring.ts";
+import { rewardView, rewardAtoms, jobGpuConditions } from "../fleet/pc-observations.ts";
 import { gpuRecordingFacts } from "./mobile-telemetry.ts";
 import "./sidebar.ts";
 import { isSavedFleetScenario, readMobileScenarios, mobilePcAddresses } from "./mobile-scenarios.ts";
@@ -108,10 +110,10 @@ const COLUMNS = [
   ["dl", "DL", "Reported download Mbps from Node Info info.network.download_mbps. This is saved network data, not a speed test triggered by this page. An all-zero default triplet is unknown."],
   ["ul", "UL", "Reported upload Mbps from Node Info info.network.upload_mbps. The specific test provider and measurement time are not supplied. No FAST/Libre/Ookla fallback is applied."],
   ["ping", "Ping", "Reported ping milliseconds from Node Info info.network.ping_ms. Display is rounded; sorting preserves the reported value. An all-zero default triplet is unknown."],
-  ["rewards", "Rewards to claim", "The exact claimable host-uptime amount. No rewards source or wallet is connected; no estimate or other balance is substituted."],
+  ["rewards", "Rewards to claim", mobileScenarios.enabled ? "Exact claimable host-uptime NOS read inside an explicitly authorized node container. Enable monitoring once in Fleets. Saved SSH reads refresh while the app is open. Keys remain in the node; authorization is sent only to Nosana. Stale or failed reads retain dated amounts in gray. No claims or transactions are made." : "The exact claimable host-uptime amount. No rewards source or wallet is connected; no estimate or other balance is substituted."],
   ["nos", "NOS", "Confirmed NOS in each host’s standard associated token account, checked best effort every two minutes while visible. Display rounds to whole NOS; exact six-decimal amounts drive sorting. Additional wallet token accounts, staking and claimable rewards are excluded. A freshly verified absent standard account means zero there; failures remain unknown or retain gray values. Readings expire after three minutes."],
   ["market", "Market", "Toggle between the full reported market label and its first two characters. Sorting uses the full label. Supplied hosts resolve their market address through Nosana’s market lookup, preferring its slug. Missing labels stay unknown. This association does not identify the physical GPU or establish current activity; recommendations are separate."],
-  ["gpuID", "GPU ID", "The current physical GPU index, resolved from measured UUID identity. No hardware observations are connected."],
+  ["gpuID", "GPU ID", mobileScenarios.enabled ? "A physical PC GPU index is not inferred from a container index. Enabled monitoring verifies GPU UUID allocation and shows observed conditions in Jobs." : "The current physical GPU index, resolved from measured UUID identity. No hardware observations are connected."],
   ["currentNode", "Current Node", "The reported Nosana package version. This does not prove which process is currently running. Prerelease versions are pink; no comparison with the latest release is connected."],
   ["cuda", "CUDA", "CUDA driver version reported by Nosana metrics."],
   ["nvidia", "NVIDIA", "Toggle between the major NVIDIA driver version and the full reported version. Sorting uses the full version. Supplied hosts use reported Nosana metadata; sample scenarios remain synthetic."],
@@ -372,7 +374,9 @@ for (const id of ["clear-sort", "sidebar-clear-sort"]) {
 element("column-info").addEventListener("click", () => {
   const column = COLUMNS.find(([key]) => key === activeSort.column);
   if (column) showInfo(column[1], {
-    summary: COLUMN_HELP[column[0]],
+    summary: mobileScenarios.enabled && column[0] === "rewards" ? "Exact claimable host-uptime NOS from the authorized node reader; unavailable readings stay unknown."
+      : mobileScenarios.enabled && column[0] === "gpuID" ? "Physical GPU index is not inferred. Verified GPU UUID allocation and job conditions are available through enabled monitoring."
+        : COLUMN_HELP[column[0]],
     ...(LOCAL_SOURCE_NOTES[column[0]] ? { facts: [[ink("Local data or mapping is not connected yet.", "warning")]] } : {}),
     source: columnDescription(column[0], column[2]),
   });
@@ -846,6 +850,10 @@ if (mobileScenarios.enabled) {
   search.textContent = discoveredScenario ? "Rescan" : "Search network";
   search.hidden = !networkDiscoveryScenario && !discoveredScenario;
   select.parentElement!.append(search);
+  const monitoring = document.createElement("a"); monitoring.id = "mobile-enable-monitoring";
+  monitoring.href = `/mobile/monitoring?fleet=${discoveredScenario ? encodeURIComponent(liveScenario.slice(6)) : ""}`;
+  monitoring.textContent = "Enable / repair monitoring"; monitoring.hidden = !discoveredScenario;
+  select.parentElement!.append(monitoring);
   select.parentElement!.after(notice);
   notice.hidden = !mobileScenarios.error && !networkDiscoveryScenario && !discoveredScenario;
 }
@@ -932,12 +940,18 @@ let clockRenderPending = false;
 let freshnessRenderPending = false;
 const progressRows = new Map<string, Set<ReadKind>>();
 let pageHidden = false;
+const mobileMonitoring = mobileScenarios.enabled && discoveredScenario ? createMobileMonitoring({
+  fleetId: liveScenario.slice(6), visible: () => visibleStateView(), hosts: () => suppliedAddresses,
+  changed: () => { if (supplied) render(); },
+}) : undefined;
 const jobHistory = createJobHistoryView({
   now: () => supplied ? liveNow() : sampleNow,
   trusted: () => evidenceClock.trusted,
   visible: () => visibleStateView(),
   cacheOnly: () => onlineScenario,
   live: () => supplied,
+  ...(mobileMonitoring ? { gpuConditions: (address: string, job: import("../fleet/job-history.ts").JobHistoryItem, confirmedRunning: boolean) =>
+    jobGpuConditions(mobileMonitoring.detail(address), job, liveNow(), confirmedRunning) } : {}),
   currentJob: address => jobsError ? undefined : liveActivity(address, liveNow()).eligibleJob,
   read: (addresses, refresh, signal, apply) => fleetTransport.read("job-history", previewURL("job-history"), {
     addresses, hosts: addresses, refresh, signal, progressive: true,
@@ -2522,20 +2536,42 @@ function renderMobileGpuRecordings(): void {
     panel.addEventListener("toggle", () => { if (panel?.open) updateMobileGpuDetails(panel); });
   }
   panel.hidden = !discoveredScenario;
+  const revision = [...(mobileMonitoring?.index.values() ?? [])].map(value => `${value.address}:${value.receivedAtMs}`).join("|");
+  if (panel.open && panel.dataset.revision !== revision) { panel.dataset.revision = revision; updateMobileGpuDetails(panel); }
+  if (mobileMonitoring) {
+    const states = [...mobileMonitoring.index.values()];
+    const active = states.filter(value => value.monitoring?.status === "active").length;
+    const notice = element("mobile-fleet-status");
+    setText(notice, mobileMonitoring.error ?? (states.length ? `PC monitoring: ${active}/${states.length} hosts active. Saved connections refresh automatically while the app is open; recorded values retain their source times.`
+      : "Enable monitoring once to read rewards and record GPU conditions using saved PC connections. No rescan is needed for routine refresh."));
+  }
 }
 function updateMobileGpuDetails(panel: HTMLDetailsElement): void {
   const content = panel.querySelector(".mobile-gpu-content")!;
   content.replaceChildren();
+  if (mobileMonitoring?.index.size) {
+    for (const record of mobileMonitoring.index.values()) {
+      const title = document.createElement("h3"); title.textContent = `${savedFleet?.pcs[record.address]?.pcName ?? "PC"} / ${record.address.slice(0, 5)}`; content.append(title);
+      const state = document.createElement("p"); state.textContent = `Monitoring: ${record.monitoring?.status ?? "unknown"}. Recorder: ${record.gpu?.status ?? "not connected"}.`; content.append(state);
+      if (record.gpu) {
+        const details = document.createElement("p"); details.textContent = `Verified node GPU allocation: ${record.gpu.gpuUuids.join(", ") || "unavailable"}. ${record.gpu.sampleCount} cached samples; last source check ${timestamp(record.gpu.observedAtMs)}.`; content.append(details);
+      }
+    }
+    const note = document.createElement("p"); note.textContent = "Expand a host’s Jobs to see GPU conditions observed during each reported job interval. The app refreshes enabled PCs automatically while open; recorders retain history while the phone is closed. Gaps and unsupported signals stay unknown."; content.append(note);
+    return;
+  }
   const pcs = new Map(Object.values(savedFleet?.pcs ?? {}).map(pc => [pc.pcId, pc]));
-  if (!pcs.size) { const text = document.createElement("p"); text.textContent = "Use Rescan to collect PC details and enable GPU recording."; content.append(text); }
+  if (!pcs.size) { const text = document.createElement("p"); text.textContent = "Enable monitoring to verify saved PC connections and start recording."; content.append(text); }
   for (const pc of pcs.values()) {
     const title = document.createElement("h3"); title.textContent = pc.pcName ?? "Unnamed PC"; content.append(title);
     for (const fact of gpuRecordingFacts(pc.gpuTelemetry, Date.now())) { const line = document.createElement("p"); line.textContent = fact; content.append(line); }
   }
-  const note = document.createElement("p"); note.textContent = "Enabled recorders keep bounded history while the phone is closed. Rescan reads their latest saved observations; public-data Refresh does not connect to the PCs."; content.append(note);
+  const note = document.createElement("p"); note.textContent = "These are older PC-level recordings. Enable monitoring once for automatic node-bound refresh and job-time association; no routine rescan is required."; content.append(note);
 }
 
+let mobileMonitoringStarted = false;
 function renderSupplied(): void {
+  if (mobileMonitoring && !mobileMonitoringStarted && !inputLoading && !inputError) { mobileMonitoringStarted = true; void mobileMonitoring.refresh(); }
   renderMobileGpuRecordings();
   const nodeProjectionTime = liveNow();
   if (onlineScenario) displayedOnlineHosts = new Map(suppliedAddresses.flatMap(address => {
@@ -2552,6 +2588,7 @@ function renderSupplied(): void {
   const sortableRows = displayedAddresses.map((address) => ({
     pc: savedFleet?.pcs[address]?.pcName ?? "", gpuIndex: null, containerName: "", solLamports: solRecords.get(address)?.lamports ?? null,
     nosAmount: nosRecords.get(address)?.amount ?? null,
+    rewardsAmount: rewardAtoms(rewardView(mobileMonitoring?.index.get(address), nodeProjectionTime).amount),
     stakedNosAmount: stakingRecords.get(address)?.stake.amount ?? null, values: {
       hostAddress: address,
       pc: savedFleet?.pcs[address]?.pcName ?? null,
@@ -2591,9 +2628,13 @@ function renderSupplied(): void {
       } else if (mobileScenarios.enabled && (key === "pc" || key === "ip")) {
         renderMobilePc(cell, key, address);
       } else if (mobileScenarios.enabled && key === "rewards") {
-        setText(cell, "—");
-        cell.setAttribute("aria-label", "Rewards to claim unavailable: verified Nosana authorization is not connected.");
-        cell.title = "Exact claimable uptime rewards require Nosana authorization. No existing node keys are accessed. A PC collector does not unlock this amount.";
+        const view = rewardView(mobileMonitoring?.index.get(address), nodeProjectionTime);
+        const exact = view.amount;
+        setText(cell, exact === null ? "—" : exact.replace(/(\.[0-9]*?)0+$/, "$1").replace(/\.$/, ""));
+        cell.classList.toggle("metadata-retained", exact !== null && !view.current);
+        const description = exact === null ? `Rewards unavailable (${view.status}). Enable or repair monitoring in Fleets.`
+          : `${view.current ? "" : "Retained "}${exact} NOS claimable for host uptime. Observed ${timestamp(view.observedAtMs)}. Latest status: ${view.status}.`;
+        cell.setAttribute("aria-label", description); cell.title = description;
       } else if (key === "sol") {
         renderSolCell(cell, address, nodeProjectionTime);
       } else if (key === "nos") {
@@ -2727,7 +2768,7 @@ function render(): void {
   }
   setText(element("preview-description"), fleetConfig.sourceMode === "snapshot"
     ? `${fleetConfig.sourceLabel}. This view reads backend observations; opening or refreshing it does not establish new host evidence. Each value keeps its original source time and freshness deadline. Missing observations stay unknown; retained timings remain dimmed estimates. Host activity and API reachability are independent.` : supplied
-    ? "Metadata comes from Nosana metrics; State uses Node Info with independent job/queue evidence when needed. API shows reachability from that same check; DL/UL/Ping also use Node Info. Duration uses assigned Nosana jobs with an independent local clock; Queued uses the ordered Nosana market queue. SOL uses confirmed public mainnet RPC with shared best-effort 30-second checks. NOS checks standard associated token accounts every two minutes. Staked NOS checks vault holdings and current market targets every 30 minutes. Jobs expands on demand to recent indexed history, with original check times and separate execution results. Claimable rewards and physical GPU identity remain unconnected. Duration shows Populating.. until useful timing arrives, and a dash for current confirmed absence or unavailable timing while API Offline is confirmed; State uses a dim amber spinner until useful activity arrives. Other unconnected fields stay unknown. Synthetic scenarios stay separate."
+    ? "Metadata comes from Nosana metrics; State uses Node Info with independent job/queue evidence when needed. API shows reachability from that same check; DL/UL/Ping also use Node Info. Duration uses assigned Nosana jobs with an independent local clock; Queued uses the ordered Nosana market queue. SOL uses confirmed public mainnet RPC with shared best-effort 30-second checks. NOS checks standard associated token accounts every two minutes. Staked NOS checks vault holdings and current market targets every 30 minutes. Jobs expands on demand to recent indexed history, with original check times and separate execution results. Android saved fleets can separately read exact claimable rewards and node-bound GPU recordings after in-app monitoring approval; other scenarios remain unconnected. Duration shows Populating.. until useful timing arrives, and a dash for current confirmed absence or unavailable timing while API Offline is confirmed; State uses a dim amber spinner until useful activity arrives. Other unconnected fields stay unknown. Synthetic scenarios stay separate."
     : "Sample preview. Market names and hardware readings are synthetic; Job durations and Node states add separate synthetic examples. No live data sources are connected. A dash means unknown, not zero.");
   if (supplied) {
     renderSupplied();
@@ -2859,7 +2900,7 @@ element("refresh-view").addEventListener("click", () => {
     void loadHostRoster();
     return;
   }
-  if (supplied) { void loadMetadata(); void loadNodeInfo(); void loadJobs(); void loadQueue(); void loadSol(); void loadNos(); void loadStaking(); }
+  if (supplied) { void mobileMonitoring?.refresh(); void loadMetadata(); void loadNodeInfo(); void loadJobs(); void loadQueue(); void loadSol(); void loadNos(); void loadStaking(); }
   else render();
 });
 element("reset-sample").addEventListener("click", () => {
@@ -2868,12 +2909,15 @@ element("reset-sample").addEventListener("click", () => {
   render();
 });
 document.addEventListener("visibilitychange", resumeVisibleView);
+document.addEventListener("visibilitychange", () => mobileMonitoring?.resume());
 window.addEventListener("pagehide", () => {
   pageHidden = true;
+  mobileMonitoring?.resume();
   resumeVisibleView();
 });
 window.addEventListener("pageshow", () => {
   pageHidden = false;
+  mobileMonitoring?.resume();
   resumeVisibleView();
 });
 render();

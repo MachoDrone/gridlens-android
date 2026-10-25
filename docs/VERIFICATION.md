@@ -171,3 +171,57 @@ See [PC telemetry](PC_TELEMETRY.md) for setup and source limitations.
 
 Verified APK size: 197237842 bytes. SHA-256:
 `496f7c4caee8fb6b87e4744cb497cc5056bfb7df57726c913af602e4c8f866c7`.
+
+## Android 0.2.2 — app-owned monitoring, October 25, 2026
+
+Version code 5 moves PC verification and recurring monitoring into the native app.
+Enable / repair monitoring reuses saved endpoints and encrypted credentials,
+verifies exact node/container/GPU identities, and records bounded local permission.
+The approved node performs its fixed rewards GET internally; only sanitized
+amount/status/time leave it. GPU conditions use verified public job intervals,
+with current-assignment proof required for an open-ended RUNNING record.
+No developer-side PC authorization or live-wallet test is part of this workflow.
+
+Verification on the final implementation and pinned toolchains:
+
+- 95 Android/runtime/reward-reader/persistence/phone-browser tests pass. The reward
+  and browser fixture checks were also rerun after replacing an example amount
+  with a deliberately generic synthetic value; no operator readings are fixtures.
+- 27 Python recorder tests and 816 inherited application Node tests pass.
+- The inherited browser run passed 327 tests; five long interaction/large-roster
+  cases timed out. All five passed unchanged with one worker. The final job-time
+  guard and independent rewards freshness were then checked in the Android tests,
+  and all 11 affected inherited job-history browser tests passed. Test timeouts
+  and assertions were not relaxed; initial failures remain recorded locally.
+- All 88 Android unit tests pass in both debug and release variants. Clean builds,
+  release lint and final APK repackaging pass. The signed package remains
+  com.gridlens.android, version 0.2.2/code 5, with the existing release certificate.
+- The complete mobile adaptation patch reproduces 196 files from 192 verified
+  originals. All 47 bundled runtime files match their integrity manifest; helper
+  assets match the reviewed sources. APK signature and 16 KiB alignment verify.
+- Real Android API 36 x86_64 emulator verification passed: native-only Keystore
+  and monitoring permissions in 3.5 seconds, then full Smoke in 7.0 seconds.
+  Full Smoke covers embedded Node/WebView, eight synthetic hosts, loopback
+  authentication, roster persistence, lifecycle, updater rejection checks and
+  both native storage verification suites. Native discovery/SSH counters stay zero.
+
+The isolated emulator initially suffered System UI/Google-service ANRs before
+GridLens launched; two UI checks timed out. The final run used a smaller 540x1200
+fixture, allowed boot settling, and ran with greater available host memory. The
+startup test probe was made safe before document.body exists; its five-second
+JavaScript callback timeout was unchanged. Several conditions changed, so no
+single cause is established. The final run had no observed ANR/FATAL entries.
+Only the owned emulator/test data were used; physical phones and operator PCs
+were not contacted. Factory Pixel and GrapheneOS acceptance remain distinct.
+
+The native-only mode is explicitly scoped and does not stand in for full Smoke:
+
+```sh
+adb -s emulator-5562 shell am instrument -w -e nativeOnly true \
+  com.gridlens.android.test/com.gridlens.android.SmokeInstrumentation
+```
+
+The app performs actual per-PC verification after the user's native monitoring
+approval. Unsupported layouts or denied Nosana reads remain explicit; an app
+build/test result is not a claim that every operator PC has already been checked.
+See [the Android rewards/GPU flow](REWARDS_AND_GPU_TELEMETRY_GAPS.md).

@@ -13,6 +13,7 @@ interface Options {
   read: (addresses: string[], refresh: boolean, signal: AbortSignal,
     apply: (snapshot: JobHistorySnapshot) => void) => Promise<unknown>;
   changed: () => void;
+  gpuConditions?: (address: string, job: JobHistoryItem, confirmedRunning: boolean) => { label: string; detail: string };
 }
 const setText = (node: HTMLElement, text: string): void => { if (node.textContent !== text) node.textContent = text; };
 const utc = (at: number | null): string => at === null || !Number.isFinite(at) || at < 0 || at > 8_640_000_000_000_000
@@ -330,7 +331,7 @@ export function createJobHistoryView(options: Options) {
       table.setAttribute("aria-label", `Job history for ${address}`);
       const head = document.createElement("thead");
       const headings = document.createElement("tr");
-      for (const name of ["address", "host", "started", "duration", "price", "gpu", "status"]) {
+      for (const name of ["address", "host", "started", "duration", "price", "gpu", "status", ...(options.gpuConditions ? ["gpu conditions"] : [])]) {
         const heading = document.createElement("th"); heading.scope = "col";
         heading.dataset.historyCol = name; heading.textContent = name.toUpperCase(); headings.append(heading);
       }
@@ -383,7 +384,7 @@ export function createJobHistoryView(options: Options) {
       wanted.add(item.address);
       const itemRow = existing.get(item.address) ?? document.createElement("tr");
       itemRow.dataset.job = item.address;
-      if (!itemRow.cells.length) for (const name of ["address", "host", "started", "duration", "price", "gpu", "status"]) {
+      if (!itemRow.cells.length) for (const name of ["address", "host", "started", "duration", "price", "gpu", "status", ...(options.gpuConditions ? ["gpu conditions"] : [])]) {
         const cell = document.createElement("td"); cell.dataset.historyCol = name; itemRow.append(cell);
       }
       historyLink(itemRow.cells[0]!, "job-history-address", "jobs", item.address);
@@ -418,6 +419,8 @@ export function createJobHistoryView(options: Options) {
       setText(marketName, fields.marketName ?? "—");
       gpu.setAttribute("aria-label", fields.marketName ? `Job market label: ${fields.marketName}. This is not a physical GPU identity.` : "Job market label unknown");
       renderHistoryStatus(itemRow.cells[6]!, historyStatus(item, current?.current === true && current.job.address === item.address), item);
+      const conditions = options.gpuConditions?.(address, item, current?.current === true && current.job.address === item.address);
+      if (conditions) { setText(itemRow.cells[7]!, conditions.label); itemRow.cells[7]!.title = conditions.detail; itemRow.cells[7]!.setAttribute("aria-label", conditions.detail); }
       const at = body.rows.item(index);
       if (at !== itemRow) {
         if (itemRow.isConnected && typeof body.moveBefore === "function") body.moveBefore(itemRow, at);
@@ -425,7 +428,7 @@ export function createJobHistoryView(options: Options) {
       }
       const sourceEntry = sourceEntries.get(item.address) ?? document.createElement("li");
       sourceEntry.dataset.jobSource = item.address;
-      setText(sourceEntry, `Job: ${item.address}\nHost: ${item.node}\nLifecycle: ${stateLabel(item.state)}\nResult: ${item.result === "success" ? "Succeeded" : item.result === "failed" ? "Failed" : "Unavailable"}\nStarted: ${exactUTC(start)} (reported ${item.timeStart === null ? "unknown" : `${item.timeStart} seconds`})\nEnded: ${exactUTC(end)} (reported ${item.timeEnd === null ? "unknown" : `${item.timeEnd} seconds`})\nReported timeout: ${item.timeout === null ? "unknown" : `${item.timeout} seconds`}\nJob checked: ${exactUTC(item.checkedAtMs)}\nPrice/GPU fields checked: ${exactUTC(fields.checkedAtMs)}\nJob market address: ${fields.marketAddress ?? "Unknown"}\nJob market label: ${fields.marketName ?? "Unknown"}\nRecorded job rate: ${fields.usdRewardPerHour == null ? "Unknown" : `${fields.usdRewardPerHour} USD/hour`}\nMarket rate: ${fields.marketUsdRewardPerHour == null ? "Unknown" : `${fields.marketUsdRewardPerHour} USD/hour`}\nMarket checked: ${exactUTC(fields.marketCheckedAtMs ?? null)}\nMarket valid until: ${exactUTC(fields.marketValidUntilMs ?? null)}\nPrice basis: ${price.basis}`);
+      setText(sourceEntry, `Job: ${item.address}\nHost: ${item.node}\nLifecycle: ${stateLabel(item.state)}\nResult: ${item.result === "success" ? "Succeeded" : item.result === "failed" ? "Failed" : "Unavailable"}\nStarted: ${exactUTC(start)} (reported ${item.timeStart === null ? "unknown" : `${item.timeStart} seconds`})\nEnded: ${exactUTC(end)} (reported ${item.timeEnd === null ? "unknown" : `${item.timeEnd} seconds`})\nReported timeout: ${item.timeout === null ? "unknown" : `${item.timeout} seconds`}\nJob checked: ${exactUTC(item.checkedAtMs)}\nPrice/GPU fields checked: ${exactUTC(fields.checkedAtMs)}\nJob market address: ${fields.marketAddress ?? "Unknown"}\nJob market label: ${fields.marketName ?? "Unknown"}\nRecorded job rate: ${fields.usdRewardPerHour == null ? "Unknown" : `${fields.usdRewardPerHour} USD/hour`}\nMarket rate: ${fields.marketUsdRewardPerHour == null ? "Unknown" : `${fields.marketUsdRewardPerHour} USD/hour`}\nMarket checked: ${exactUTC(fields.marketCheckedAtMs ?? null)}\nMarket valid until: ${exactUTC(fields.marketValidUntilMs ?? null)}\nPrice basis: ${price.basis}${conditions ? `\nGPU conditions: ${conditions.detail}` : ""}`);
       const sourceAt = sourceList.children.item(index);
       if (sourceAt !== sourceEntry) {
         if (sourceEntry.isConnected && typeof sourceList.moveBefore === "function") sourceList.moveBefore(sourceEntry, sourceAt);
@@ -476,6 +479,7 @@ export function createJobHistoryView(options: Options) {
       for (const address of expanded) if (!attempted.has(address)) queue(address);
       schedule();
     },
+    get expandedAddresses() { return [...expanded]; },
     get expandedCount() { return expanded.size; },
   };
 }

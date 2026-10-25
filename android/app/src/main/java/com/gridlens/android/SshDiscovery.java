@@ -68,14 +68,19 @@ public final class SshDiscovery {
         public final int unresolved;
         public final PcMetadata pcMetadata;
         public final GpuCollector.Status gpuCollectorStatus;
+        public final List<NodeBinding> bindings;
         public Result(Status status, List<String> addresses, int unresolved) { this(status, addresses, unresolved, null); }
         public Result(Status status, List<String> addresses, int unresolved, PcMetadata pcMetadata) {
             this(status, addresses, unresolved, pcMetadata, null);
         }
         Result(Status status, List<String> addresses, int unresolved, PcMetadata pcMetadata, GpuCollector.Status gpuCollectorStatus) {
+            this(status, addresses, unresolved, pcMetadata, gpuCollectorStatus, Collections.emptyList());
+        }
+        Result(Status status, List<String> addresses, int unresolved, PcMetadata pcMetadata, GpuCollector.Status gpuCollectorStatus, List<NodeBinding> bindings) {
             this.status = status; this.addresses = Collections.unmodifiableList(new ArrayList<>(addresses));
             this.unresolved = unresolved; this.pcMetadata = pcMetadata;
             this.gpuCollectorStatus = gpuCollectorStatus;
+            this.bindings = Collections.unmodifiableList(NodeBinding.unambiguous(bindings));
         }
         static Result of(Status status) { return new Result(status, Collections.emptyList(), 0); }
     }
@@ -96,6 +101,173 @@ public final class SshDiscovery {
         }
     }
     public interface BatchProgress { void update(DiscoveryPolicy.Candidate candidate, Result result); }
+    public static final class MonitoringResult {
+        public final NodeBinding binding;
+        public final String rewardsJson, gpuJson, status;
+        public final boolean suspendRewards;
+        public final long retryAfterSeconds;
+        public MonitoringResult(NodeBinding binding, String rewardsJson, String gpuJson, String status, boolean suspendRewards, long retryAfterSeconds) {
+            this.binding = binding; this.rewardsJson = rewardsJson; this.gpuJson = gpuJson; this.status = status;
+            this.suspendRewards = suspendRewards; this.retryAfterSeconds = retryAfterSeconds;
+        }
+    }
+    public static List<MonitoringResult> monitor(DiscoveryNetwork network, DiscoveryPolicy.Candidate candidate, Identity trusted,
+            Credential credential, byte[] sudoPassword, List<NodeBinding> bindings, String rewardsSource, String gpuSource,
+            boolean enable, boolean readRewards, boolean readGpu) {
+        return monitor(network, candidate, trusted, credential, sudoPassword, bindings, rewardsSource, gpuSource, enable, readRewards, readGpu, Collections.emptyMap());
+    }
+    public static List<MonitoringResult> monitor(DiscoveryNetwork network, DiscoveryPolicy.Candidate candidate, Identity trusted,
+            Credential credential, byte[] sudoPassword, List<NodeBinding> bindings, String rewardsSource, String gpuSource,
+            boolean enable, boolean readRewards, boolean readGpu, Map<String, Long> gpuSince) {
+        return monitor(network, candidate, trusted, credential, sudoPassword, bindings, rewardsSource, gpuSource, enable, readRewards, readGpu, gpuSince, null);
+    }
+    public static List<MonitoringResult> monitor(DiscoveryNetwork network, DiscoveryPolicy.Candidate candidate, Identity trusted,
+            Credential credential, byte[] sudoPassword, List<NodeBinding> bindings, String rewardsSource, String gpuSource,
+            boolean enable, boolean readRewards, boolean readGpu, Map<String, Long> gpuSince, Set<String> rewardAddresses) {
+        return monitor(network, candidate, trusted, credential, sudoPassword, bindings, rewardsSource, gpuSource, enable, readRewards, readGpu, gpuSince, rewardAddresses, result -> {}, () -> true);
+    }
+    public static List<MonitoringResult> monitor(DiscoveryNetwork network, DiscoveryPolicy.Candidate candidate, Identity trusted,
+            Credential credential, byte[] sudoPassword, List<NodeBinding> bindings, String rewardsSource, String gpuSource,
+            boolean enable, boolean readRewards, boolean readGpu, Map<String, Long> gpuSince, Set<String> rewardAddresses,
+            java.util.function.Consumer<MonitoringResult> onResult, java.util.function.BooleanSupplier rewardsAllowed) {
+        return monitor(transport(network), candidate, trusted, credential, sudoPassword, bindings, rewardsSource, gpuSource, enable, readRewards, readGpu, gpuSince, rewardAddresses, onResult, rewardsAllowed);
+    }
+    static List<MonitoringResult> monitor(Transport network, DiscoveryPolicy.Candidate candidate, Identity trusted,
+            Credential credential, byte[] sudoPassword, List<NodeBinding> bindings, String rewardsSource, String gpuSource,
+            boolean enable, boolean readRewards, boolean readGpu, Map<String, Long> gpuSince) {
+        return monitor(network, candidate, trusted, credential, sudoPassword, bindings, rewardsSource, gpuSource, enable, readRewards, readGpu, gpuSince, null);
+    }
+    static List<MonitoringResult> monitor(Transport network, DiscoveryPolicy.Candidate candidate, Identity trusted,
+            Credential credential, byte[] sudoPassword, List<NodeBinding> bindings, String rewardsSource, String gpuSource,
+            boolean enable, boolean readRewards, boolean readGpu, Map<String, Long> gpuSince, Set<String> rewardAddresses) {
+        return monitor(network, candidate, trusted, credential, sudoPassword, bindings, rewardsSource, gpuSource, enable, readRewards, readGpu, gpuSince, rewardAddresses, result -> {}, () -> true);
+    }
+    static List<MonitoringResult> monitor(Transport network, DiscoveryPolicy.Candidate candidate, Identity trusted,
+            Credential credential, byte[] sudoPassword, List<NodeBinding> bindings, String rewardsSource, String gpuSource,
+            boolean enable, boolean readRewards, boolean readGpu, Map<String, Long> gpuSince, Set<String> rewardAddresses,
+            java.util.function.Consumer<MonitoringResult> onResult, java.util.function.BooleanSupplier rewardsAllowed) {
+        if (trusted == null || credential == null || bindings == null || bindings.isEmpty() || bindings.size() > 64
+                || NodeBinding.unambiguous(bindings).size() != bindings.size() || sudoPassword != null && sudoPassword.length > 4096
+                || onResult == null || rewardsAllowed == null)
+            throw new IllegalArgumentException("Approved exact monitoring bindings required");
+        configureCryptoForAndroid(); JSch jsch = new JSch(); Session session = null; ScheduledFuture<?> timeout = null;
+        PinnedRepository repository = new PinnedRepository(trusted);
+        List<MonitoringResult> results = new ArrayList<>();
+        try {
+            session = session(jsch, network, candidate, credential.username, repository);
+            if (credential.privateKey != null && credential.privateKey.length > 0) {
+                jsch.addIdentity("native-import", credential.privateKey.clone(), null, copy(credential.passphrase));
+                session.setConfig("PreferredAuthentications", "publickey");
+            } else { session.setPassword(credential.password.clone()); session.setConfig("PreferredAuthentications", "password"); }
+            timeout = limit(session, CONNECT_MS); session.connect(CONNECT_MS); timeout.cancel(false);
+            session.setServerAliveInterval(5000); session.setServerAliveCountMax(3);
+            long operationMs = enable ? 240000 : 90000;
+            timeout = limit(session, operationMs);
+            long deadline = System.nanoTime() + operationMs * 1000000L;
+            Session active = session;
+            boolean rewardPaused = false;
+            for (NodeBinding binding : bindings) {
+                network.ensureActive();
+                String wrapperMode = null;
+                if (binding.wrapperId != null) {
+                    CommandResult wrapper = execute(active, network, DiscoveryPolicy.wrapperInspectionCommand(binding, sudoPassword != null), sudoPassword, deadline, 1024);
+                    wrapperMode = runningMode(wrapper, binding.wrapperId, "podman");
+                    if (wrapperMode == null) { MonitoringResult failed = bindingFailure(binding, readGpu); emitMonitoring(onResult, failed); results.add(failed); continue; }
+                }
+                CommandResult inspected = execute(active, network, DiscoveryPolicy.bindingInspectionCommand(binding, sudoPassword != null), sudoPassword, deadline, 1024);
+                String nodeMode = runningMode(inspected, binding.nodeContainerId, "nosana-node");
+                if (nodeMode == null) { MonitoringResult failed = bindingFailure(binding, readGpu); emitMonitoring(onResult, failed); results.add(failed); continue; }
+                CommandResult identity = execute(active, network, DiscoveryPolicy.bindingAddressCommand(binding, sudoPassword != null), sudoPassword, deadline, 256);
+                if (identity.exit != 0 || !identity.output.trim().equals(binding.address)) { MonitoringResult failed = bindingFailure(binding, readGpu); emitMonitoring(onResult, failed); results.add(failed); continue; }
+                String rewards = null, gpu = null, status = "active"; boolean suspended = false; long retry = 0;
+                boolean rewardRead = false;
+                if (readRewards && !rewardPaused && (rewardAddresses == null || rewardAddresses.contains(binding.address)) && rewardsAllowed.getAsBoolean()) {
+                    RewardsReader.Outcome reward = RewardsReader.collect(rewardsSource,
+                            new RewardsReader.Binding(binding.runtime, binding.wrapperId, binding.nodeContainerId, binding.address), true, sudoPassword != null,
+                            (command, maxBytes, timeMs) -> { CommandResult result = execute(active, network, command, sudoPassword, deadline, maxBytes, timeMs); return new RewardsReader.Response(result.exit, result.output); });
+                    rewards = reward.json; suspended = reward.suspendAuthorization; retry = reward.retryAfterSeconds;
+                    if (suspended) status = "authorization-required";
+                    rewardRead = true;
+                    rewardPaused = retry > 0 || reward.status == RewardsReader.Status.RATE_LIMITED;
+                    // Persist denial/cooldown before another binding or a slow GPU installation.
+                    emitMonitoring(onResult, new MonitoringResult(binding, rewards, null, status, suspended, retry));
+                }
+                if (readGpu) {
+                    String namespace = binding.wrapperId == null && binding.runtime.equals("docker") && isolatedMode(nodeMode) ? binding.nodeContainerId
+                            : binding.wrapperId != null && nodeMode.equals("host") && isolatedMode(wrapperMode) ? binding.wrapperId : null;
+                    if (namespace == null) { gpu = NodeGpuCollector.unavailable(binding, "unsupported"); if (!suspended) status = "unsupported"; }
+                    else {
+                        try {
+                            List<String> uuids = visibleGpuUuids(active, network, binding, sudoPassword, deadline);
+                            if (uuids.isEmpty()) {
+                                gpu = NodeGpuCollector.unavailable(binding, "binding-mismatch");
+                            } else {
+                                NodeGpuCollector collector = new NodeGpuCollector(binding, namespace, uuids, gpuSince.get(binding.address));
+                                NodeGpuCollector.Outcome outcome = collector.collect(collector.boundSource(gpuSource), enable, sudoPassword != null,
+                                        (command, maxBytes, timeMs) -> { CommandResult result = execute(active, network, command, sudoPassword, deadline, maxBytes, timeMs); return new NodeGpuCollector.Response(result.exit, result.output); },
+                                        () -> bindingStillMatches(active, network, binding, sudoPassword, deadline, namespace, uuids));
+                                gpu = outcome.json;
+                                if (outcome.status == NodeGpuCollector.Status.ACCESS_REQUIRED && !suspended) status = "credentials-required";
+                            }
+                        } catch (IllegalArgumentException unsupported) { gpu = NodeGpuCollector.unavailable(binding, "unsupported"); }
+                    }
+                }
+                MonitoringResult completed = new MonitoringResult(binding, rewards, gpu, status, suspended, retry);
+                if (readGpu || !rewardRead) emitMonitoring(onResult, completed);
+                results.add(completed);
+            }
+        } catch (MonitoringCallbackFailure error) { throw error;
+        } catch (Exception error) {
+            String status = repository.changed ? "identity-changed" : error instanceof JSchException && error.getMessage() != null
+                    && (error.getMessage().startsWith("Auth fail") || error.getMessage().startsWith("Auth cancel")) ? "credentials-required" : "unreachable";
+            for (NodeBinding binding : bindings) if (results.stream().noneMatch(result -> result.binding == binding)) {
+                MonitoringResult failed = new MonitoringResult(binding, null, readGpu ? NodeGpuCollector.unavailable(binding, "unavailable") : null, status, false, 0);
+                emitMonitoring(onResult, failed); results.add(failed);
+            }
+        } finally { if (timeout != null) timeout.cancel(false); if (session != null) session.disconnect(); try { jsch.removeAllIdentity(); } catch (JSchException ignored) { } }
+        return results;
+    }
+    private static boolean isolatedMode(String mode) { return mode != null && mode.matches("[A-Za-z0-9][A-Za-z0-9_.-]{0,255}") && !mode.equals("host"); }
+    private static List<String> visibleGpuUuids(Session session, Transport network, NodeBinding binding, byte[] sudoPassword, long deadline) throws IOException, JSchException {
+        CommandResult visible = execute(session, network, DiscoveryPolicy.bindingGpuCommand(binding, sudoPassword != null), sudoPassword, deadline, 8192);
+        if (visible.exit == 127 && binding.wrapperId != null) {
+            CommandResult inventory = execute(session, network, DiscoveryPolicy.inventoryCommand("docker", binding.wrapperId, sudoPassword != null), sudoPassword, deadline);
+            if (inventory.exit == 0 && DiscoveryPolicy.parseInventory(inventory.output).stream().filter(DiscoveryPolicy.Container::node).count() == 1) {
+                String query = (sudoPassword != null ? "/usr/bin/sudo -S -p '' -- " : "") + "/usr/bin/docker exec " + binding.wrapperId + " /usr/bin/nvidia-smi --query-gpu=uuid --format=csv,noheader";
+                visible = execute(session, network, query, sudoPassword, deadline, 8192);
+            }
+        }
+        CommandResult api = execute(session, network, DiscoveryPolicy.bindingGpuInfoCommand(binding, sudoPassword != null), sudoPassword, deadline, 8192);
+        if (visible.exit != 0 || api.exit != 0) return Collections.emptyList();
+        List<String> uuids = NodeGpuCollector.parseGpuUuids(visible.output);
+        return uuids.equals(NodeGpuCollector.parseGpuUuids(api.output)) ? uuids : Collections.emptyList();
+    }
+    private static boolean bindingStillMatches(Session session, Transport network, NodeBinding binding, byte[] sudoPassword,
+            long deadline, String namespace, List<String> uuids) throws IOException, JSchException {
+        String mode = runningMode(execute(session, network, DiscoveryPolicy.bindingInspectionCommand(binding, sudoPassword != null), sudoPassword, deadline, 1024), binding.nodeContainerId, "nosana-node");
+        if (binding.wrapperId == null) {
+            if (!binding.runtime.equals("docker") || !namespace.equals(binding.nodeContainerId) || !isolatedMode(mode)) return false;
+        } else {
+            String wrapper = runningMode(execute(session, network, DiscoveryPolicy.wrapperInspectionCommand(binding, sudoPassword != null), sudoPassword, deadline, 1024), binding.wrapperId, "podman");
+            if (!"host".equals(mode) || !isolatedMode(wrapper) || !namespace.equals(binding.wrapperId)) return false;
+        }
+        CommandResult address = execute(session, network, DiscoveryPolicy.bindingAddressCommand(binding, sudoPassword != null), sudoPassword, deadline, 256);
+        return address.exit == 0 && address.output.trim().equals(binding.address) && uuids.equals(visibleGpuUuids(session, network, binding, sudoPassword, deadline));
+    }
+    private static final class MonitoringCallbackFailure extends RuntimeException {
+        MonitoringCallbackFailure(RuntimeException cause) { super("Monitoring policy could not be saved", cause); }
+    }
+    private static void emitMonitoring(java.util.function.Consumer<MonitoringResult> callback, MonitoringResult result) {
+        try { callback.accept(result); } catch (RuntimeException error) { throw new MonitoringCallbackFailure(error); }
+    }
+    private static String runningMode(CommandResult result, String id, String repository) {
+        if (result.exit != 0) return null;
+        String[] fields = result.output.trim().split("\\t", -1);
+        return fields.length == 4 && fields[0].equals(id) && fields[1].equals("true") && DiscoveryPolicy.imageMatches(fields[2], repository) ? fields[3] : null;
+    }
+    private static MonitoringResult bindingFailure(NodeBinding binding, boolean gpu) {
+        return new MonitoringResult(binding, null, gpu ? NodeGpuCollector.unavailable(binding, "binding-mismatch") : null, "binding-changed", true, 0);
+    }
     interface Transport {
         Socket connect(String address, int port, int timeout) throws IOException;
         void ensureActive() throws IOException;
@@ -172,6 +344,7 @@ public final class SshDiscovery {
         PinnedRepository repository = new PinnedRepository(trusted);
         boolean connected = false;
         LinkedHashSet<String> addresses = new LinkedHashSet<>();
+        List<NodeBinding> bindings = new ArrayList<>();
         int unresolved = 0;
         PcMetadata pcMetadata = null;
         GpuCollector.Status gpuCollectorStatus = null;
@@ -194,14 +367,14 @@ public final class SshDiscovery {
                 if (command.exit != 0) { if (command.exit != 127) denied = true; continue; }
                 any = true;
                 List<DiscoveryPolicy.Container> containers = DiscoveryPolicy.parseInventory(command.output);
-                unresolved += collectWithApi(session, network, containers, addresses, runtime, null, sudoPassword, deadline);
+                unresolved += collectWithApi(session, network, containers, addresses, bindings, runtime, null, sudoPassword, deadline);
                 if (!runtime.equals("docker")) continue;
                 int wrappers = 0;
                 for (DiscoveryPolicy.Container wrapper : containers) if (wrapper.wrapper()) {
                     if (++wrappers > 32) throw new IOException("Wrapper inventory exceeds limit");
                     CommandResult nested = execute(session, network, DiscoveryPolicy.inventoryCommand("docker", wrapper.id, sudoPassword != null), sudoPassword, deadline);
                     if (nested.exit != 0) { denied = true; unresolved++; continue; }
-                    unresolved += collectWithApi(session, network, DiscoveryPolicy.parseInventory(nested.output), addresses, "docker", wrapper.id, sudoPassword, deadline);
+                    unresolved += collectWithApi(session, network, DiscoveryPolicy.parseInventory(nested.output), addresses, bindings, "docker", wrapper.id, sudoPassword, deadline);
                 }
             }
             network.ensureActive();
@@ -233,29 +406,28 @@ public final class SshDiscovery {
                 if (collector.json != null && pcMetadata != null) pcMetadata = pcMetadata.withGpuTelemetry(collector.json);
                 if (enableGpuRecording && collector.status == GpuCollector.Status.ACCESS_REQUIRED) denied = true;
             }
-            return new Result(denied ? Status.CONTAINER_ACCESS_REQUIRED : any ? Status.SUCCESS : Status.INVENTORY_FAILED, new ArrayList<>(addresses), unresolved, pcMetadata, gpuCollectorStatus);
+            return new Result(denied ? Status.CONTAINER_ACCESS_REQUIRED : any ? Status.SUCCESS : Status.INVENTORY_FAILED, new ArrayList<>(addresses), unresolved, pcMetadata, gpuCollectorStatus, bindings);
         } catch (JSchException e) {
             if (repository.changed) return Result.of(Status.IDENTITY_CHANGED);
             if (network.isCancelled()) return Result.of(Status.CANCELLED);
             if (e.getMessage() != null && (e.getMessage().startsWith("Auth fail") || e.getMessage().startsWith("Auth cancel") || e.getMessage().contains("invalid privatekey"))) return Result.of(Status.AUTH_FAILED);
-            return new Result(connected ? Status.INVENTORY_FAILED : Status.UNREACHABLE, new ArrayList<>(addresses), unresolved, pcMetadata, gpuCollectorStatus);
-        } catch (IOException | RuntimeException e) { return new Result(network.isCancelled() ? Status.CANCELLED : Status.INVENTORY_FAILED, new ArrayList<>(addresses), unresolved, pcMetadata, gpuCollectorStatus); }
+            return new Result(connected ? Status.INVENTORY_FAILED : Status.UNREACHABLE, new ArrayList<>(addresses), unresolved, pcMetadata, gpuCollectorStatus, bindings);
+        } catch (IOException | RuntimeException e) { return new Result(network.isCancelled() ? Status.CANCELLED : Status.INVENTORY_FAILED, new ArrayList<>(addresses), unresolved, pcMetadata, gpuCollectorStatus, bindings); }
         finally { if (timeout != null) timeout.cancel(false); if (session != null) session.disconnect(); try { jsch.removeAllIdentity(); } catch (JSchException ignored) { } }
     }
     private static int collectWithApi(Session session, Transport network, List<DiscoveryPolicy.Container> containers,
-            LinkedHashSet<String> addresses, String runtime, String wrapper, byte[] sudoPassword, long deadline) throws IOException, JSchException {
+            LinkedHashSet<String> addresses, List<NodeBinding> bindings, String runtime, String wrapper, byte[] sudoPassword, long deadline) throws IOException, JSchException {
         LinkedHashSet<String> local = new LinkedHashSet<>();
-        int unresolved = collect(containers, local);
+        collect(containers, local);
         addresses.addAll(local);
-        if (unresolved > 0) {
-            int nodes = 0;
-            for (DiscoveryPolicy.Container container : containers) if (container.node()) {
-                nodes++;
-                CommandResult response = execute(session, network, DiscoveryPolicy.nodeApiCommand(runtime, wrapper, container.id, sudoPassword != null), sudoPassword, deadline);
-                String address = response.output.trim();
-                if (response.exit == 0 && DiscoveryPolicy.publicAddress(address)) { local.add(address); addresses.add(address); }
-            }
-            unresolved = Math.max(0, nodes - local.size());
+        int unresolved = 0;
+        for (DiscoveryPolicy.Container container : containers) if (container.node()) {
+            CommandResult response = execute(session, network, DiscoveryPolicy.nodeApiCommand(runtime, wrapper, container.id, sudoPassword != null), sudoPassword, deadline);
+            String address = response.output.trim();
+            if (response.exit == 0 && DiscoveryPolicy.publicAddress(address)) {
+                local.add(address); addresses.add(address);
+                bindings.add(new NodeBinding(wrapper == null ? runtime : "podman", wrapper, container.id, address));
+            } else unresolved++;
         }
         addresses.addAll(local); return unresolved;
     }

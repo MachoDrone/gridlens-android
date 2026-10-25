@@ -24,6 +24,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -36,6 +37,7 @@ final class DiscoveryController {
     private final String token;
     private final Navigation navigation;
     private final DiscoveryStore store;
+    private final MonitoringController monitoring;
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private DiscoveryNetwork network;
     private AlertDialog progress;
@@ -47,12 +49,17 @@ final class DiscoveryController {
     private boolean working;
     private CredentialForm keyForm;
     private final List<SshDiscovery.Credential> openCredentials = new ArrayList<>();
+    private final java.util.Map<String, String> credentialIds = new java.util.HashMap<>();
+    private final java.util.Map<String, byte[]> monitoringSudo = new java.util.HashMap<>();
+    private List<SshDiscovery.BatchRequest> lastRequests = new ArrayList<>();
+    private boolean enableMonitoringForBatch, monitoringIntent, foreground;
 
     DiscoveryController(Activity activity, String origin, String token, Navigation navigation) throws Exception {
         this.activity = activity; this.origin = origin; this.token = token; this.navigation = navigation;
         DiscoveryStore opened;
         try { opened = new DiscoveryStore(activity); } catch (Exception unavailable) { opened = null; }
         store = opened;
+        monitoring = store == null ? null : new MonitoringController(activity, store, origin, token);
     }
     void show(String rescanFleet) {
         if (working) { if (progress != null) progress.show(); return; }
@@ -68,6 +75,8 @@ final class DiscoveryController {
     private void prepare() {
         if (store == null) { storageError(); return; }
         cancel();
+        monitoringIntent = false;
+        if (monitoring != null) monitoring.pause();
         try { network = DiscoveryNetwork.capture(activity); profiles(true); }
         catch (Exception error) { message("Network unavailable", "Connect to Wi-Fi or your existing VPN, then search again. GridLens does not configure VPNs."); }
     }
@@ -197,6 +206,16 @@ final class DiscoveryController {
         try {
             String override = store.override(host.identity.keyBase64);
             JSONObject prior = override == null ? shared : store.credential(override);
+            if (prior == null && fleetId != null) {
+                JSONArray targets = store.monitoringTargets();
+                for (int i = 0; i < targets.length(); i++) {
+                    JSONObject target = targets.getJSONObject(i);
+                    if (fleetId.equals(target.getString("fleetId")) && host.identity.keyBase64.equals(target.getString("keyBase64"))
+                        && host.candidate.address.equals(target.getString("address")) && host.candidate.port == target.getInt("port")) {
+                        prior = store.credential(target.optString("credentialId", ""));
+                    }
+                }
+            }
             if (prior != null) { addRequest(hosts, index, requests, shared, prior); return; }
         } catch (Exception error) { credentialError(); cancel(); return; }
         try {
@@ -223,20 +242,27 @@ final class DiscoveryController {
                     try {
                         SshDiscovery.Credential replacement = decodeCredential(value); openCredentials.add(replacement);
                         SshDiscovery.BatchRequest old = requests.set(index, new SshDiscovery.BatchRequest(host.candidate, host.identity, replacement, null));
+                        if (value.has("id")) credentialIds.put(host.candidate.endpointKey(), value.getString("id"));
+                        else credentialIds.remove(host.candidate.endpointKey());
                         old.credential.close(); openCredentials.remove(old.credential);
                         reviewRequests(hosts, requests);
                     } catch (Exception error) { credentialError(); cancel(); }
                 });
-            }).setPositiveButton("Inspect selected PCs", (d, w) -> collect(requests, false))
-            .setNeutralButton("GPU recording…", (d, w) -> approveGpuRecording(hosts, requests))
+            }).setPositiveButton(monitoringIntent ? "Enable monitoring" : "Inspect selected PCs", (d, w) -> {
+                if (monitoringIntent) approveGpuRecording(hosts, requests); else collect(requests, false);
+            })
+            .setNeutralButton(monitoringIntent ? "Inspect only" : "Enable monitoring…", (d, w) -> {
+                if (monitoringIntent) collect(requests, false); else approveGpuRecording(hosts, requests);
+            })
             .setNegativeButton("Cancel", (d, w) -> cancel()).setOnCancelListener(d -> cancel()).show();
     }
     private void approveGpuRecording(List<Trusted> hosts, List<SshDiscovery.BatchRequest> requests) {
-        new AlertDialog.Builder(activity).setTitle("Enable GPU recording on selected PCs?")
-            .setMessage("Each selected PC needs existing Docker and NVIDIA container GPU support. GridLens will download a pinned Python image, create one labeled GPU recorder container and one named data volume, and keep recording every 15 seconds while the phone is closed. Records are capped at 7 days, 20,000 GPU samples and 16 MiB.\n\n"
-                + "The container has no network, published ports, host data-directory mounts or Docker socket. The existing NVIDIA runtime supplies GPU devices and driver libraries for utility readings. It has a read-only root filesystem and runs without privileged mode or Linux capabilities. Existing owned recording data is preserved. No host packages, services, networking, wallet access or workload changes are added.\n\n"
-                + "Rescan reads the saved PC telemetry over your trusted SSH connection. GPU conditions are PC-level; host/job association remains unknown until independently verified. These operations apply to all selected PCs; missing Docker/GPU support remains unavailable.")
-            .setPositiveButton("Enable and inspect", (d, w) -> collect(requests, true))
+        new AlertDialog.Builder(activity).setTitle("Enable monitoring on " + hosts.size() + " trusted PCs?")
+            .setMessage("GridLens will remember the selected SSH credentials encrypted on this phone and reconnect only to these verified PCs over your Wi-Fi or VPN while this fleet is open. No further network searches are needed.\n\n"
+                + "Rewards: verify each node inside its existing container, then use its existing node identity there for the fixed Nosana rewards GET. Private keys stay inside that container. Its authorization is sent only to Nosana; the signature has broader authority, while this helper permits only the rewards GET and exposes no claim or transfer action. Only the public address, amount, time and status return to your phone. Reads run at most every five minutes, honoring provider delays; denied authorization pauses that node.\n\n"
+                + "GPU: create labeled GridLens Docker recorders and named volumes using a pinned image. They keep bounded history while the phone is closed. Read recordings every 30 seconds while viewing the fleet. GridLens may repair its own recorder connection after a node restarts. No host installation, host networking changes or node workload restarts. Docker/NVIDIA support must already exist.\n\n"
+                + "Changed identities or credentials pause the affected PC. Missing data remains unknown; public Fleet data continues independently.")
+            .setPositiveButton("Enable monitoring", (d, w) -> collect(requests, true))
             .setNegativeButton("Back", (d, w) -> reviewRequests(hosts, requests))
             .setOnCancelListener(d -> cancel()).show();
     }
@@ -252,11 +278,24 @@ final class DiscoveryController {
     private void addRequest(List<Trusted> hosts, int index, List<SshDiscovery.BatchRequest> requests, JSONObject shared, JSONObject value) {
         try {
             Trusted host = hosts.get(index); SshDiscovery.Credential credential = decodeCredential(value); openCredentials.add(credential);
-            requests.add(new SshDiscovery.BatchRequest(host.candidate, host.identity, credential, null));
+            if (value.has("id")) credentialIds.put(host.candidate.endpointKey(), value.getString("id"));
+            byte[] sudo = null;
+            if (monitoringIntent && fleetId != null) {
+                JSONArray targets = store.monitoringTargets();
+                for (int i = 0; i < targets.length(); i++) {
+                    JSONObject target = targets.getJSONObject(i);
+                    if (fleetId.equals(target.getString("fleetId")) && host.identity.keyBase64.equals(target.getString("keyBase64"))
+                            && host.candidate.address.equals(target.getString("address")) && host.candidate.port == target.getInt("port") && target.optBoolean("sudoApproved")) {
+                        sudo = target.optString("sudoPassword", "").getBytes(StandardCharsets.UTF_8);
+                        monitoringSudo.put(host.candidate.endpointKey(), sudo);
+                    }
+                }
+            }
+            requests.add(new SshDiscovery.BatchRequest(host.candidate, host.identity, credential, sudo));
             credentials(hosts, index + 1, requests, shared);
         } catch (Exception error) { credentialError(); cancel(); }
     }
-    private static SshDiscovery.Credential decodeCredential(JSONObject value) throws Exception {
+    static SshDiscovery.Credential decodeCredential(JSONObject value) throws Exception {
         String encodedKey = value.optString("key", "");
         byte[] password = value.optString("password", "").getBytes(StandardCharsets.UTF_8);
         byte[] privateKey = encodedKey.isEmpty() ? null : android.util.Base64.decode(encodedKey, android.util.Base64.NO_WRAP);
@@ -341,6 +380,7 @@ final class DiscoveryController {
         }); return true;
     }
     private void collect(List<SshDiscovery.BatchRequest> selectedRequests, boolean enableGpuRecording) {
+        enableMonitoringForBatch = enableGpuRecording;
         String collectorSource;
         try (InputStream input = activity.getAssets().open("gpu-collector/collector.py")) {
             collectorSource = new String(NodeRuntime.readBounded(input, GpuCollector.MAX_SOURCE_BYTES), StandardCharsets.UTF_8);
@@ -350,9 +390,10 @@ final class DiscoveryController {
         }
         List<SshDiscovery.BatchRequest> requests = new ArrayList<>();
         for (SshDiscovery.BatchRequest selected : selectedRequests) requests.add(new SshDiscovery.BatchRequest(selected.candidate,
-                selected.identity, selected.credential, selected.sudoPassword, collectorSource, enableGpuRecording));
+                selected.identity, selected.credential, selected.sudoPassword, collectorSource, false));
+        lastRequests = requests;
         working = true; int run = generation; busy("Identifying Nosana hosts", enableGpuRecording
-                ? "Reading selected PCs and enabling the approved GPU recorder. Downloading its image may take a few minutes…"
+                ? "Verifying exact node containers on the selected PCs before enabling approved monitoring…"
                 : "Reading bounded container metadata and existing GPU recordings on selected, trusted computers…");
         java.util.Map<String, SshDiscovery.Result> results = java.util.Collections.synchronizedMap(new java.util.LinkedHashMap<>());
         List<SshDiscovery.BatchRequest> needsSudo = java.util.Collections.synchronizedList(new ArrayList<>());
@@ -380,13 +421,14 @@ final class DiscoveryController {
     private void sudoNext(List<SshDiscovery.BatchRequest> requests, int index, java.util.Map<String, SshDiscovery.Result> results, int expected) {
         if (index >= requests.size()) { saveResults(results, expected); return; }
         SshDiscovery.BatchRequest request = requests.get(index); LinearLayout form = form();
-        label(form, display(request.candidate) + (request.enableGpuRecording
-                ? " needs elevated Docker access. Approve the fixed inventory commands and the GPU recorder operations you selected: pinned image download, labeled container and named volume creation, or starting its existing owned container. Existing GPU records are preserved. No interactive shell, wallet files, host services or workload changes are allowed."
+        label(form, display(request.candidate) + (enableMonitoringForBatch
+                ? " needs elevated container access. Approve the fixed inventory, in-container rewards GET and owned GPU recorder operations already selected. This password is remembered encrypted only for this approved PC, so monitoring can reuse it without repeated prompts. No interactive shell or workload changes are allowed."
                 : " needs elevated container access. Approve only the fixed, read-only Docker/Podman inventory and existing owned GPU-recording reads. This does not grant an interactive shell, install software, read wallet files, restart workloads or change configuration."));
         EditText password = field(form, "This PC's sudo password (if required)", "", true);
         AlertDialog dialog = new AlertDialog.Builder(activity).setTitle("Approve inventory with sudo?").setView(scroll(form))
             .setPositiveButton("Approve this PC", (d, w) -> {
                 byte[] secret = password.getText().toString().getBytes(StandardCharsets.UTF_8); password.setText("");
+                if (enableMonitoringForBatch) monitoringSudo.put(request.candidate.endpointKey(), secret.clone());
                 int run = generation; working = true; busy("Reading approved inventory", display(request.candidate));
                 DiscoveryNetwork selectedNetwork = network;
                 io.execute(() -> {
@@ -443,7 +485,22 @@ final class DiscoveryController {
             try {
                 JSONObject response = api(operation);
                 String id = response.getString("fleetId");
-                ui(run, () -> { dismissProgress(); working = false; navigation.open("fleet:" + id); message("Fleet saved", summary + " Reopening this fleet refreshes public data without SSH or another network search."); cancel(); });
+                List<JSONObject> setup;
+                String setupFailure = null;
+                try { setup = monitoring == null ? new ArrayList<>() : monitoring.register(id, profile.getString("id"), lastRequests,
+                        results, credentialIds, monitoringSudo, enableMonitoringForBatch); }
+                catch (Exception error) { setup = new ArrayList<>(); setupFailure = "The public fleet was saved, but monitoring setup could not be saved. Each PC supports at most 64 exact node bindings and needs remembered SSH credentials. Open Fleets → Enable / repair monitoring to retry."; }
+                List<JSONObject> setupTargets = setup;
+                String setupIssue = setupFailure;
+                boolean enabled = enableMonitoringForBatch;
+                ui(run, () -> {
+                    dismissProgress(); working = false; cancel(); navigation.open("fleet:" + id);
+                    if (monitoring != null && enabled) monitoring.startSetup(setupTargets);
+                    message("Fleet saved", summary + (setupIssue != null ? " " + setupIssue : enabled ? setupTargets.isEmpty()
+                            ? " No exact node-container bindings could be verified for monitoring. Existing public Fleet data remains available."
+                            : " Monitoring setup is now verifying rewards and GPU access. Keep this fleet open; unavailable targets show their own status."
+                            : " Public Fleet reads need no SSH. Choose Enable monitoring to connect rewards and GPU recordings using these saved PCs."));
+                });
             } catch (Exception error) { ui(run, () -> { dismissProgress(); working = false; message("Fleet could not be saved", "The save could not be confirmed. Check Saved fleets before retrying; the request may have completed."); cancel(); }); }
         });
     }
@@ -462,15 +519,107 @@ final class DiscoveryController {
     private void fleetActions(JSONObject fleet) {
         String id = fleet.optString("id");
         new AlertDialog.Builder(activity).setTitle(fleet.optString("name"))
-            .setItems(new String[]{"Open fleet", "Rescan and merge", "Rename", "Remove selected hosts", "Delete fleet"}, (d, which) -> {
+            .setItems(new String[]{"Open fleet", "Enable / repair monitoring", "Monitoring status", "Rescan and merge", "Rename", "Remove selected hosts", "Delete fleet"}, (d, which) -> {
                 if (which == 0) mutate("select", null, "scenario", "fleet:" + id, true);
-                else if (which == 1) { fleetId = id; prepare(); }
-                else if (which == 2) { LinearLayout form = form(); EditText name = field(form, "Fleet name", fleet.optString("name"), false);
+                else if (which == 1) enableMonitoring(id);
+                else if (which == 2) monitoringStatus(id);
+                else if (which == 3) { fleetId = id; prepare(); }
+                else if (which == 4) { LinearLayout form = form(); EditText name = field(form, "Fleet name", fleet.optString("name"), false);
                     new AlertDialog.Builder(activity).setTitle("Rename fleet").setView(form).setPositiveButton("Save", (dd, w) -> mutate("rename", id, "name", name.getText().toString(), false)).setNegativeButton("Cancel", null).show();
-                } else if (which == 3) removeHosts(fleet);
+                } else if (which == 5) removeHosts(fleet);
                 else new AlertDialog.Builder(activity).setTitle("Delete saved fleet?").setMessage("This removes only this public-address fleet. Credentials and network profiles remain.")
                     .setPositiveButton("Delete", (dd, w) -> mutate("delete", id, null, null, true)).setNegativeButton("Cancel", null).show();
             }).setNegativeButton("Close", null).show();
+    }
+    void enableMonitoring(String id) {
+        if (working) { if (progress != null) progress.show(); return; }
+        if (store == null || monitoring == null || id == null || !id.matches("[a-f0-9-]{36}")) { storageError(); return; }
+        int run = generation; working = true; busy("Opening monitoring setup", "Checking the saved fleet…");
+        io.execute(() -> {
+            try {
+                JSONArray fleets = api(null).getJSONArray("fleets"); boolean known = false;
+                for (int i = 0; i < fleets.length(); i++) if (id.equals(fleets.getJSONObject(i).getString("id"))) known = true;
+                if (!known) throw new IllegalArgumentException("Unknown fleet");
+                ui(run, () -> { dismissProgress(); working = false; beginMonitoring(id); });
+            } catch (Exception error) { ui(run, () -> { dismissProgress(); working = false; storageError(); }); }
+        });
+    }
+    private void beginMonitoring(String id) {
+        cancel(); fleetId = id; monitoringIntent = true; monitoring.pause();
+        try {
+            network = DiscoveryNetwork.capture(activity);
+            JSONArray known = store.knownEndpoints();
+            java.util.LinkedHashMap<String, List<JSONObject>> byProfile = new java.util.LinkedHashMap<>();
+            JSONArray saved = store.monitoringTargets();
+            Set<String> selectedEndpoints = new java.util.HashSet<>();
+            Set<String> selectedKeys = new java.util.HashSet<>();
+            for (int i = 0; i < saved.length(); i++) {
+                JSONObject target = saved.getJSONObject(i);
+                if (id.equals(target.getString("fleetId"))) {
+                    selectedEndpoints.add(target.getString("profileId") + "|" + target.getString("address") + "|" + target.getInt("port"));
+                    selectedKeys.add(target.getString("keyBase64"));
+                }
+            }
+            for (int i = 0; i < known.length(); i++) {
+                JSONObject endpoint = known.getJSONObject(i);
+                String key = endpoint.getString("profileId");
+                if (!selectedEndpoints.isEmpty() && !selectedEndpoints.contains(key + "|" + endpoint.getString("address") + "|" + endpoint.getInt("port"))
+                        && !selectedKeys.contains(endpoint.getString("keyBase64"))) continue;
+                byProfile.computeIfAbsent(key, ignored -> new ArrayList<>()).add(endpoint);
+            }
+            if (byProfile.isEmpty()) {
+                message("Discover this fleet once", "No trusted SSH endpoints are saved for this fleet. Use Rescan and select your PCs once; Enable monitoring will then reuse them without future network searches."); cancel(); return;
+            }
+            List<List<JSONObject>> groups = new ArrayList<>(byProfile.values());
+            if (groups.size() == 1) selectKnownMonitoring(groups.get(0));
+            else {
+                String[] labels = new String[groups.size()];
+                for (int i = 0; i < groups.size(); i++) labels[i] = groups.get(i).get(0).optString("profileName") + " (" + groups.get(i).size() + " known PCs)";
+                new AlertDialog.Builder(activity).setTitle("Saved SSH connections").setItems(labels, (dialog, which) -> selectKnownMonitoring(groups.get(which)))
+                        .setNegativeButton("Cancel", (dialog, which) -> cancel()).setOnCancelListener(dialog -> cancel()).show();
+            }
+        } catch (Exception error) { message("Monitoring setup unavailable", "Connect to the Wi-Fi or VPN that reaches your saved PCs. If saved credentials are unavailable, use Fleets to enter them again. Public Fleet data remains available."); cancel(); }
+    }
+    private void selectKnownMonitoring(List<JSONObject> endpoints) {
+        try {
+            profile = new JSONObject().put("id", endpoints.get(0).getString("profileId")).put("name", endpoints.get(0).getString("profileName"));
+            String[] labels = new String[endpoints.size()]; boolean[] checked = new boolean[endpoints.size()];
+            for (int i = 0; i < endpoints.size(); i++) { labels[i] = endpoints.get(i).getString("address") + ":" + endpoints.get(i).getInt("port"); checked[i] = true; }
+            new AlertDialog.Builder(activity).setTitle("Enable monitoring on saved PCs")
+                    .setMultiChoiceItems(labels, checked, (dialog, index, selected) -> checked[index] = selected)
+                    .setPositiveButton("Continue", (dialog, which) -> {
+                        try {
+                            List<Trusted> trusted = new ArrayList<>();
+                            for (int i = 0; i < endpoints.size(); i++) if (checked[i]) {
+                                JSONObject endpoint = endpoints.get(i);
+                                trusted.add(new Trusted(new DiscoveryPolicy.Candidate(endpoint.getString("address"), endpoint.getInt("port"), ""),
+                                        new SshDiscovery.Identity(endpoint.getString("keyBase64"), endpoint.getString("algorithm"))));
+                            }
+                            if (trusted.isEmpty()) { cancel(); return; }
+                            credentials(trusted, 0, new ArrayList<>(), null);
+                        } catch (Exception error) { credentialError(); cancel(); }
+                    }).setNegativeButton("Cancel", (dialog, which) -> cancel()).setOnCancelListener(dialog -> cancel()).show();
+        } catch (Exception error) { storageError(); cancel(); }
+    }
+    private void monitoringStatus(String id) {
+        try {
+            JSONArray targets = store.monitoringTargets(); StringBuilder text = new StringBuilder();
+            if (monitoring.storageNeedsRecovery()) text.append("Monitoring stopped because an authorization restriction could not be saved. Repair storage, then explicitly Enable / repair monitoring. No further SSH requests are started.\n\n");
+            for (int i = 0; i < targets.length(); i++) {
+                JSONObject target = targets.getJSONObject(i);
+                if (!id.equals(target.getString("fleetId"))) continue;
+                text.append(target.getString("address")).append(":").append(target.getInt("port")).append(" — ")
+                        .append(target.optString("status", "authorization-required").replace('-', ' '))
+                        .append(target.optBoolean("rewardsAuthorized") ? "" : "; rewards need verification").append("\n");
+            }
+            if (text.length() == 0) text.append("Monitoring is not enabled for this fleet. Use your saved SSH connections to set it up once.");
+            new AlertDialog.Builder(activity).setTitle("Monitoring status").setMessage(text.toString())
+                    .setPositiveButton("Enable / repair", (dialog, which) -> enableMonitoring(id))
+                    .setNeutralButton("Pause monitoring", (dialog, which) -> {
+                        try { monitoring.pauseFleet(id); message("Monitoring paused", "Phone SSH reads are paused for this fleet. Existing owned GPU recorders retain their data and continue recording on the PCs. Public Fleet reads continue."); }
+                        catch (Exception error) { storageError(); }
+                    }).setNegativeButton("Close", null).show();
+        } catch (Exception error) { credentialError(); }
     }
     private void removeHosts(JSONObject fleet) {
         JSONArray hosts = fleet.optJSONArray("hosts"); String[] labels = new String[hosts.length()]; boolean[] selected = new boolean[hosts.length()];
@@ -481,11 +630,19 @@ final class DiscoveryController {
     }
     void selectScenario(String scenario) { mutate("select", null, "scenario", scenario, true); }
     private void mutate(String op, String id, String field, Object value, boolean open) {
+        boolean changesMonitoringScope = "delete".equals(op) || "remove-hosts".equals(op);
+        if (changesMonitoringScope && monitoring != null) monitoring.pause();
         io.execute(() -> {
             try {
                 JSONObject request = new JSONObject().put("op", op); if (id != null) request.put("id", id); if (field != null) request.put(field, value);
-                JSONObject response = api(request); activity.runOnUiThread(() -> { if (!destroyed) { if (open) navigation.open(response.optString("selectedScenario", "network-discovery")); else fleets(); } });
-            } catch (Exception error) { activity.runOnUiThread(this::storageError); }
+                if ("delete".equals(op) && id != null && store != null) store.removeMonitoringFleet(id);
+                JSONObject response = api(request); activity.runOnUiThread(() -> { if (!destroyed) {
+                    if (open) navigation.open(response.optString("selectedScenario", "network-discovery")); else fleets();
+                    if (changesMonitoringScope && foreground && monitoring != null) monitoring.resume();
+                } });
+            } catch (Exception error) { activity.runOnUiThread(() -> {
+                storageError(); if (changesMonitoringScope && foreground && monitoring != null && !destroyed) monitoring.resume();
+            }); }
         });
     }
     void restoreSelection(String fallback) {
@@ -513,14 +670,21 @@ final class DiscoveryController {
     private void forget() {
         new AlertDialog.Builder(activity).setTitle("Forget all SSH credentials?")
             .setMessage("Delete encrypted SSH passwords, private keys, passphrases and per-PC credential overrides. Your saved fleets, network profiles and trusted SSH identities remain.")
-            .setPositiveButton("Forget credentials", (d, w) -> { try { store.forgetCredentials(); Toast.makeText(activity, "Credentials forgotten. Saved fleets remain.", Toast.LENGTH_LONG).show(); } catch (Exception error) { credentialError(); } })
+            .setPositiveButton("Forget credentials", (d, w) -> { try { if (monitoring != null) monitoring.pause(); store.forgetCredentials(); Toast.makeText(activity, "Credentials and monitoring permissions forgotten. Saved fleets remain.", Toast.LENGTH_LONG).show(); } catch (Exception error) { credentialError(); } })
             .setNegativeButton("Cancel", null).show();
     }
-    void stopped() { if (working) cancel(); if (store != null) store.lock(); }
-    void destroy() { destroyed = true; cancel(); if (keyForm != null) keyForm.clear(); io.shutdownNow(); if (store != null) store.lock(); }
+    void selectedScenario(String scenario) { if (monitoring != null) monitoring.selectedScenario(scenario); }
+    void resumed() { foreground = true; if (monitoring != null && !working && network == null) monitoring.resume(); }
+    void paused() { foreground = false; if (monitoring != null) monitoring.pause(); }
+    void stopped() { paused(); if (working) cancel(); if (store != null) store.lock(); }
+    void destroy() { destroyed = true; if (monitoring != null) monitoring.destroy(); cancel(); if (keyForm != null) keyForm.clear(); io.shutdownNow(); if (store != null) store.lock(); }
     private void cancel() {
         generation++; working = false; if (network != null) { network.cancel(); try { network.close(); } catch (Exception ignored) {} network = null; }
         dismissProgress(); for (SshDiscovery.Credential credential : openCredentials) credential.close(); openCredentials.clear(); if (store != null) store.lock();
+        credentialIds.clear(); lastRequests = new ArrayList<>();
+        for (byte[] password : monitoringSudo.values()) Arrays.fill(password, (byte) 0);
+        monitoringSudo.clear();
+        if (!destroyed && foreground && monitoring != null) monitoring.resume();
     }
     private void ui(int run, Runnable action) { activity.runOnUiThread(() -> { if (!destroyed && run == generation) action.run(); }); }
     private void busy(String title, String text) {

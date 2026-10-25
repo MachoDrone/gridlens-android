@@ -130,7 +130,7 @@ test("Android defaults to idle discovery and reopens saved fleets without discov
     assert.equal(await page.locator('td[data-col="rewards"]').innerText(), "—", "recorder access does not unlock rewards");
 
     assert.equal(await page.locator("#mobile-network-search").getAttribute("href"), `/mobile/discovery?fleet=${fleetId}`);
-    assert.match(await page.locator("#mobile-fleet-status").innerText(), /discovery dates do not establish fresh measurements/);
+    assert.match(await page.locator("#mobile-fleet-status").innerText(), /No rescan is needed for routine refresh/);
     await page.locator("#preview-tools > summary").click();
     await page.locator("#refresh-view").click();
     await page.reload();

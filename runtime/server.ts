@@ -5,6 +5,7 @@ import { resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startPreviewServer } from "../vendor/gridlens/scripts/preview-server.ts";
 import { SavedFleets, atomicPrivateJson, parseUniqueJson } from "./saved-fleets.ts";
+import { PcObservations } from "./pc-observations.ts";
 import { isMetadataAddress } from "../vendor/gridlens/src/fleet/host-metadata.ts";
 
 export const MAX_ROSTER_BYTES = 512 * 1024;
@@ -57,10 +58,10 @@ function reply(response: ServerResponse, code: number, value: object): void {
   response.end(body);
 }
 
-async function readBody(request: IncomingMessage): Promise<unknown> {
+async function readBody(request: IncomingMessage, maximum = MAX_ROSTER_BYTES): Promise<unknown> {
   const size = request.headers["content-length"];
-  if (size !== undefined && (!/^\d+$/.test(size) || Number(size) > MAX_ROSTER_BYTES)) {
-    throw new Error("The import is larger than 512 KiB.");
+  if (size !== undefined && (!/^\d+$/.test(size) || Number(size) > maximum)) {
+    throw new Error("The request exceeds its size limit.");
   }
   if (request.headers["content-type"]?.split(";", 1)[0]?.trim() !== "application/json") {
     throw new Error("Choose a JSON array of public host addresses.");
@@ -72,7 +73,7 @@ async function readBody(request: IncomingMessage): Promise<unknown> {
     for await (const part of request) {
       const bytes = Buffer.isBuffer(part) ? part : Buffer.from(part);
       length += bytes.length;
-      if (length > MAX_ROSTER_BYTES) throw new Error("The import is larger than 512 KiB.");
+      if (length > maximum) throw new Error("The request exceeds its size limit.");
       parts.push(bytes);
     }
     try { return parseUniqueJson(Buffer.concat(parts).toString("utf8")); }
@@ -87,6 +88,7 @@ export async function startAndroidRuntime({ dataDirectory, directory = fileURLTo
   await mkdir(privateDirectory, { recursive: true, mode: 0o700 });
   const token = randomBytes(32).toString("hex");
   const savedFleets = await SavedFleets.load(privateDirectory, providers.now);
+  const observations = await PcObservations.load(privateDirectory, providers.now);
   const active = new Map<ServerResponse, string>();
   let updateSavedPins: (() => void) | undefined;
   const importedThisProcess = new Set<string>();
@@ -112,6 +114,28 @@ export async function startAndroidRuntime({ dataDirectory, directory = fileURLTo
       return false;
     }
     const url = request.url ?? "";
+    if (url === "/mobile/observations" && request.method === "POST" && native) {
+      void readBody(request, 2 * 1024 * 1024).then(async (value) => {
+        if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== "fleetId,schema,updates"
+          || !("schema" in value) || value.schema !== 1 || !("fleetId" in value) || typeof value.fleetId !== "string"
+          || !("updates" in value) || !Array.isArray(value.updates)) throw new Error("Invalid PC observation batch.");
+        const fleet = savedFleets.get(value.fleetId);
+        if (!fleet) throw new Error("Choose a known saved fleet.");
+        await observations.update(fleet.id, fleet.hosts.map(host => host.address), value.updates);
+        reply(response, 200, { ok: true });
+      }).catch(() => { reply(response, 400, { error: "PC observations could not be accepted. Cached values keep their original source times." }); request.resume(); });
+      return false;
+    }
+    if ((url === "/mobile/observations" || url.startsWith("/mobile/observations?")) && request.method === "GET") {
+      const query = new URL(url, origin).searchParams;
+      const fleet = savedFleets.get(query.get("fleet") ?? "");
+      const address = query.get("address");
+      if ([...query.keys()].some(key => key !== "fleet" && key !== "address") || query.getAll("fleet").length !== 1 || query.getAll("address").length > 1
+        || !fleet || address !== null && !fleet.hosts.some(host => host.address === address)) reply(response, 404, { error: "Choose a known saved fleet and host." });
+      else reply(response, 200, { schema: 1, fleetId: fleet.id, error: observations.error,
+        ...(address !== null ? { host: observations.get(fleet.id, address) ?? null } : { hosts: observations.list(fleet.id, fleet.hosts.map(host => host.address)) }) });
+      return false;
+    }
     if (url === "/mobile/fleets" && request.method === "GET") {
       reply(response, 200, savedFleets.list());
       return false;
@@ -121,6 +145,7 @@ export async function startAndroidRuntime({ dataDirectory, directory = fileURLTo
         if (result.changedId) {
           for (const [pending, selected] of active) if (selected === `fleet:${result.changedId}`) pending.destroy();
           updateSavedPins?.();
+          void observations.forget(result.changedId, savedFleets.get(result.changedId)?.hosts.map(host => host.address) ?? []).catch(() => {});
         }
         reply(response, 200, { ok: true, ...result.listing, ...(result.fleetId ? { fleetId: result.fleetId } : {}) });
       }, error => {

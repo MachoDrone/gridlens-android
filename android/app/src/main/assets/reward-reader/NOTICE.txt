@@ -1,0 +1,20 @@
+GridLens Android bounded rewards reader
+Copyright (c) 2026 MachoDrone. Licensed under the repository's MIT License.
+
+The process safeguards, mutable-byte signing and fixed HTTPS request design are
+narrowly adapted from the reviewed GridLens in-container reader. The Android
+version reads only claimableUptimeNosRewards, normalizes its exact JSON number
+to six-decimal NOS text, and returns only public identity/time/status/amount and
+Retry-After. It does not copy the legacy application's collector, installer,
+accounts, runtime state, credentials or private source tree.
+
+The previously verified protocol signs the expected node public-address text.
+The resulting authorization is not read-scoped. Native per-PC/container approval
+is required before use. The helper confines it to one fixed rewards GET inside
+the existing workload. It never claims rewards or transfers funds. Unsupported
+core controls, non-default wallet layouts, unsafe paths, identity mismatch and
+malformed responses fail closed. Buffer clearing and process exit reduce key
+exposure; they do not guarantee erasure or protect against host/container root.
+
+No existing operator key was read for Android development or isolated tests.
+Physical verification belongs to the app's explicitly approved monitoring flow.

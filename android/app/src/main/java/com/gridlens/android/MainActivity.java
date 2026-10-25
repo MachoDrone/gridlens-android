@@ -149,12 +149,18 @@ public final class MainActivity extends Activity {
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG);
         webView.setWebViewClient(new WebViewClient() {
             @Override public void onPageStarted(WebView view, String url, android.graphics.Bitmap icon) { pageFailed = false; }
+            @Override public void doUpdateVisitedHistory(WebView view, String url, boolean reload) {
+                if (discovery != null) discovery.selectedScenario(local(Uri.parse(url)) ? Uri.parse(url).getQueryParameter("scenario") : null);
+            }
             @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 if (local(request.getUrl())) {
                     Uri destination = request.getUrl();
-                    if ("/mobile/discovery".equals(destination.getPath()) || "/mobile/select".equals(destination.getPath())) {
+                    if ("/mobile/discovery".equals(destination.getPath()) || "/mobile/select".equals(destination.getPath()) || "/mobile/monitoring".equals(destination.getPath())) {
                         if (request.isForMainFrame() && request.hasGesture() && discovery != null) {
-                            if ("/mobile/discovery".equals(destination.getPath())) {
+                            if ("/mobile/monitoring".equals(destination.getPath())) {
+                                String fleet = destination.getQueryParameter("fleet");
+                                if (fleet != null && fleet.matches("[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}")) discovery.enableMonitoring(fleet);
+                            } else if ("/mobile/discovery".equals(destination.getPath())) {
                                 String fleet = destination.getQueryParameter("fleet");
                                 if (fleet == null || fleet.matches("[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}")) discovery.show(fleet);
                             } else {
@@ -176,6 +182,7 @@ public final class MainActivity extends Activity {
             }
             @Override public void onPageFinished(WebView view, String url) {
                 if (local(Uri.parse(url)) && !pageFailed) {
+                    if (discovery != null) discovery.selectedScenario(Uri.parse(url).getQueryParameter("scenario"));
                     status.setVisibility(View.GONE);
                     recovery.setVisibility(View.GONE);
                     if (clearHistoryAfterLoad) { webView.clearHistory(); clearHistoryAfterLoad = false; }
@@ -230,6 +237,7 @@ public final class MainActivity extends Activity {
                     if (!success) { showStatus("Could not open the private on-phone session."); return; }
                     try {
                         discovery = new DiscoveryController(this, origin, token, this::openScenario);
+                        if (!paused) discovery.resumed();
                     } catch (Exception unavailable) {
                         showStatus("Native discovery storage is unavailable. Saved public fleets can still be selected in Scenario.");
                     }
@@ -334,6 +342,7 @@ public final class MainActivity extends Activity {
 
     private void openScenario(String scenario) {
         if (destroyed || origin == null) return;
+        if (discovery != null) discovery.selectedScenario(scenario);
         clearHistoryAfterLoad = true;
         webView.loadUrl(origin + "/?scenario=" + Uri.encode(scenario));
     }
@@ -345,6 +354,7 @@ public final class MainActivity extends Activity {
     @Override protected void onPause() {
         paused = true;
         if (updates != null) updates.onPause();
+        if (discovery != null) discovery.paused();
         String currentUrl = webView.getUrl();
         if (currentUrl != null && local(Uri.parse(currentUrl))) {
             String scenario = Uri.parse(currentUrl).getQueryParameter("scenario");
@@ -363,6 +373,7 @@ public final class MainActivity extends Activity {
             webView.evaluateJavascript("window.dispatchEvent(new PageTransitionEvent('pageshow'));", null);
         }
         if (updates != null) updates.onResume();
+        if (discovery != null) discovery.resumed();
     }
     @Override protected void onSaveInstanceState(Bundle state) {
         super.onSaveInstanceState(state);

@@ -17,14 +17,30 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
-/** Runs the real embedded Android library against only the bundled synthetic Fleet scenario. */
+/** Full synthetic app smoke by default; nativeOnly=true runs only isolated native vault checks. */
 public final class SmokeInstrumentation extends Instrumentation {
-    @Override public void onCreate(Bundle arguments) { super.onCreate(arguments); start(); }
+    private boolean nativeOnly;
+    @Override public void onCreate(Bundle arguments) {
+        super.onCreate(arguments);
+        nativeOnly = arguments != null && "true".equals(arguments.getString("nativeOnly"));
+        start();
+    }
 
     @Override public void onStart() {
         Bundle result = new Bundle();
         MainActivity activity = null;
         try {
+            if (nativeOnly) {
+                require(DiscoveryNetwork.startedSearchesForTesting() == 0 && DiscoveryNetwork.startedConnectionsForTesting() == 0,
+                    "Native-only verification requires zero prior discovery/SSH activity");
+                DiscoveryVerification.verify(getTargetContext());
+                MonitoringVerification.verify(getTargetContext());
+                require(DiscoveryNetwork.startedSearchesForTesting() == 0 && DiscoveryNetwork.startedConnectionsForTesting() == 0,
+                    "Native-only vault checks unexpectedly started network discovery/SSH");
+                result.putString("stream", "PASS: native Keystore and monitoring permissions only (DiscoveryVerification and MonitoringVerification); zero native discovery/SSH connections. No Activity or WebView launched. UI, embedded runtime, APK updates and physical PCs were not tested.\n");
+                finish(Activity.RESULT_OK, result);
+                return;
+            }
             require(!new java.io.File(getTargetContext().getFilesDir(), "private-data/hosts.json").exists()
                 && !new java.io.File(getTargetContext().getFilesDir(), "private-data/real200.json").exists(),
                 "Smoke test requires cleared emulator application data; existing rosters are never overwritten");
@@ -36,7 +52,7 @@ public final class SmokeInstrumentation extends Instrumentation {
             long deadline = android.os.SystemClock.elapsedRealtime() + 60000;
             while (android.os.SystemClock.elapsedRealtime() < deadline) {
                 String snapshot = javascript(current,
-                    "JSON.stringify({rows:document.querySelectorAll('tbody tr').length,url:location.href,text:document.body.innerText})");
+                    "JSON.stringify({rows:document.querySelectorAll('tbody tr').length,url:location.href,text:document.body?.innerText ?? ''})");
                 if (snapshot != null && !"null".equals(snapshot)) {
                     Object decoded = new JSONTokener(snapshot).nextValue();
                     if (decoded instanceof String) {
@@ -70,6 +86,7 @@ public final class SmokeInstrumentation extends Instrumentation {
             require(resumedPage.getInt("rows") >= 8, "Lifecycle resume lost Fleet");
             verifyUpdaterRejections(current);
             DiscoveryVerification.verify(getTargetContext());
+            MonitoringVerification.verify(getTargetContext());
             require(DiscoveryNetwork.startedSearchesForTesting() == 0 && DiscoveryNetwork.startedConnectionsForTesting() == 0,
                 "Launch or ordinary Fleet operations started network discovery/SSH");
             runOnMainSync(() -> current.webViewForTesting().loadUrl(origin + "/?scenario=network-discovery"));
@@ -88,7 +105,7 @@ public final class SmokeInstrumentation extends Instrumentation {
             result.putString("stream", "PASS: embedded Node/WebView boot, eight synthetic hosts, loopback authentication, roster validation/persistence, pause/resume, actual Android APK rejection and narrow update provider. No live provider or GitHub requests.\n");
             finish(Activity.RESULT_OK, result);
         } catch (Exception | AssertionError error) {
-            result.putString("stream", "FAIL: " + error.getClass().getSimpleName() + ": " + error.getMessage() + "\n");
+            result.putString("stream", (nativeOnly ? "FAIL (native-only): " : "FAIL: ") + error.getClass().getSimpleName() + ": " + error.getMessage() + "\n");
             finish(Activity.RESULT_CANCELED, result);
         }
     }

@@ -22,11 +22,11 @@ test("the Fleet snapshot and explicit Android adaptations match provenance", asy
     const digest = createHash("sha256").update(await readFile(resolve(directory, entry.path))).digest("hex");
     assert.equal(digest, entry.sha256, `${entry.path}: final snapshot hash`);
     if (entry.sha256 !== entry.sourceSha256) adapted.push(entry.path);
-    if (entry.path.startsWith("src/") && !["src/preview/main.ts", "src/preview/fleet-config.ts", "src/preview/mobile-scenarios.ts", "src/preview/mobile-telemetry.ts", "src/server/browser-assets.ts"].includes(entry.path)) {
+    if (entry.path.startsWith("src/") && !["scripts/online-retention.ts", "scripts/preview-server.ts", "src/fleet/pc-observations.ts", "src/fleet/sort.ts", "src/preview/fleet-config.ts", "src/preview/job-history.ts", "src/preview/main.ts", "src/preview/mobile-monitoring.ts", "src/preview/mobile-scenarios.ts", "src/preview/mobile-telemetry.ts", "src/server/browser-assets.ts", "test/preview-server.test.ts"].includes(entry.path)) {
       assert.equal(entry.sha256, entry.sourceSha256, `${entry.path}: other browser/domain source remains identical`);
     }
-    if (entry.sourceSha256 === null) assert(["src/preview/mobile-scenarios.ts", "src/preview/mobile-telemetry.ts"].includes(entry.path), "Only documented Android modules are new");
+    if (entry.sourceSha256 === null) assert(["src/fleet/pc-observations.ts", "src/preview/mobile-monitoring.ts", "src/preview/mobile-scenarios.ts", "src/preview/mobile-telemetry.ts"].includes(entry.path), "Only documented Android modules are new");
   }
-  assert.deepEqual(adapted.sort(), ["scripts/online-retention.ts", "scripts/preview-server.ts", "src/preview/fleet-config.ts", "src/preview/main.ts", "src/preview/mobile-scenarios.ts", "src/preview/mobile-telemetry.ts", "src/server/browser-assets.ts", "test/preview-server.test.ts"]);
+  assert.deepEqual(adapted.sort(), ["scripts/online-retention.ts", "scripts/preview-server.ts", "src/fleet/pc-observations.ts", "src/fleet/sort.ts", "src/preview/fleet-config.ts", "src/preview/job-history.ts", "src/preview/main.ts", "src/preview/mobile-monitoring.ts", "src/preview/mobile-scenarios.ts", "src/preview/mobile-telemetry.ts", "src/server/browser-assets.ts", "test/preview-server.test.ts"]);
   assert.deepEqual([...provenance.androidAdaptations.paths].sort(), adapted);
 });

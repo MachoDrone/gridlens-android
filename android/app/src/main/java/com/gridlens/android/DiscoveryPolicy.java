@@ -158,6 +158,29 @@ public final class DiscoveryPolicy {
         }
         return (sudo ? "/usr/bin/sudo -S -p '' -- " : "") + command + " exec " + nodeId + " /usr/bin/env -i /usr/local/bin/node -e '" + API_READER + "'";
     }
+
+    static String runtimeCommand(NodeBinding binding, boolean sudo) {
+        String command = "/usr/bin/" + binding.runtime;
+        if (binding.wrapperId != null) command = "/usr/bin/docker exec " + binding.wrapperId + " /usr/bin/podman";
+        return (sudo ? "/usr/bin/sudo -S -p '' -- " : "") + command;
+    }
+    static String bindingInspectionCommand(NodeBinding binding, boolean sudo) {
+        return runtimeCommand(binding, sudo) + " inspect --format '{{.Id}}\t{{.State.Running}}\t{{.Config.Image}}\t{{.HostConfig.NetworkMode}}' " + binding.nodeContainerId;
+    }
+    static String wrapperInspectionCommand(NodeBinding binding, boolean sudo) {
+        if (binding.wrapperId == null) throw new IllegalArgumentException("Wrapper required");
+        return (sudo ? "/usr/bin/sudo -S -p '' -- " : "") + "/usr/bin/docker inspect --format '{{.Id}}\t{{.State.Running}}\t{{.Config.Image}}\t{{.HostConfig.NetworkMode}}' " + binding.wrapperId;
+    }
+    static String bindingAddressCommand(NodeBinding binding, boolean sudo) {
+        return nodeApiCommand(binding.wrapperId == null ? binding.runtime : "docker", binding.wrapperId, binding.nodeContainerId, sudo);
+    }
+    static String bindingGpuCommand(NodeBinding binding, boolean sudo) {
+        return runtimeCommand(binding, sudo) + " exec " + binding.nodeContainerId + " /usr/bin/nvidia-smi --query-gpu=uuid --format=csv,noheader";
+    }
+    static final String GPU_INFO_READER = "const h=require(\"node:http\");const expected=process.argv[1];const t=setTimeout(()=>process.exit(1),3000);const q=h.get({host:\"127.0.0.1\",port:5001,path:\"/node/info\"},r=>{let s=\"\";r.on(\"data\",b=>{s+=b;if(s.length>524288)process.exit(1)});r.on(\"end\",()=>{try{const a=JSON.parse(s);const g=a.info?.gpus?.devices;if(r.statusCode!==200||a.node!==expected||!Array.isArray(g)||g.length<1||g.length>64)process.exit(1);const u=g.map(x=>x.uuid);if(u.some(x=>typeof x!==\"string\"||!/^GPU-[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$/.test(x)))process.exit(1);process.stdout.write(u.join(\"\\n\")+\"\\n\");clearTimeout(t)}catch{process.exit(1)}})});q.on(\"error\",()=>process.exit(1));";
+    static String bindingGpuInfoCommand(NodeBinding binding, boolean sudo) {
+        return runtimeCommand(binding, sudo) + " exec " + binding.nodeContainerId + " /usr/bin/env -i /usr/local/bin/node -e " + GpuCollector.quote(GPU_INFO_READER) + " " + binding.address;
+    }
     static final String PS_ARGUMENTS = " ps --no-trunc --format '{{.ID}}\\t{{.Image}}\\t{{.Names}}'";
     public static String inventoryCommand(String runtime, String wrapperId, boolean sudo) {
         if (!runtime.equals("docker") && !runtime.equals("podman")) throw new IllegalArgumentException("Unsupported runtime");

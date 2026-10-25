@@ -94,6 +94,31 @@ final class DiscoveryStore {
         JSONObject profile = state.getJSONObject("trust").optJSONObject(profileId);
         return profile == null ? null : profile.optString(endpoint, null);
     }
+    synchronized JSONArray knownEndpoints() throws Exception {
+        JSONArray result = new JSONArray();
+        JSONObject trust = state.getJSONObject("trust");
+        JSONArray profiles = state.getJSONArray("profiles");
+        for (int i = 0; i < profiles.length(); i++) {
+            JSONObject profile = profiles.getJSONObject(i);
+            JSONObject endpoints = trust.optJSONObject(profile.getString("id"));
+            if (endpoints == null) continue;
+            java.util.Iterator<String> keys = endpoints.keys();
+            while (keys.hasNext()) {
+                String endpoint = keys.next();
+                int split = endpoint.lastIndexOf("]:");
+                if (!endpoint.startsWith("[") || split < 2) continue;
+                String address = endpoint.substring(1, split);
+                int port = Integer.parseInt(endpoint.substring(split + 2));
+                DiscoveryPolicy.Candidate candidate = new DiscoveryPolicy.Candidate(address, port, "");
+                String key = endpoints.getString(endpoint);
+                com.jcraft.jsch.HostKey parsed = new com.jcraft.jsch.HostKey("saved", java.util.Base64.getDecoder().decode(key));
+                new SshDiscovery.Identity(key, parsed.getType());
+                result.put(new JSONObject().put("profileId", profile.getString("id")).put("profileName", profile.getString("name"))
+                        .put("address", candidate.address).put("port", candidate.port).put("keyBase64", key).put("algorithm", parsed.getType()));
+            }
+        }
+        return result;
+    }
     synchronized void trust(String profileId, String endpoint, String key) throws Exception {
         JSONObject candidate = new JSONObject(state.toString());
         JSONObject all = candidate.getJSONObject("trust");
@@ -130,6 +155,125 @@ final class DiscoveryStore {
     synchronized void setOverride(String identity, String credentialId) throws Exception {
         JSONObject candidate = new JSONObject(credentials().toString());
         candidate.getJSONObject("overrides").put(identity, credentialId); saveCredentials(candidate);
+    }
+    synchronized JSONArray monitoringTargets() throws Exception {
+        JSONArray targets = credentials().optJSONArray("monitoringTargets");
+        return targets == null ? new JSONArray() : new JSONArray(targets.toString());
+    }
+    synchronized long rewardsRetryAtMs() { return state.optLong("rewardsRetryAtMs", 0); }
+    synchronized void delayRewardsUntil(long until) throws Exception {
+        if (until <= rewardsRetryAtMs()) return;
+        JSONObject candidate = new JSONObject(state.toString()).put("rewardsRetryAtMs", until);
+        save(settings, candidate.toString().getBytes(StandardCharsets.UTF_8)); state = candidate;
+    }
+    /** An SSH credential denial applies to every target sharing that same credential profile. */
+    synchronized boolean suspendCredentialProfile(JSONObject expected) throws Exception {
+        JSONObject candidate = new JSONObject(credentials().toString());
+        JSONArray targets = candidate.optJSONArray("monitoringTargets");
+        if (targets == null) return false;
+        boolean authorizedReceipt = false;
+        for (int i = 0; i < targets.length(); i++) {
+            JSONObject current = targets.getJSONObject(i);
+            if (current.getString("id").equals(expected.getString("id"))
+                    && current.optString("authorizationId").equals(expected.optString("authorizationId"))
+                    && current.getString("credentialId").equals(expected.getString("credentialId"))
+                    && current.getString("keyBase64").equals(expected.getString("keyBase64"))) authorizedReceipt = true;
+        }
+        if (!authorizedReceipt) return false;
+        boolean changed = false;
+        for (int i = 0; i < targets.length(); i++) {
+            JSONObject current = targets.getJSONObject(i);
+            if (!current.getString("credentialId").equals(expected.getString("credentialId"))) continue;
+            changed |= !current.optBoolean("paused") || !"credentials-required".equals(current.optString("status"));
+            current.put("paused", true).put("status", "credentials-required");
+        }
+        if (changed) saveCredentials(candidate);
+        return true;
+    }
+    /** Merge restrictions into the currently saved authorization; never restore a forgotten target. */
+    synchronized void restrictMonitoring(JSONObject expected, String address, boolean suspendRewards,
+            boolean pause, String status, long retryAt) throws Exception {
+        if (retryAt > 0) delayRewardsUntil(retryAt);
+        JSONObject candidate = new JSONObject(credentials().toString());
+        JSONArray targets = candidate.optJSONArray("monitoringTargets");
+        if (targets == null) return;
+        for (int i = 0; i < targets.length(); i++) {
+            JSONObject current = targets.getJSONObject(i);
+            if (!current.getString("id").equals(expected.getString("id"))
+                    || !current.optString("authorizationId").equals(expected.optString("authorizationId"))
+                    || !current.getString("credentialId").equals(expected.getString("credentialId"))
+                    || !current.getString("keyBase64").equals(expected.getString("keyBase64"))) continue;
+            JSONArray suspended = current.optJSONArray("rewardsSuspended");
+            if (suspended == null) suspended = new JSONArray();
+            if (suspendRewards) {
+                boolean found = false; for (int j = 0; j < suspended.length(); j++) if (address.equals(suspended.getString(j))) found = true;
+                if (!found) suspended.put(address);
+            }
+            current.put("rewardsSuspended", suspended);
+            JSONArray verified = current.optJSONArray("rewardsVerified");
+            if (verified != null && suspendRewards) for (int j = verified.length() - 1; j >= 0; j--) if (address.equals(verified.getString(j))) verified.remove(j);
+            current.put("rewardsAuthorized", current.optBoolean("approved") && suspended.length() < current.getJSONArray("bindings").length());
+            if (pause) current.put("paused", true);
+            if (pause || suspendRewards) current.put("status", status);
+            if (retryAt > 0) current.put("rewardsRetryAtMs", Math.max(current.optLong("rewardsRetryAtMs"), retryAt));
+            saveCredentials(candidate); return;
+        }
+    }
+    synchronized void saveMonitoringTarget(JSONObject target) throws Exception {
+        MonitoringController.validateTarget(target);
+        if (target.optBoolean("approved") && credential(target.getString("credentialId")) == null)
+            throw new java.security.GeneralSecurityException("Monitoring needs an existing remembered credential");
+        JSONObject candidate = new JSONObject(credentials().toString());
+        JSONArray targets = candidate.optJSONArray("monitoringTargets");
+        if (targets == null) { targets = new JSONArray(); candidate.put("monitoringTargets", targets); }
+        JSONObject copy = new JSONObject(target.toString());
+        int existing = -1;
+        for (int i = 0; i < targets.length(); i++) {
+            JSONObject prior = targets.getJSONObject(i);
+            if (prior.getString("id").equals(target.getString("id"))) {
+                existing = i;
+                if (copy.optBoolean("approved") && prior.optBoolean("aliasReplaced")
+                        && prior.optString("authorizationId").equals(copy.optString("authorizationId")))
+                    throw new SecurityException("This monitoring endpoint was replaced");
+                continue;
+            }
+            if (copy.optBoolean("approved") && prior.optBoolean("approved")
+                    && copy.getString("fleetId").equals(prior.getString("fleetId")) && copy.getString("pcId").equals(prior.getString("pcId"))) {
+                for (String field : new String[]{"retryAtMs", "rewardsRetryAtMs", "lastGpuAttemptAtMs", "lastRewardsAttemptAtMs"})
+                    copy.put(field, Math.max(copy.optLong(field), prior.optLong(field)));
+                java.util.Set<String> members = new java.util.HashSet<>(), suspended = new java.util.LinkedHashSet<>();
+                JSONArray bindings = copy.getJSONArray("bindings");
+                for (int j = 0; j < bindings.length(); j++) members.add(bindings.getJSONObject(j).getString("address"));
+                for (JSONObject source : new JSONObject[]{copy, prior}) {
+                    JSONArray values = source.optJSONArray("rewardsSuspended");
+                    if (values != null) for (int j = 0; j < values.length(); j++) if (members.contains(values.getString(j))) suspended.add(values.getString(j));
+                }
+                copy.put("rewardsSuspended", new JSONArray(suspended)).put("rewardsAuthorized", suspended.size() < members.size());
+                if (copy.getJSONArray("bindings").toString().equals(prior.getJSONArray("bindings").toString())) {
+                    JSONObject cursors = copy.optJSONObject("gpuCursors"); if (cursors == null) cursors = new JSONObject();
+                    JSONObject previous = prior.optJSONObject("gpuCursors");
+                    if (previous != null) for (String address : members) {
+                        long cursor = Math.max(cursors.optLong(address), previous.optLong(address)); if (cursor > 0) cursors.put(address, cursor);
+                    }
+                    copy.put("gpuCursors", cursors);
+                }
+                prior.put("approved", false).put("paused", true).put("status", "paused").put("aliasReplaced", true);
+            }
+        }
+        if (copy.optBoolean("approved")) copy.remove("aliasReplaced");
+        if (existing >= 0) targets.put(existing, copy);
+        else {
+            if (targets.length() >= 512) throw new IllegalArgumentException("At most 512 monitored PCs can be saved");
+            targets.put(copy);
+        }
+        saveCredentials(candidate);
+    }
+    synchronized void removeMonitoringFleet(String fleetId) throws Exception {
+        JSONObject candidate = new JSONObject(credentials().toString());
+        JSONArray targets = candidate.optJSONArray("monitoringTargets");
+        if (targets == null) return;
+        for (int i = targets.length() - 1; i >= 0; i--) if (fleetId.equals(targets.getJSONObject(i).getString("fleetId"))) targets.remove(i);
+        saveCredentials(candidate);
     }
     private void saveCredentials(JSONObject candidate) throws Exception {
         byte[] clear = candidate.toString().getBytes(StandardCharsets.UTF_8);

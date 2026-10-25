@@ -1,3 +1,32 @@
+diff --git a/src/fleet/sort.ts b/src/fleet/sort.ts
+--- a/src/fleet/sort.ts
++++ b/src/fleet/sort.ts
+@@ -54,6 +54,8 @@
+   readonly nosAmount?: string | null;
+   /** Exact NOS base units currently held in the staking vault. */
+   readonly stakedNosAmount?: string | null;
++  /** Exact claimable uptime NOS base units from an authorized Android node read. */
++  readonly rewardsAmount?: string | null;
+   readonly values: Readonly<Partial<Record<SortColumn, string | number | null>>>;
+ }
+ 
+@@ -107,12 +109,16 @@
+     const rightNos = isNosAmount(b.nosAmount) ? b.nosAmount : null;
+     const leftStaked = isStakingAmount(a.stakedNosAmount) ? a.stakedNosAmount : null;
+     const rightStaked = isStakingAmount(b.stakedNosAmount) ? b.stakedNosAmount : null;
++    const leftRewards = isNosAmount(a.rewardsAmount) ? a.rewardsAmount : null;
++    const rightRewards = isNosAmount(b.rewardsAmount) ? b.rewardsAmount : null;
+     const comparison = sort.column === "sol" && (a.solLamports !== undefined || b.solLamports !== undefined)
+       ? compareSolLamports(leftSol, rightSol) * (sort.direction === "desc" && leftSol !== null && rightSol !== null ? -1 : 1)
+       : sort.column === "nos" && (a.nosAmount !== undefined || b.nosAmount !== undefined)
+         ? compareNosAmounts(leftNos, rightNos) * (sort.direction === "desc" && leftNos !== null && rightNos !== null ? -1 : 1)
+       : sort.column === "stakedNos" && (a.stakedNosAmount !== undefined || b.stakedNosAmount !== undefined)
+         ? compareStakingAmounts(leftStaked, rightStaked) * (sort.direction === "desc" && leftStaked !== null && rightStaked !== null ? -1 : 1)
++      : sort.column === "rewards" && (a.rewardsAmount !== undefined || b.rewardsAmount !== undefined)
++        ? compareNosAmounts(leftRewards, rightRewards) * (sort.direction === "desc" && leftRewards !== null && rightRewards !== null ? -1 : 1)
+       : compareValues(normalize(a.values[sort.column]), normalize(b.values[sort.column]), sort.direction);
+     return comparison ||
+       compareValues(stringValue(a.pc), stringValue(b.pc)) ||
 diff --git a/src/preview/fleet-config.ts b/src/preview/fleet-config.ts
 --- a/src/preview/fleet-config.ts
 +++ b/src/preview/fleet-config.ts
@@ -13,17 +42,74 @@ diff --git a/src/preview/fleet-config.ts b/src/preview/fleet-config.ts
 +  return `${path}?scenario=${encodeURIComponent(scenario)}${scenario === "online-gpu-hosts" && resource !== "hosts" && revision
      ? `&revision=${encodeURIComponent(revision)}` : ""}`;
  }
+diff --git a/src/preview/job-history.ts b/src/preview/job-history.ts
+--- a/src/preview/job-history.ts
++++ b/src/preview/job-history.ts
+@@ -13,6 +13,7 @@
+   read: (addresses: string[], refresh: boolean, signal: AbortSignal,
+     apply: (snapshot: JobHistorySnapshot) => void) => Promise<unknown>;
+   changed: () => void;
++  gpuConditions?: (address: string, job: JobHistoryItem, confirmedRunning: boolean) => { label: string; detail: string };
+ }
+ const setText = (node: HTMLElement, text: string): void => { if (node.textContent !== text) node.textContent = text; };
+ const utc = (at: number | null): string => at === null || !Number.isFinite(at) || at < 0 || at > 8_640_000_000_000_000
+@@ -330,7 +331,7 @@
+       table.setAttribute("aria-label", `Job history for ${address}`);
+       const head = document.createElement("thead");
+       const headings = document.createElement("tr");
+-      for (const name of ["address", "host", "started", "duration", "price", "gpu", "status"]) {
++      for (const name of ["address", "host", "started", "duration", "price", "gpu", "status", ...(options.gpuConditions ? ["gpu conditions"] : [])]) {
+         const heading = document.createElement("th"); heading.scope = "col";
+         heading.dataset.historyCol = name; heading.textContent = name.toUpperCase(); headings.append(heading);
+       }
+@@ -383,7 +384,7 @@
+       wanted.add(item.address);
+       const itemRow = existing.get(item.address) ?? document.createElement("tr");
+       itemRow.dataset.job = item.address;
+-      if (!itemRow.cells.length) for (const name of ["address", "host", "started", "duration", "price", "gpu", "status"]) {
++      if (!itemRow.cells.length) for (const name of ["address", "host", "started", "duration", "price", "gpu", "status", ...(options.gpuConditions ? ["gpu conditions"] : [])]) {
+         const cell = document.createElement("td"); cell.dataset.historyCol = name; itemRow.append(cell);
+       }
+       historyLink(itemRow.cells[0]!, "job-history-address", "jobs", item.address);
+@@ -418,6 +419,8 @@
+       setText(marketName, fields.marketName ?? "—");
+       gpu.setAttribute("aria-label", fields.marketName ? `Job market label: ${fields.marketName}. This is not a physical GPU identity.` : "Job market label unknown");
+       renderHistoryStatus(itemRow.cells[6]!, historyStatus(item, current?.current === true && current.job.address === item.address), item);
++      const conditions = options.gpuConditions?.(address, item, current?.current === true && current.job.address === item.address);
++      if (conditions) { setText(itemRow.cells[7]!, conditions.label); itemRow.cells[7]!.title = conditions.detail; itemRow.cells[7]!.setAttribute("aria-label", conditions.detail); }
+       const at = body.rows.item(index);
+       if (at !== itemRow) {
+         if (itemRow.isConnected && typeof body.moveBefore === "function") body.moveBefore(itemRow, at);
+@@ -425,7 +428,7 @@
+       }
+       const sourceEntry = sourceEntries.get(item.address) ?? document.createElement("li");
+       sourceEntry.dataset.jobSource = item.address;
+-      setText(sourceEntry, `Job: ${item.address}\nHost: ${item.node}\nLifecycle: ${stateLabel(item.state)}\nResult: ${item.result === "success" ? "Succeeded" : item.result === "failed" ? "Failed" : "Unavailable"}\nStarted: ${exactUTC(start)} (reported ${item.timeStart === null ? "unknown" : `${item.timeStart} seconds`})\nEnded: ${exactUTC(end)} (reported ${item.timeEnd === null ? "unknown" : `${item.timeEnd} seconds`})\nReported timeout: ${item.timeout === null ? "unknown" : `${item.timeout} seconds`}\nJob checked: ${exactUTC(item.checkedAtMs)}\nPrice/GPU fields checked: ${exactUTC(fields.checkedAtMs)}\nJob market address: ${fields.marketAddress ?? "Unknown"}\nJob market label: ${fields.marketName ?? "Unknown"}\nRecorded job rate: ${fields.usdRewardPerHour == null ? "Unknown" : `${fields.usdRewardPerHour} USD/hour`}\nMarket rate: ${fields.marketUsdRewardPerHour == null ? "Unknown" : `${fields.marketUsdRewardPerHour} USD/hour`}\nMarket checked: ${exactUTC(fields.marketCheckedAtMs ?? null)}\nMarket valid until: ${exactUTC(fields.marketValidUntilMs ?? null)}\nPrice basis: ${price.basis}`);
++      setText(sourceEntry, `Job: ${item.address}\nHost: ${item.node}\nLifecycle: ${stateLabel(item.state)}\nResult: ${item.result === "success" ? "Succeeded" : item.result === "failed" ? "Failed" : "Unavailable"}\nStarted: ${exactUTC(start)} (reported ${item.timeStart === null ? "unknown" : `${item.timeStart} seconds`})\nEnded: ${exactUTC(end)} (reported ${item.timeEnd === null ? "unknown" : `${item.timeEnd} seconds`})\nReported timeout: ${item.timeout === null ? "unknown" : `${item.timeout} seconds`}\nJob checked: ${exactUTC(item.checkedAtMs)}\nPrice/GPU fields checked: ${exactUTC(fields.checkedAtMs)}\nJob market address: ${fields.marketAddress ?? "Unknown"}\nJob market label: ${fields.marketName ?? "Unknown"}\nRecorded job rate: ${fields.usdRewardPerHour == null ? "Unknown" : `${fields.usdRewardPerHour} USD/hour`}\nMarket rate: ${fields.marketUsdRewardPerHour == null ? "Unknown" : `${fields.marketUsdRewardPerHour} USD/hour`}\nMarket checked: ${exactUTC(fields.marketCheckedAtMs ?? null)}\nMarket valid until: ${exactUTC(fields.marketValidUntilMs ?? null)}\nPrice basis: ${price.basis}${conditions ? `\nGPU conditions: ${conditions.detail}` : ""}`);
+       const sourceAt = sourceList.children.item(index);
+       if (sourceAt !== sourceEntry) {
+         if (sourceEntry.isConnected && typeof sourceList.moveBefore === "function") sourceList.moveBefore(sourceEntry, sourceAt);
+@@ -476,6 +479,7 @@
+       for (const address of expanded) if (!attempted.has(address)) queue(address);
+       schedule();
+     },
++    get expandedAddresses() { return [...expanded]; },
+     get expandedCount() { return expanded.size; },
+   };
+ }
 diff --git a/src/preview/main.ts b/src/preview/main.ts
 --- a/src/preview/main.ts
 +++ b/src/preview/main.ts
-@@ -1,4 +1,6 @@
+@@ -1,4 +1,8 @@
++import { createMobileMonitoring } from "./mobile-monitoring.ts";
++import { rewardView, rewardAtoms, jobGpuConditions } from "../fleet/pc-observations.ts";
 +import { gpuRecordingFacts } from "./mobile-telemetry.ts";
  import "./sidebar.ts";
 +import { isSavedFleetScenario, readMobileScenarios, mobilePcAddresses } from "./mobile-scenarios.ts";
  import { bindFleetViewport } from "./viewport.ts";
  import { bindFleetTableScroll } from "./table-scroll.ts";
  import { startConnectionIndicator } from "./connection.ts";
-@@ -59,7 +61,9 @@
+@@ -59,7 +63,9 @@
  bindFleetViewport(document.querySelector<HTMLElement>(".fleet-title-row")!);
  // Service reachability is independent of source freshness and host API status.
  const fleetConfig = readFleetConfig(document);
@@ -34,7 +120,7 @@ diff --git a/src/preview/main.ts b/src/preview/main.ts
  const evidenceClock = createEvidenceClock();
  const liveNow = () => evidenceClock.now();
  // Expiry uses a conservative time bound. Elapsed clocks, source validation and
-@@ -88,8 +92,8 @@
+@@ -88,8 +94,8 @@
  const COLUMNS = [
    ["stakedNos", "Staked NOS", "Toggle between a dull-green checkmark / red lowercase x and the actual / required NOS amounts. A current checkmark means exact vault NOS meets the current market’s displayed NOS target, including verified 0 / 0; x means it is below that target. Amount view rounds to whole NOS and uses bright green or red for the actual amount. Exact amounts drive sorting and comparison. This does not establish full market eligibility. Amounts still releasing during unstaking remain included; details distinguish duration-weighted xNOS. Shared public RPC checks every 30 minutes; readings expire after 35 minutes. Failed or expired comparisons stay gray; an unknown comparison is a dash."],
    ["status", "Status", "Reported Nosana classification. ONBOARDED is displayed as COMMUNITY (yellow C); REJECTED as red R; PREMIUM as green P. Details preserve the raw response. This does not establish container health or current job activity."],
@@ -45,7 +131,20 @@ diff --git a/src/preview/main.ts b/src/preview/main.ts
    ["hostAddress", "Host Address", "A supplied public Nosana host address. Toggle between the first five characters (default) and the full address. Both views link to the same full address in Nosana Explorer, and sorting always uses the full address. Supplied addresses do not establish current host status or any measurements."],
    ["sol", "SOL", "Confirmed SOL balance from public mainnet RPC, checked best effort every 30 seconds while visible. Three decimals are rounded down for display; exact lamports and provenance are in details and drive sorting. Failed or 60-second-old readings remain gray. Missing accounts remain unknown; verified zero remains zero."],
    ["api", "API", "Last confirmed API result from Node Info, separate from State. Online stays green and Offline stays red. Bold means within its checking window; regular weight means stale or unconfirmed. Online uses a 30-second window. Offline stays bold until its recorded retry is overdue, including an eight-second request allowance. Details preserve original check times and the retry deadline. Amber Populating.. means no confirmed result is available yet. State OTHER can still be API Online. Timeouts and inconclusive checks do not overwrite the last confirmed result. This does not establish whether the PC or workload is running."],
-@@ -136,8 +140,8 @@
+@@ -104,10 +110,10 @@
+   ["dl", "DL", "Reported download Mbps from Node Info info.network.download_mbps. This is saved network data, not a speed test triggered by this page. An all-zero default triplet is unknown."],
+   ["ul", "UL", "Reported upload Mbps from Node Info info.network.upload_mbps. The specific test provider and measurement time are not supplied. No FAST/Libre/Ookla fallback is applied."],
+   ["ping", "Ping", "Reported ping milliseconds from Node Info info.network.ping_ms. Display is rounded; sorting preserves the reported value. An all-zero default triplet is unknown."],
+-  ["rewards", "Rewards to claim", "The exact claimable host-uptime amount. No rewards source or wallet is connected; no estimate or other balance is substituted."],
++  ["rewards", "Rewards to claim", mobileScenarios.enabled ? "Exact claimable host-uptime NOS read inside an explicitly authorized node container. Enable monitoring once in Fleets. Saved SSH reads refresh while the app is open. Keys remain in the node; authorization is sent only to Nosana. Stale or failed reads retain dated amounts in gray. No claims or transactions are made." : "The exact claimable host-uptime amount. No rewards source or wallet is connected; no estimate or other balance is substituted."],
+   ["nos", "NOS", "Confirmed NOS in each host’s standard associated token account, checked best effort every two minutes while visible. Display rounds to whole NOS; exact six-decimal amounts drive sorting. Additional wallet token accounts, staking and claimable rewards are excluded. A freshly verified absent standard account means zero there; failures remain unknown or retain gray values. Readings expire after three minutes."],
+   ["market", "Market", "Toggle between the full reported market label and its first two characters. Sorting uses the full label. Supplied hosts resolve their market address through Nosana’s market lookup, preferring its slug. Missing labels stay unknown. This association does not identify the physical GPU or establish current activity; recommendations are separate."],
+-  ["gpuID", "GPU ID", "The current physical GPU index, resolved from measured UUID identity. No hardware observations are connected."],
++  ["gpuID", "GPU ID", mobileScenarios.enabled ? "A physical PC GPU index is not inferred from a container index. Enabled monitoring verifies GPU UUID allocation and shows observed conditions in Jobs." : "The current physical GPU index, resolved from measured UUID identity. No hardware observations are connected."],
+   ["currentNode", "Current Node", "The reported Nosana package version. This does not prove which process is currently running. Prerelease versions are pink; no comparison with the latest release is connected."],
+   ["cuda", "CUDA", "CUDA driver version reported by Nosana metrics."],
+   ["nvidia", "NVIDIA", "Toggle between the major NVIDIA driver version and the full reported version. Sorting uses the full version. Supplied hosts use reported Nosana metadata; sample scenarios remain synthetic."],
+@@ -136,8 +142,8 @@
  // These current column meanings need local observation or machine mapping.
  // A future Nosana connector may deliver them; no collection is enabled here.
  const LOCAL_SOURCE_NOTES: Readonly<Partial<Record<SortColumn, string>>> = {
@@ -56,7 +155,18 @@ diff --git a/src/preview/main.ts b/src/preview/main.ts
    gpuID: "The physical GPU index on the PC. Nosana’s exported device index is not yet verified as that physical slot.",
  };
  
-@@ -769,6 +773,26 @@
+@@ -368,7 +374,9 @@
+ element("column-info").addEventListener("click", () => {
+   const column = COLUMNS.find(([key]) => key === activeSort.column);
+   if (column) showInfo(column[1], {
+-    summary: COLUMN_HELP[column[0]],
++    summary: mobileScenarios.enabled && column[0] === "rewards" ? "Exact claimable host-uptime NOS from the authorized node reader; unavailable readings stay unknown."
++      : mobileScenarios.enabled && column[0] === "gpuID" ? "Physical GPU index is not inferred. Verified GPU UUID allocation and job conditions are available through enabled monitoring."
++        : COLUMN_HELP[column[0]],
+     ...(LOCAL_SOURCE_NOTES[column[0]] ? { facts: [[ink("Local data or mapping is not connected yet.", "warning")]] } : {}),
+     source: columnDescription(column[0], column[2]),
+   });
+@@ -769,6 +777,26 @@
  });
  
  const select = element<HTMLSelectElement>("scenario");
@@ -83,7 +193,7 @@ diff --git a/src/preview/main.ts b/src/preview/main.ts
  const suppliedOption = document.createElement("option");
  suppliedOption.value = "supplied";
  suppliedOption.textContent = "Supplied Host Addresses";
-@@ -802,7 +826,29 @@
+@@ -802,7 +830,33 @@
  // Switching live scenarios starts a new page. Only Online GPU Hosts maintains
  // membership dynamically, with each data read bound to a server-issued revision.
  const liveScenario = requestedScenario === "online-gpu-hosts" ? "online-gpu-hosts"
@@ -108,13 +218,36 @@ diff --git a/src/preview/main.ts b/src/preview/main.ts
 +  search.textContent = discoveredScenario ? "Rescan" : "Search network";
 +  search.hidden = !networkDiscoveryScenario && !discoveredScenario;
 +  select.parentElement!.append(search);
++  const monitoring = document.createElement("a"); monitoring.id = "mobile-enable-monitoring";
++  monitoring.href = `/mobile/monitoring?fleet=${discoveredScenario ? encodeURIComponent(liveScenario.slice(6)) : ""}`;
++  monitoring.textContent = "Enable / repair monitoring"; monitoring.hidden = !discoveredScenario;
++  select.parentElement!.append(monitoring);
 +  select.parentElement!.after(notice);
 +  notice.hidden = !mobileScenarios.error && !networkDiscoveryScenario && !discoveredScenario;
 +}
  const onlineScenario = liveScenario === "online-gpu-hosts";
  let onlineStatus: OnlineRosterStatus | undefined;
  let onlineRosterError: string | null = null;
-@@ -2436,10 +2482,61 @@
+@@ -886,12 +940,18 @@
+ let freshnessRenderPending = false;
+ const progressRows = new Map<string, Set<ReadKind>>();
+ let pageHidden = false;
++const mobileMonitoring = mobileScenarios.enabled && discoveredScenario ? createMobileMonitoring({
++  fleetId: liveScenario.slice(6), visible: () => visibleStateView(), hosts: () => suppliedAddresses,
++  changed: () => { if (supplied) render(); },
++}) : undefined;
+ const jobHistory = createJobHistoryView({
+   now: () => supplied ? liveNow() : sampleNow,
+   trusted: () => evidenceClock.trusted,
+   visible: () => visibleStateView(),
+   cacheOnly: () => onlineScenario,
+   live: () => supplied,
++  ...(mobileMonitoring ? { gpuConditions: (address: string, job: import("../fleet/job-history.ts").JobHistoryItem, confirmedRunning: boolean) =>
++    jobGpuConditions(mobileMonitoring.detail(address), job, liveNow(), confirmedRunning) } : {}),
+   currentJob: address => jobsError ? undefined : liveActivity(address, liveNow()).eligibleJob,
+   read: (addresses, refresh, signal, apply) => fleetTransport.read("job-history", previewURL("job-history"), {
+     addresses, hosts: addresses, refresh, signal, progressive: true,
+@@ -2436,10 +2496,83 @@
    setText(element("scenario-description"), fleetConfig.sourceMode === "snapshot"
      ? "The source supplies this fleet’s host list. Reload to read a changed roster; refreshing values preserves the current roster."
      : onlineScenario ? "Online GPU Hosts checks Explorer’s queued/running candidates and shows only hosts with a current, validated API Online result. Online proof expires after 30 seconds; offline, unknown and expired results are hidden while their checks continue. Discovery refreshes every minute while viewed; removal from its candidate list requires two complete checks. Diagnostics cover all Explorer candidates, including hidden hosts. Duration reuses cached timing collected for Supplied Host Addresses or Real200; this scenario starts no job lookups. API reachability does not establish GPU health or current job activity. Shared request limits can leave readings pending or stale. No host file or restart is required when membership changes."
@@ -158,31 +291,54 @@ diff --git a/src/preview/main.ts b/src/preview/main.ts
 +    panel.addEventListener("toggle", () => { if (panel?.open) updateMobileGpuDetails(panel); });
 +  }
 +  panel.hidden = !discoveredScenario;
++  const revision = [...(mobileMonitoring?.index.values() ?? [])].map(value => `${value.address}:${value.receivedAtMs}`).join("|");
++  if (panel.open && panel.dataset.revision !== revision) { panel.dataset.revision = revision; updateMobileGpuDetails(panel); }
++  if (mobileMonitoring) {
++    const states = [...mobileMonitoring.index.values()];
++    const active = states.filter(value => value.monitoring?.status === "active").length;
++    const notice = element("mobile-fleet-status");
++    setText(notice, mobileMonitoring.error ?? (states.length ? `PC monitoring: ${active}/${states.length} hosts active. Saved connections refresh automatically while the app is open; recorded values retain their source times.`
++      : "Enable monitoring once to read rewards and record GPU conditions using saved PC connections. No rescan is needed for routine refresh."));
++  }
 +}
 +function updateMobileGpuDetails(panel: HTMLDetailsElement): void {
 +  const content = panel.querySelector(".mobile-gpu-content")!;
 +  content.replaceChildren();
++  if (mobileMonitoring?.index.size) {
++    for (const record of mobileMonitoring.index.values()) {
++      const title = document.createElement("h3"); title.textContent = `${savedFleet?.pcs[record.address]?.pcName ?? "PC"} / ${record.address.slice(0, 5)}`; content.append(title);
++      const state = document.createElement("p"); state.textContent = `Monitoring: ${record.monitoring?.status ?? "unknown"}. Recorder: ${record.gpu?.status ?? "not connected"}.`; content.append(state);
++      if (record.gpu) {
++        const details = document.createElement("p"); details.textContent = `Verified node GPU allocation: ${record.gpu.gpuUuids.join(", ") || "unavailable"}. ${record.gpu.sampleCount} cached samples; last source check ${timestamp(record.gpu.observedAtMs)}.`; content.append(details);
++      }
++    }
++    const note = document.createElement("p"); note.textContent = "Expand a host’s Jobs to see GPU conditions observed during each reported job interval. The app refreshes enabled PCs automatically while open; recorders retain history while the phone is closed. Gaps and unsupported signals stay unknown."; content.append(note);
++    return;
++  }
 +  const pcs = new Map(Object.values(savedFleet?.pcs ?? {}).map(pc => [pc.pcId, pc]));
-+  if (!pcs.size) { const text = document.createElement("p"); text.textContent = "Use Rescan to collect PC details and enable GPU recording."; content.append(text); }
++  if (!pcs.size) { const text = document.createElement("p"); text.textContent = "Enable monitoring to verify saved PC connections and start recording."; content.append(text); }
 +  for (const pc of pcs.values()) {
 +    const title = document.createElement("h3"); title.textContent = pc.pcName ?? "Unnamed PC"; content.append(title);
 +    for (const fact of gpuRecordingFacts(pc.gpuTelemetry, Date.now())) { const line = document.createElement("p"); line.textContent = fact; content.append(line); }
 +  }
-+  const note = document.createElement("p"); note.textContent = "Enabled recorders keep bounded history while the phone is closed. Rescan reads their latest saved observations; public-data Refresh does not connect to the PCs."; content.append(note);
++  const note = document.createElement("p"); note.textContent = "These are older PC-level recordings. Enable monitoring once for automatic node-bound refresh and job-time association; no routine rescan is required."; content.append(note);
 +}
 +
++let mobileMonitoringStarted = false;
  function renderSupplied(): void {
++  if (mobileMonitoring && !mobileMonitoringStarted && !inputLoading && !inputError) { mobileMonitoringStarted = true; void mobileMonitoring.refresh(); }
 +  renderMobileGpuRecordings();
    const nodeProjectionTime = liveNow();
    if (onlineScenario) displayedOnlineHosts = new Map(suppliedAddresses.flatMap(address => {
      const deadline = onlineHostProof(address, nodeProjectionTime);
-@@ -2453,10 +2550,12 @@
+@@ -2453,10 +2586,13 @@
      .map(row => [row.dataset.host!, row]));
    const rows: HTMLTableRowElement[] = [];
    const sortableRows = displayedAddresses.map((address) => ({
 -    pc: "", gpuIndex: null, containerName: "", solLamports: solRecords.get(address)?.lamports ?? null,
 +    pc: savedFleet?.pcs[address]?.pcName ?? "", gpuIndex: null, containerName: "", solLamports: solRecords.get(address)?.lamports ?? null,
      nosAmount: nosRecords.get(address)?.amount ?? null,
++    rewardsAmount: rewardAtoms(rewardView(mobileMonitoring?.index.get(address), nodeProjectionTime).amount),
      stakedNosAmount: stakingRecords.get(address)?.stake.amount ?? null, values: {
        hostAddress: address,
 +      pc: savedFleet?.pcs[address]?.pcName ?? null,
@@ -190,20 +346,24 @@ diff --git a/src/preview/main.ts b/src/preview/main.ts
        latestJob: jobHistory.summary(address)?.job.address ?? null,
        duration: liveDuration(address, nodeProjectionTime).elapsedSeconds,
        queued: liveQueue(address, nodeProjectionTime).sortValue,
-@@ -2489,6 +2588,12 @@
+@@ -2489,6 +2625,16 @@
          else link.removeAttribute("title");
          link.setAttribute("aria-label", `Open ${address} in Nosana Explorer (new tab)`);
          if (!link.parentElement) cell.append(link);
 +      } else if (mobileScenarios.enabled && (key === "pc" || key === "ip")) {
 +        renderMobilePc(cell, key, address);
 +      } else if (mobileScenarios.enabled && key === "rewards") {
-+        setText(cell, "—");
-+        cell.setAttribute("aria-label", "Rewards to claim unavailable: verified Nosana authorization is not connected.");
-+        cell.title = "Exact claimable uptime rewards require Nosana authorization. No existing node keys are accessed. A PC collector does not unlock this amount.";
++        const view = rewardView(mobileMonitoring?.index.get(address), nodeProjectionTime);
++        const exact = view.amount;
++        setText(cell, exact === null ? "—" : exact.replace(/(\.[0-9]*?)0+$/, "$1").replace(/\.$/, ""));
++        cell.classList.toggle("metadata-retained", exact !== null && !view.current);
++        const description = exact === null ? `Rewards unavailable (${view.status}). Enable or repair monitoring in Fleets.`
++          : `${view.current ? "" : "Retained "}${exact} NOS claimable for host uptime. Observed ${timestamp(view.observedAtMs)}. Latest status: ${view.status}.`;
++        cell.setAttribute("aria-label", description); cell.title = description;
        } else if (key === "sol") {
          renderSolCell(cell, address, nodeProjectionTime);
        } else if (key === "nos") {
-@@ -2546,7 +2651,11 @@
+@@ -2546,7 +2692,11 @@
      cell.className = "empty-message";
      const message = document.createElement("span");
      message.className = "empty-content";
@@ -216,7 +376,7 @@ diff --git a/src/preview/main.ts b/src/preview/main.ts
        ? "Online GPU host discovery is unavailable. Retrying automatically."
        : suppliedAddresses.length === 0 ? "Nosana’s indexer currently reports no queued or running candidates. The list updates automatically."
          : "No Explorer candidates have a current API Online confirmation. Offline and unconfirmed hosts are hidden; checks continue automatically while viewed."
-@@ -2589,7 +2698,8 @@
+@@ -2589,7 +2739,8 @@
  function render(): void {
    renderDisplaySettings();
    setText(element("data-label"), fleetConfig.sourceMode === "snapshot" ? fleetConfig.sourceLabel
@@ -226,7 +386,16 @@ diff --git a/src/preview/main.ts b/src/preview/main.ts
    setText(element("connection-note"), fleetConfig.sourceMode === "snapshot" ? "Original observation times preserved"
      : supplied ? "Public Nosana metadata" : "No live connections");
    setText(element("fleet-caption"), fleetConfig.sourceMode === "snapshot"
-@@ -2716,8 +2826,15 @@
+@@ -2617,7 +2768,7 @@
+   }
+   setText(element("preview-description"), fleetConfig.sourceMode === "snapshot"
+     ? `${fleetConfig.sourceLabel}. This view reads backend observations; opening or refreshing it does not establish new host evidence. Each value keeps its original source time and freshness deadline. Missing observations stay unknown; retained timings remain dimmed estimates. Host activity and API reachability are independent.` : supplied
+-    ? "Metadata comes from Nosana metrics; State uses Node Info with independent job/queue evidence when needed. API shows reachability from that same check; DL/UL/Ping also use Node Info. Duration uses assigned Nosana jobs with an independent local clock; Queued uses the ordered Nosana market queue. SOL uses confirmed public mainnet RPC with shared best-effort 30-second checks. NOS checks standard associated token accounts every two minutes. Staked NOS checks vault holdings and current market targets every 30 minutes. Jobs expands on demand to recent indexed history, with original check times and separate execution results. Claimable rewards and physical GPU identity remain unconnected. Duration shows Populating.. until useful timing arrives, and a dash for current confirmed absence or unavailable timing while API Offline is confirmed; State uses a dim amber spinner until useful activity arrives. Other unconnected fields stay unknown. Synthetic scenarios stay separate."
++    ? "Metadata comes from Nosana metrics; State uses Node Info with independent job/queue evidence when needed. API shows reachability from that same check; DL/UL/Ping also use Node Info. Duration uses assigned Nosana jobs with an independent local clock; Queued uses the ordered Nosana market queue. SOL uses confirmed public mainnet RPC with shared best-effort 30-second checks. NOS checks standard associated token accounts every two minutes. Staked NOS checks vault holdings and current market targets every 30 minutes. Jobs expands on demand to recent indexed history, with original check times and separate execution results. Android saved fleets can separately read exact claimable rewards and node-bound GPU recordings after in-app monitoring approval; other scenarios remain unconnected. Duration shows Populating.. until useful timing arrives, and a dash for current confirmed absence or unavailable timing while API Offline is confirmed; State uses a dim amber spinner until useful activity arrives. Other unconnected fields stay unknown. Synthetic scenarios stay separate."
+     : "Sample preview. Market names and hardware readings are synthetic; Job durations and Node states add separate synthetic examples. No live data sources are connected. A dash means unknown, not zero.");
+   if (supplied) {
+     renderSupplied();
+@@ -2716,8 +2867,15 @@
  
  select.addEventListener("change", () => {
    const scenario = SCENARIOS.find((value) => value.id === select.value);
@@ -243,13 +412,40 @@ diff --git a/src/preview/main.ts b/src/preview/main.ts
    if (nextLive !== null && nextLive !== liveScenario) {
      pageHidden = true;
      resumeVisibleView();
+@@ -2742,7 +2900,7 @@
+     void loadHostRoster();
+     return;
+   }
+-  if (supplied) { void loadMetadata(); void loadNodeInfo(); void loadJobs(); void loadQueue(); void loadSol(); void loadNos(); void loadStaking(); }
++  if (supplied) { void mobileMonitoring?.refresh(); void loadMetadata(); void loadNodeInfo(); void loadJobs(); void loadQueue(); void loadSol(); void loadNos(); void loadStaking(); }
+   else render();
+ });
+ element("reset-sample").addEventListener("click", () => {
+@@ -2751,12 +2909,15 @@
+   render();
+ });
+ document.addEventListener("visibilitychange", resumeVisibleView);
++document.addEventListener("visibilitychange", () => mobileMonitoring?.resume());
+ window.addEventListener("pagehide", () => {
+   pageHidden = true;
++  mobileMonitoring?.resume();
+   resumeVisibleView();
+ });
+ window.addEventListener("pageshow", () => {
+   pageHidden = false;
++  mobileMonitoring?.resume();
+   resumeVisibleView();
+ });
+ render();
 diff --git a/src/server/browser-assets.ts b/src/server/browser-assets.ts
 --- a/src/server/browser-assets.ts
 +++ b/src/server/browser-assets.ts
-@@ -6,6 +6,8 @@
+@@ -6,6 +6,10 @@
    "/contracts/fleet.js": ["contracts/fleet.js", "text/javascript; charset=utf-8"],
    "/contracts/online-hosts.js": ["contracts/online-hosts.js", "text/javascript; charset=utf-8"],
    "/preview/fleet-config.js": ["preview/fleet-config.js", "text/javascript; charset=utf-8"],
++  "/preview/mobile-monitoring.js": ["preview/mobile-monitoring.js", "text/javascript; charset=utf-8"],
++  "/fleet/pc-observations.js": ["fleet/pc-observations.js", "text/javascript; charset=utf-8"],
 +  "/preview/mobile-telemetry.js": ["preview/mobile-telemetry.js", "text/javascript; charset=utf-8"],
 +  "/preview/mobile-scenarios.js": ["preview/mobile-scenarios.js", "text/javascript; charset=utf-8"],
    "/preview/fleet-transport.js": ["preview/fleet-transport.js", "text/javascript; charset=utf-8"],
@@ -398,7 +594,7 @@ diff --git a/test/preview-server.test.ts b/test/preview-server.test.ts
  
  const fixtureFiles = [
 -  "contracts/fleet.js", "contracts/online-hosts.js", "preview/fleet-config.js", "preview/fleet-transport.js", "preview/job-history.js", "preview/online-roster.js",
-+  "contracts/fleet.js", "contracts/online-hosts.js", "preview/fleet-config.js", "preview/mobile-scenarios.js", "preview/mobile-telemetry.js", "preview/fleet-transport.js", "preview/job-history.js", "preview/online-roster.js",
++  "contracts/fleet.js", "contracts/online-hosts.js", "preview/fleet-config.js", "preview/mobile-scenarios.js", "preview/mobile-telemetry.js", "preview/mobile-monitoring.js", "fleet/pc-observations.js", "preview/fleet-transport.js", "preview/job-history.js", "preview/online-roster.js",
    "preview/evidence-clock.js", "preview/refresh-deadline.js", "preview/sidebar.js", "preview/viewport.js", "preview/table-scroll.js", "preview/connection.js",
    "index.html", "styles.css", "preview/main.js", "preview/fixtures.js", "fleet/freshness.js", "fleet/sort.js", "fleet/ip-display.js", "fleet/duration.js", "fleet/market-display.js", "fleet/hardware-display.js", "fleet/host-metadata.js",
    "fleet/node-info.js", "fleet/node-state.js", "fleet/node-api.js", "fleet/status-display.js", "fleet/country-display.js", "preview/state-refresh.js", "preview/info-content.js", "preview/column-help.js",
@@ -589,4 +785,260 @@ new file mode 100644
 +  if (!telemetry.gpus.length) facts.push("No verified GPU readings were returned.");
 +  facts.push("These are PC GPU observations. A host-to-GPU mapping has not been verified; no per-job throttling or causation is inferred.");
 +  return facts;
++}
+diff --git a/src/preview/mobile-monitoring.ts b/src/preview/mobile-monitoring.ts
+new file mode 100644
+--- /dev/null
++++ b/src/preview/mobile-monitoring.ts
+@@ -0,0 +1,101 @@
++import { parseSavedObservation } from "../fleet/pc-observations.ts";
++import type { PcObservation, PcObservationIndex } from "../fleet/pc-observations.ts";
++
++async function read(url: string, signal: AbortSignal, maximum: number): Promise<Record<string, unknown>> {
++  const response = await fetch(url, { credentials: "same-origin", cache: "no-store", signal });
++  if (!response.ok || !response.body) throw new Error("PC observations unavailable.");
++  const reader = response.body.getReader(), parts: Uint8Array[] = [];
++  let length = 0;
++  try { for (;;) { const next = await reader.read(); if (next.done) break; length += next.value.byteLength; if (length > maximum) throw new Error("PC response too large."); parts.push(next.value); } }
++  finally { await reader.cancel(); }
++  const bytes = new Uint8Array(length); let offset = 0;
++  for (const part of parts) { bytes.set(part, offset); offset += part.length; }
++  const value: unknown = JSON.parse(new TextDecoder().decode(bytes));
++  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid PC response.");
++  return value as Record<string, unknown>;
++}
++/** Reads only the phone's cache. Native Android owns connections and authorization. */
++export function createMobileMonitoring(options: { fleetId: string; visible: () => boolean; hosts: () => readonly string[]; changed: () => void }) {
++  const index = new Map<string, PcObservationIndex>(), details = new Map<string, PcObservation>();
++  const attempted = new Map<string, number>(), queued = new Set<string>(), active = new Map<string, AbortController>();
++  let timer: ReturnType<typeof setTimeout> | undefined;
++  let indexController: AbortController | undefined;
++  let stopped = false;
++  let error: string | null = null;
++  function headers(value: Record<string, unknown>): void { if (value.schema !== 1 || value.fleetId !== options.fleetId) throw new Error("Wrong PC observation scope."); }
++  async function refresh(): Promise<void> {
++    if (stopped || !options.visible() || indexController) return;
++    if (timer !== undefined) clearTimeout(timer); timer = undefined;
++    const controller = new AbortController(); indexController = controller;
++    const timeout = setTimeout(() => controller.abort(), 10_000);
++    try {
++      const value = await read(`/mobile/observations?fleet=${options.fleetId}`, controller.signal, 8 * 1024 * 1024); headers(value);
++      if (!Array.isArray(value.hosts) || value.hosts.length > 2048) throw new Error();
++      const allowed = new Set(options.hosts()), next = new Map<string, PcObservationIndex>();
++      for (const raw of value.hosts) {
++        if (!raw || typeof raw !== "object") throw new Error();
++        const { gpu, ...rest } = raw;
++        const parsed = parseSavedObservation(rest);
++        if (!allowed.has(parsed.address) || next.has(parsed.address)) throw new Error();
++        const { gpu: _unused, ...base } = parsed;
++        const item: PcObservationIndex = base;
++        if (gpu !== undefined) {
++          if (!gpu || typeof gpu !== "object" || !Number.isInteger(gpu.sampleCount) || gpu.sampleCount < 0 || gpu.sampleCount > 6000) throw new Error();
++          const { sampleCount, ...summary } = gpu;
++          const checked = parseSavedObservation({ ...rest, gpu: { ...summary, samples: [] } });
++          const { samples: _samples, ...valid } = checked.gpu!;
++          item.gpu = { ...valid, sampleCount };
++        }
++        next.set(item.address, item);
++      }
++      if (indexController !== controller || !options.visible()) return;
++      index.clear(); for (const [address, item] of next) index.set(address, item);
++      for (const address of details.keys()) if (!next.has(address)) details.delete(address);
++      error = value.error ? "Saved PC observations need attention." : null;
++      options.changed();
++    } catch { if (!controller.signal.aborted) { error = "PC cache unavailable; previously read values retain their source times."; options.changed(); } }
++    finally {
++      clearTimeout(timeout);
++      const current = indexController === controller;
++      if (current) indexController = undefined;
++      if (current && !stopped && options.visible()) timer = setTimeout(() => { void refresh(); }, 30_000);
++    }
++  }
++  function pump(): void {
++    if (stopped || !options.visible()) return;
++    for (const address of queued) {
++      if (active.size >= 4) break;
++      queued.delete(address);
++      if (!options.hosts().includes(address)) continue;
++      const controller = new AbortController(); active.set(address, controller); attempted.set(address, Date.now());
++      const timeout = setTimeout(() => controller.abort(), 10_000);
++      void read(`/mobile/observations?fleet=${options.fleetId}&address=${encodeURIComponent(address)}`, controller.signal, 2 * 1024 * 1024).then(value => {
++        headers(value);
++        if (value.host === null) return;
++        const record = parseSavedObservation(value.host);
++        if (record.address !== address) throw new Error();
++        if (active.get(address) !== controller || !options.visible()) return;
++        details.set(address, record); options.changed();
++      }).catch(() => {}).finally(() => {
++        clearTimeout(timeout);
++        if (active.get(address) === controller) active.delete(address);
++        pump();
++      });
++    }
++  }
++  function detail(address: string): PcObservation | undefined {
++    if (index.has(address) && !active.has(address) && Date.now() - (attempted.get(address) ?? 0) >= 30_000) {
++      queued.add(address); pump();
++    }
++    return details.get(address);
++  }
++  function pause(): void {
++    if (timer !== undefined) clearTimeout(timer); timer = undefined;
++    indexController?.abort(); indexController = undefined;
++    for (const controller of active.values()) controller.abort(); active.clear(); queued.clear();
++  }
++  return { index, detail, get error() { return error; }, refresh,
++    resume() { if (options.visible()) { stopped = false; if (timer !== undefined) clearTimeout(timer); void refresh(); pump(); } else pause(); },
++    stop() { stopped = true; pause(); },
++  };
++}
+diff --git a/src/fleet/pc-observations.ts b/src/fleet/pc-observations.ts
+new file mode 100644
+--- /dev/null
++++ b/src/fleet/pc-observations.ts
+@@ -0,0 +1,145 @@
++import { isMetadataAddress } from "./host-metadata.ts";
++
++export const REWARD_FRESH_MS = 6 * 60_000;
++export const MAX_GPU_SAMPLES = 6000;
++export const GPU_UUID = /^GPU-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
++export const REWARD_AMOUNT = /^(?:0|[1-9][0-9]{0,12})\.[0-9]{6}$/;
++export const GPU_REASON_LABELS = ["Thermal slowdown", "Hardware thermal protection", "Power limiting", "Power braking"] as const;
++export interface NodeBinding { pcId: string; runtime: "docker" | "podman"; wrapperId: string | null; nodeContainerId: string }
++export interface RewardObservation { schema: 1; address: string; observedAtMs: number; status: "ok" | "authentication-failed" | "rate-limited" | "identity-mismatch" | "unavailable"; amount?: string; retryAfterSeconds?: number }
++export type GpuSample = [number, number, number, number, number | null, number | null, number | null, number | null];
++export interface NodeGpuObservation {
++  schema: 2; address: string; observedAtMs: number | null; status: string; gpuUuids: string[];
++  intervalSeconds: 15; fromAtMs: number; toAtMs: number; truncated: boolean; clockTrusted: boolean; samples: GpuSample[];
++}
++export interface MonitoringState { status: string; checkedAtMs: number }
++export interface PcUpdate { address: string; binding: NodeBinding; rewards?: RewardObservation; gpu?: NodeGpuObservation; monitoring?: MonitoringState }
++export interface PcObservation extends PcUpdate { receivedAtMs: number; lastGoodRewards?: RewardObservation }
++export interface PcObservationIndex extends Omit<PcObservation, "gpu"> { gpu?: Omit<NodeGpuObservation, "samples"> & { sampleCount: number } }
++export const time = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= 8_640_000_000_000_000;
++function object(value: unknown, required: readonly string[], optional: readonly string[] = []): Record<string, unknown> {
++  if (!value || typeof value !== "object" || Array.isArray(value) || required.some(key => !Object.hasOwn(value, key))
++    || Object.keys(value).some(key => !required.includes(key) && !optional.includes(key))) throw new Error("Invalid PC observation fields.");
++  return value as Record<string, unknown>;
++}
++export function parseBinding(value: unknown): NodeBinding {
++  const input = object(value, ["pcId", "runtime", "wrapperId", "nodeContainerId"]);
++  const id = (v: unknown): v is string => typeof v === "string" && /^[a-f0-9]{64}$/.test(v);
++  if (!id(input.pcId) || !id(input.nodeContainerId) || !(input.wrapperId === null || id(input.wrapperId))
++    || !(input.runtime === "docker" || input.runtime === "podman") || input.wrapperId !== null && input.runtime !== "podman") throw new Error("Invalid node binding.");
++  return input as unknown as NodeBinding;
++}
++export const sameBinding = (a: NodeBinding, b: NodeBinding): boolean => a.pcId === b.pcId && a.runtime === b.runtime && a.wrapperId === b.wrapperId && a.nodeContainerId === b.nodeContainerId;
++export function parseReward(value: unknown, address: string): RewardObservation {
++  const input = object(value, ["schema", "address", "observedAtMs", "status"], ["amount", "retryAfterSeconds"]);
++  if (input.schema !== 1 || input.address !== address || !time(input.observedAtMs) || input.observedAtMs === 0
++    || !["ok", "authentication-failed", "rate-limited", "identity-mismatch", "unavailable"].includes(String(input.status))) throw new Error("Invalid reward observation.");
++  if (input.status === "ok" ? typeof input.amount !== "string" || !REWARD_AMOUNT.test(input.amount)
++    : input.amount !== undefined) throw new Error("Invalid exact reward amount.");
++  if (typeof input.amount === "string" && BigInt(input.amount.replace(".", "")) > 9_223_372_036_854_775_807n) throw new Error("Reward amount exceeds its supported range.");
++  if (input.retryAfterSeconds !== undefined && (typeof input.retryAfterSeconds !== "number"
++    || !Number.isSafeInteger(input.retryAfterSeconds) || input.retryAfterSeconds < 0 || input.retryAfterSeconds > 2_147_483_647)) throw new Error("Invalid reward retry delay.");
++  return input as unknown as RewardObservation;
++}
++export function parseNodeGpu(value: unknown, address: string): NodeGpuObservation {
++  const input = object(value, ["schema", "address", "observedAtMs", "status", "gpuUuids", "intervalSeconds", "fromAtMs", "toAtMs", "truncated", "clockTrusted", "samples"]);
++  if (input.schema !== 2 || input.address !== address || !(input.observedAtMs === null || time(input.observedAtMs))
++    || !["ok", "starting", "unavailable", "unsupported", "identity-mismatch", "binding-changed", "binding-mismatch", "clock-untrusted", "clock-regressed", "query-failed", "invalid-response", "stale", "not-enabled", "setup-failed"].includes(String(input.status))
++    || input.intervalSeconds !== 15 || !time(input.fromAtMs) || !time(input.toAtMs) || input.toAtMs < input.fromAtMs || input.toAtMs - input.fromAtMs > 7 * 86_400_000
++    || typeof input.truncated !== "boolean" || typeof input.clockTrusted !== "boolean" || !Array.isArray(input.gpuUuids) || input.gpuUuids.length > 64
++    || input.gpuUuids.some(uuid => typeof uuid !== "string" || !GPU_UUID.test(uuid)) || new Set(input.gpuUuids).size !== input.gpuUuids.length
++    || !Array.isArray(input.samples) || input.samples.length > MAX_GPU_SAMPLES) throw new Error("Invalid node GPU observation.");
++  let last = -1;
++  const seen = new Set<string>();
++  for (const sample of input.samples) {
++    if (!Array.isArray(sample) || sample.length !== 8 || !time(sample[0]) || sample[0] < input.fromAtMs || sample[0] > input.toAtMs || sample[0] < last
++      || !Number.isInteger(sample[1]) || sample[1] < 0 || sample[1] >= input.gpuUuids.length
++      || !Number.isInteger(sample[2]) || sample[2] < 0 || sample[2] > 15 || !Number.isInteger(sample[3]) || sample[3] < 0 || sample[3] > 15
++      || (sample[3] & ~sample[2]) !== 0 || sample.slice(4).some(n => n !== null && (typeof n !== "number" || !Number.isSafeInteger(n) || n < 0))) throw new Error("Invalid GPU sample.");
++    const key = `${sample[0]}:${sample[1]}`;
++    if (seen.has(key)) throw new Error("Duplicate GPU sample.");
++    seen.add(key); last = sample[0];
++  }
++  return input as unknown as NodeGpuObservation;
++}
++export function parsePcUpdate(value: unknown): PcUpdate {
++  const input = object(value, ["address", "binding"], ["rewards", "gpu", "monitoring"]);
++  if (!isMetadataAddress(input.address)) throw new Error("Invalid monitored host.");
++  const output: PcUpdate = { address: input.address, binding: parseBinding(input.binding) };
++  if (input.rewards !== undefined) output.rewards = parseReward(input.rewards, output.address);
++  if (input.gpu !== undefined) output.gpu = parseNodeGpu(input.gpu, output.address);
++  if (input.monitoring !== undefined) {
++    const state = object(input.monitoring, ["status", "checkedAtMs"]);
++    if (!time(state.checkedAtMs) || !["active", "unreachable", "network-unavailable", "credentials-required", "identity-changed", "authorization-required", "binding-changed", "paused", "unsupported"].includes(String(state.status))) throw new Error("Invalid monitoring status.");
++    output.monitoring = state as unknown as MonitoringState;
++  }
++  if (!output.rewards && !output.gpu && !output.monitoring) throw new Error("Empty PC observation.");
++  return structuredClone(output);
++}
++export function parseSavedObservation(value: unknown): PcObservation {
++  const input = object(value, ["address", "binding", "receivedAtMs"], ["rewards", "gpu", "monitoring", "lastGoodRewards"]);
++  if (!time(input.receivedAtMs)) throw new Error("Invalid observation receipt time.");
++  const { receivedAtMs, lastGoodRewards, ...update } = input;
++  const output: PcObservation = { ...parsePcUpdate(update), receivedAtMs };
++  if (lastGoodRewards !== undefined) {
++    output.lastGoodRewards = parseReward(lastGoodRewards, output.address);
++    if (output.lastGoodRewards.status !== "ok") throw new Error("Invalid retained reward.");
++  }
++  return output;
++}
++export function rewardView(record: Pick<PcObservation, "rewards" | "lastGoodRewards" | "monitoring"> | undefined, now: number) {
++  const success = record?.rewards?.status === "ok" ? record.rewards : record?.lastGoodRewards;
++  const current = !!success && record?.rewards?.status === "ok" && now >= success.observedAtMs && now < success.observedAtMs + REWARD_FRESH_MS
++    && (!record.monitoring || record.monitoring.status === "active" || record.monitoring.status === "unsupported");
++  return { amount: success?.amount ?? null, observedAtMs: success?.observedAtMs ?? null, current,
++    status: record?.rewards?.status ?? record?.monitoring?.status ?? "not-enabled" };
++}
++export function rewardAtoms(amount: string | null | undefined): string | null { return amount && REWARD_AMOUNT.test(amount) ? BigInt(amount.replace(".", "")).toString() : null; }
++
++export function jobGpuConditions(record: PcObservation | undefined, job: { node: string; timeStart: number | null; timeEnd: number | null; state: string; result?: string | null }, now: number, confirmedRunning = false): { label: string; detail: string } {
++  const unavailable = (detail: string) => ({ label: "—", detail });
++  const gpu = record?.gpu;
++  if (!gpu || gpu.address !== job.node || record?.address !== job.node || !gpu.samples.length) return unavailable("No recorded GPU samples for this host and job interval.");
++  if (!gpu.clockTrusted || gpu.toAtMs > now + 5000) return unavailable("PC observation time is untrusted; job association is unavailable.");
++  if (job.state === "QUEUED" || job.state === "RUNNING" && ((job.timeEnd ?? 0) > 0 || job.result != null)) return unavailable("Job lifecycle and timing do not establish a consistent execution interval.");
++  if (job.state === "RUNNING" && !confirmedRunning) return unavailable("The running assignment is not currently confirmed and has no verified end time; newer GPU samples are not assigned to this historical record.");
++  if (job.timeStart === null || !Number.isSafeInteger(job.timeStart) || job.timeStart <= 0) return unavailable("This job has no verified start time.");
++  const start = job.timeStart * 1000;
++  const end = job.timeEnd !== null && job.timeEnd > 0 ? job.timeEnd * 1000 : job.state === "RUNNING" ? Math.min(now, gpu.toAtMs) : null;
++  if (!time(start) || end === null || !time(end) || end < start) return unavailable("This job has no valid observation interval.");
++  const samples = gpu.samples.filter(sample => sample[0] >= start && sample[0] <= end);
++  if (!samples.length) return unavailable("No GPU samples overlap this job. Earlier unrecorded intervals remain unknown.");
++  const active = GPU_REASON_LABELS.map((_, index) => samples.some(sample => sample[3] & (1 << index)));
++  const supported = GPU_REASON_LABELS.filter((_, index) => samples.some(sample => sample[2] & (1 << index)));
++  let gap = 0;
++  let partial = gpu.truncated;
++  const durationUs = [0, 0, 0, 0];
++  const counterIntervals = [0, 0, 0, 0];
++  let resets = 0;
++  for (let device = 0; device < gpu.gpuUuids.length; device++) {
++    const readings = samples.filter(sample => sample[1] === device);
++    if (!readings.length || readings[0]![0] > start + 15_000 || readings.at(-1)![0] < end - 15_000) partial = true;
++    for (let i = 1; i < readings.length; i++) {
++      const previous = readings[i - 1]!, current = readings[i]!, elapsed = current[0] - previous[0];
++      gap = Math.max(gap, elapsed);
++      for (let reason = 0; reason < 4; reason++) {
++        const before = previous[reason + 4], after = current[reason + 4];
++        if (typeof before !== "number" || typeof after !== "number") continue;
++        if (after < before) { resets++; continue; }
++        const delta = after - before;
++        if (elapsed <= 0 || elapsed > 37_500 || delta > elapsed * 2000) continue;
++        counterIntervals[reason]!++;
++        durationUs[reason]! += delta;
++        if (delta > 0) active[reason] = true;
++      }
++    }
++  }
++  partial ||= gap > 22_500;
++  const hits = GPU_REASON_LABELS.filter((_, index) => active[index]);
++  const label = hits.length ? hits.join("; ") : supported.length || counterIntervals.some(count => count > 0) ? "No events in samples" : "Unsupported";
++  return { label, detail: `${hits.length ? "Observed during this job: " + hits.join(", ") : "No active supported flags in the recorded samples"}.\n` +
++    `Verified node GPU allocation: ${gpu.gpuUuids.join(", ")}.\n${samples.length} samples from ${new Date(samples[0]![0]).toISOString()} to ${new Date(samples.at(-1)![0]).toISOString()}.\n` +
++    `${partial ? "Partial coverage" : "Sampled coverage"}; largest interior gap ${gap / 1000}s. Unsupported reasons and unobserved intervals remain unknown.\n` +
++    `${GPU_REASON_LABELS.map((label, index) => `${label} counter increase within verified intervals: ${counterIntervals[index] ? `${(durationUs[index]! / 1_000_000).toFixed(3)}s` : "unavailable"}`).join("; ")}. ${resets} counter resets excluded.\n` +
++    "Association uses the verified host/GPU allocation and reported job interval; it does not establish which operation caused throttling or a job failure." };
 +}

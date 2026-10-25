@@ -157,7 +157,7 @@
     {
       "path": "src/fleet/sort.ts",
       "sourceSha256": "dfcf5cbbad9e6d794b949de3e942b7bb3470f85969dcdf10b741c244bcccae9f",
-      "sha256": "dfcf5cbbad9e6d794b949de3e942b7bb3470f85969dcdf10b741c244bcccae9f"
+      "sha256": "e96c442186af6d8753f79ef8179ac38d56013ff9aac8e8e81e7b50ccc844b85f"
     },
     {
       "path": "src/fleet/staking-view.ts",
@@ -217,12 +217,12 @@
     {
       "path": "src/preview/job-history.ts",
       "sourceSha256": "205d3f242537c206e40e20df413ba52ec26f39ea72fa9ed592a606f0bc6d7a58",
-      "sha256": "205d3f242537c206e40e20df413ba52ec26f39ea72fa9ed592a606f0bc6d7a58"
+      "sha256": "d165c1d058ecc5e7d243aa9a9d56ece69fdb49387dfd58a23fcd29c3b521a770"
     },
     {
       "path": "src/preview/main.ts",
       "sourceSha256": "14277fed44c31c870188eba752bb334cdd3420bea2500a1168c98ca51a557af0",
-      "sha256": "d208c4606eb5f2bdcbc7f81a94f0549570f3de085656806ec6908fbc4a76eb5e"
+      "sha256": "b59ce2c32b2a108d46aacd20579e55a40c38630d5b149cba281017a403207afd"
     },
     {
       "path": "src/preview/online-roster.ts",
@@ -267,7 +267,7 @@
     {
       "path": "src/server/browser-assets.ts",
       "sourceSha256": "fb8e07ced089b3ba079a4f00c9bfaef4d9a2606b5ea013efaf9a0781bd8896aa",
-      "sha256": "a991fc355d4b6549ff355e1cb1c53a74b150fa06d4da5dd920a7fdf9c65fd775"
+      "sha256": "223e481bd49b56fd1a16043b524233f268b7ac5fc04e79e7e1fac31c0dd1e7d6"
     },
     {
       "path": "src/server/file-snapshot-store.ts",
@@ -832,7 +832,7 @@
     {
       "path": "test/preview-server.test.ts",
       "sourceSha256": "a7bd550e262a29d2a869c48076e12a52ba62e6b2028faf5bd76d89ea28ad591e",
-      "sha256": "fe23a73f88119e5a445c0f96578a070e93fe95a56cb2a3cdc5dfd1fe214cbfb6"
+      "sha256": "8620fc5992d0e711688ca46e3a2965cf247843b351f6188e14547dc9413cbf21"
     },
     {
       "path": "test/provider-cancellation.test.ts",
@@ -973,14 +973,28 @@
       "path": "src/preview/mobile-telemetry.ts",
       "sourceSha256": null,
       "sha256": "acbd2ef0dcdcf9134a2a027a2139da243889b92fcbd2e9b182f71a776e1cdc49"
+    },
+    {
+      "path": "src/preview/mobile-monitoring.ts",
+      "sourceSha256": null,
+      "sha256": "e6a4c7b9f0fc04f271b2a0246ab269c003637d4e03ddfafc790b5750fdaba61e"
+    },
+    {
+      "path": "src/fleet/pc-observations.ts",
+      "sourceSha256": null,
+      "sha256": "dfa0ca97c50aedf62f70301500acd2d7b8ff85df2bdad117906350cf4dbbda71"
     }
   ],
   "androidAdaptations": {
     "paths": [
       "scripts/online-retention.ts",
       "scripts/preview-server.ts",
+      "src/fleet/pc-observations.ts",
+      "src/fleet/sort.ts",
       "src/preview/fleet-config.ts",
+      "src/preview/job-history.ts",
       "src/preview/main.ts",
+      "src/preview/mobile-monitoring.ts",
       "src/preview/mobile-scenarios.ts",
       "src/preview/mobile-telemetry.ts",
       "src/server/browser-assets.ts",

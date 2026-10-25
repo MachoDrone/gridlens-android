@@ -50,3 +50,14 @@ it to a host/job. Browser assets and their fixture include this module. Original
 source hashes remain unchanged; the complete patch reproduces every adapted file.
 The recording native bridge is still absent: only explicit native SSH actions can
 supply metadata or enable Docker recording. Public readers never gain credentials.
+
+Android 0.2.2 adds `src/fleet/pc-observations.ts` and
+`src/preview/mobile-monitoring.ts` for strict native-observation contracts and
+bounded cache-only browser reads. The optional exact rewards sort key extends
+`src/fleet/sort.ts`; existing callers retain their prior behavior. Android's
+`main.ts` renders exact/retained rewards and fixed native setup navigation, while
+an optional `job-history.ts` callback adds GPU conditions only in Android saved
+fleets. Conditions require matched host, UUID allocation and verified job timing;
+counter resets/gaps/unsupported signals stay explicit. New module assets are
+allowlisted and hash-recorded. No desktop checkout or public-provider budget is
+changed; browser code still has no credential, signing, Docker or SSH interface.

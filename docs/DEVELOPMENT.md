@@ -161,3 +161,20 @@ It does not prove internet connectivity or upstream host health. Online GPU Host
 uses the existing verified Online admission and cache-only job policy. Phone and
 laptop use independent public-reader processes; they do not share request budgets
 or cached observations. No quota increase or hosted-capacity claim is made.
+
+## Android 0.2.2 monitoring implementation
+
+See [rewards/GPU implementation](REWARDS_AND_GPU_TELEMETRY_GAPS.md). The app owns
+PC verification and permissions; developer-side SSH to the lab is not an
+acceptance prerequisite. Test only isolated SSH/HTTP/process/Keystore fixtures.
+The earlier completed single-node proof established the fixed authentication protocol;
+it is not recurring permission for development. Real permission and the first
+successful per-node read occur in the native phone setup.
+
+`npm run test:collector` now covers both the legacy PC recorder and node-bound
+recorder. `MonitoringVerification` adds isolated Android Keystore monitoring
+persistence/revocation checks to the debug instrumentation. Public Fleet budgets
+remain unchanged. Native monitoring uses four fair foreground slots, persisted
+per-node authorization and shared reward cooldowns. Node/WebView cache reads
+cannot trigger signing or arbitrary SSH. Receipt of an observation preserves
+source times and cannot establish new reachability or causal job attribution.

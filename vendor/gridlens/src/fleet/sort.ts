@@ -54,6 +54,8 @@ export interface SortableFleetRow {
   readonly nosAmount?: string | null;
   /** Exact NOS base units currently held in the staking vault. */
   readonly stakedNosAmount?: string | null;
+  /** Exact claimable uptime NOS base units from an authorized Android node read. */
+  readonly rewardsAmount?: string | null;
   readonly values: Readonly<Partial<Record<SortColumn, string | number | null>>>;
 }
 
@@ -107,12 +109,16 @@ export function sortFleetRows<T extends SortableFleetRow>(
     const rightNos = isNosAmount(b.nosAmount) ? b.nosAmount : null;
     const leftStaked = isStakingAmount(a.stakedNosAmount) ? a.stakedNosAmount : null;
     const rightStaked = isStakingAmount(b.stakedNosAmount) ? b.stakedNosAmount : null;
+    const leftRewards = isNosAmount(a.rewardsAmount) ? a.rewardsAmount : null;
+    const rightRewards = isNosAmount(b.rewardsAmount) ? b.rewardsAmount : null;
     const comparison = sort.column === "sol" && (a.solLamports !== undefined || b.solLamports !== undefined)
       ? compareSolLamports(leftSol, rightSol) * (sort.direction === "desc" && leftSol !== null && rightSol !== null ? -1 : 1)
       : sort.column === "nos" && (a.nosAmount !== undefined || b.nosAmount !== undefined)
         ? compareNosAmounts(leftNos, rightNos) * (sort.direction === "desc" && leftNos !== null && rightNos !== null ? -1 : 1)
       : sort.column === "stakedNos" && (a.stakedNosAmount !== undefined || b.stakedNosAmount !== undefined)
         ? compareStakingAmounts(leftStaked, rightStaked) * (sort.direction === "desc" && leftStaked !== null && rightStaked !== null ? -1 : 1)
+      : sort.column === "rewards" && (a.rewardsAmount !== undefined || b.rewardsAmount !== undefined)
+        ? compareNosAmounts(leftRewards, rightRewards) * (sort.direction === "desc" && leftRewards !== null && rightRewards !== null ? -1 : 1)
       : compareValues(normalize(a.values[sort.column]), normalize(b.values[sort.column]), sort.direction);
     return comparison ||
       compareValues(stringValue(a.pc), stringValue(b.pc)) ||

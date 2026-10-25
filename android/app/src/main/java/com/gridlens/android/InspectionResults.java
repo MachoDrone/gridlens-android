@@ -10,9 +10,11 @@ final class InspectionResults {
     static SshDiscovery.Result merge(SshDiscovery.Result initial, SshDiscovery.Result elevated) {
         LinkedHashSet<String> verified = new LinkedHashSet<>(initial.addresses);
         verified.addAll(elevated.addresses);
+        ArrayList<NodeBinding> bindings = new ArrayList<>(initial.bindings);
+        bindings.addAll(elevated.bindings);
         // These are unresolved observations, not a deduplicated instance count.
         return new SshDiscovery.Result(elevated.status, new ArrayList<>(verified), initial.unresolved + elevated.unresolved,
-                PcMetadata.merge(initial.pcMetadata, elevated.pcMetadata), elevated.gpuCollectorStatus != null ? elevated.gpuCollectorStatus : initial.gpuCollectorStatus);
+                PcMetadata.merge(initial.pcMetadata, elevated.pcMetadata), elevated.gpuCollectorStatus != null ? elevated.gpuCollectorStatus : initial.gpuCollectorStatus, bindings);
     }
     /** One host can have a PC association only when all current discoveries agree. */
     static Map<String, PcMetadata> metadataByAddress(Iterable<SshDiscovery.Result> results) {

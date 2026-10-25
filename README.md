@@ -8,11 +8,12 @@ continues independently.
 
 **[Download the signed Android APK](https://github.com/MachoDrone/gridlens-android-releases/releases/latest/download/gridlens-android.apk)**
 
-**Version 0.2.1** adds discovered PC names/IPs, optional PC-side GPU recording,
-and a green Update indicator for a known newer compatible release. It preserves
-saved fleets and the existing application/signing identity. Install over your
-current version; do not uninstall first. See [PC telemetry](docs/PC_TELEMETRY.md)
-for setup and the remaining rewards/per-job attribution limits.
+**Version 0.2.2** puts PC monitoring setup in the app. Open a saved fleet and choose
+**Enable / repair monitoring** once. The app reuses saved SSH connections, verifies
+the exact nodes, reads claimable rewards inside authorized node containers, and
+records GPU conditions for association with job intervals. Routine monitoring
+needs no rescans or developer access to the PCs. Install over the existing app;
+do not uninstall first. See [rewards and GPU implementation](docs/REWARDS_AND_GPU_TELEMETRY_GAPS.md).
 
 Android 8.0 or newer is required. This build includes arm64 phones and x86_64
 emulators. It does not include 32-bit Android or an iPhone application. The first
@@ -30,8 +31,9 @@ ordinary internet without another network scan or SSH login. Scans never start
 automatically. **Fleets** manages saved fleets, network profiles and credentials.
 
 SSH passwords and imported keys stay native and can be remembered encrypted with
-Android Keystore. **Forget credentials** leaves saved fleets available. Container
-inventory is read-only, with explicit per-PC sudo approval when necessary.
+Android Keystore. **Forget credentials** leaves saved fleets available. Container inventory is read-only. Monitoring setup separately approves its fixed
+rewards reads and owned Docker recorder operations, including per-PC sudo when
+needed; saved approval avoids recurring password prompts.
 Full-tunnel VPNs may require learning the destination range once on-site or
 entering it; GridLens does not guess all private networks or configure VPNs.
 See [Network Discovery](docs/NETWORK_DISCOVERY.md) for supported layouts, limits
@@ -46,12 +48,16 @@ keep the existing provider caches and limits. The APK contains no operator roste
 The Fleet table, Jobs history, country display, sorting, display controls, touch
 navigation and freshness rules come from the recorded desktop source snapshot.
 Android's Scenario selector adds Network Discovery and named saved fleets.
-PC and IP now show dated native discovery metadata for saved fleets. Use Rescan
-once after upgrading an older fleet. During native review, **GPU recording…** can
-enable the optional Docker recorder on selected PCs; expand **GPU conditions (PC
-recordings)** below Scenario to inspect results. Ordinary Rescan reads existing
-recorders. Exact claimable rewards and per-job physical-GPU attribution remain
-unconnected; no existing node key is read.
+PC and IP show dated native discovery metadata for saved fleets. **Enable / repair
+monitoring** uses existing trusted endpoints and saved credentials; new computers
+still use normal native discovery. One native approval covers bounded in-node
+rewards reads and owned GPU recorders. The app refreshes enabled PCs while their
+fleet is open; GPU recording continues while the phone is closed. Expand **Jobs**
+for GPU conditions observed within each reported job interval. Source failures,
+unsupported readings and gaps stay visible, and cached amounts retain their
+original timestamps. Keys and authorization headers are never exported to the
+phone; the fixed rewards helper sends authorization only to Nosana and never
+claims funds.
 
 Phone and laptop have independent preferences, rosters and public-reader caches;
 they do not synchronize. Unknown columns remain unknown. Provider limits and
