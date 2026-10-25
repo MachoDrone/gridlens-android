@@ -5,7 +5,9 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
+import android.content.res.ColorStateList;
 import android.graphics.Color;
+import android.graphics.Typeface;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
@@ -44,6 +46,10 @@ public final class MainActivity extends Activity {
     private WebView webView;
     private TextView status;
     private Button recovery;
+    private Button update;
+    private ColorStateList updateDefaultTint;
+    private ColorStateList updateDefaultText;
+    private Typeface updateDefaultTypeface;
     private UpdateController updates;
     private DiscoveryController discovery;
     private String origin;
@@ -63,7 +69,8 @@ public final class MainActivity extends Activity {
             importScenario = state.getString("importScenario");
         }
         createViews();
-        updates = new UpdateController(this);
+        updates = new UpdateController(this, this::showUpdateAvailability,
+                !(BuildConfig.DEBUG && "fresh".equals(getIntent().getStringExtra("scenario"))));
         startupAt = android.os.SystemClock.elapsedRealtime();
         NodeRuntime.start(this);
         handler.post(this::awaitRuntime);
@@ -98,9 +105,13 @@ public final class MainActivity extends Activity {
         hosts.setContentDescription("Import host address list");
         hosts.setOnClickListener(view -> chooseRoster());
         toolbar.addView(hosts, new LinearLayout.LayoutParams(dp(76), dp(48)));
-        Button update = new Button(this);
+        update = new Button(this);
         update.setText(R.string.update_button);
         update.setContentDescription("Check for an Android app update");
+        update.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        updateDefaultTint = update.getBackgroundTintList();
+        updateDefaultText = update.getTextColors();
+        updateDefaultTypeface = update.getTypeface();
         update.setOnClickListener(view -> updates.checkForUpdate());
         toolbar.addView(update, new LinearLayout.LayoutParams(dp(84), dp(48)));
         root.addView(toolbar);
@@ -333,6 +344,7 @@ public final class MainActivity extends Activity {
     private void suspendPage() { webView.evaluateJavascript("window.dispatchEvent(new PageTransitionEvent('pagehide'));", null); }
     @Override protected void onPause() {
         paused = true;
+        if (updates != null) updates.onPause();
         String currentUrl = webView.getUrl();
         if (currentUrl != null && local(Uri.parse(currentUrl))) {
             String scenario = Uri.parse(currentUrl).getQueryParameter("scenario");
@@ -371,6 +383,16 @@ public final class MainActivity extends Activity {
         if (webView.canGoBack()) webView.goBack(); else super.onBackPressed();
     }
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
+    private void showUpdateAvailability(String versionName) {
+        boolean available = versionName != null;
+        update.setBackgroundTintList(available ? ColorStateList.valueOf(Color.rgb(16, 232, 12)) : updateDefaultTint);
+        update.setTextColor(available ? ColorStateList.valueOf(Color.BLACK) : updateDefaultText);
+        update.setTypeface(available ? Typeface.create(updateDefaultTypeface, Typeface.BOLD) : updateDefaultTypeface);
+        String description = available ? "GridLens " + versionName + " update available. Tap to check and install."
+                : "Check for an Android app update";
+        update.setContentDescription(description);
+        update.setTooltipText(description);
+    }
     private void showStatus(String text) { status.setText(text); status.setVisibility(View.VISIBLE); }
     private void showRecoveryStatus(String text) { showStatus(text); recovery.setVisibility(View.VISIBLE); }
     WebView webViewForTesting() { return webView; }

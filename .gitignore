@@ -30,3 +30,6 @@ real200.json
 *.csv
 rosters/
 signing/
+
+__pycache__/
+*.pyc

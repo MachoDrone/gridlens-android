@@ -1,3 +1,5 @@
+import { parsePcMetadata, parsePcMetadataUpdates } from "./pc-metadata.ts";
+import type { PcMetadata } from "./pc-metadata.ts";
 import { randomUUID, randomBytes } from "node:crypto";
 import { open, rename, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -6,7 +8,7 @@ import { isMetadataAddress } from "../vendor/gridlens/src/fleet/host-metadata.ts
 export const MAX_SAVED_FLEETS = 100;
 export const MAX_SAVED_HOSTS = 20_000;
 export const FLEET_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-export interface DiscoveredHost { address: string; firstDiscoveredAtMs: number; lastDiscoveredAtMs: number }
+export interface DiscoveredHost { address: string; firstDiscoveredAtMs: number; lastDiscoveredAtMs: number; pcMetadata?: PcMetadata }
 export interface SavedFleet { id: string; name: string; createdAtMs: number; updatedAtMs: number; hosts: DiscoveredHost[] }
 export interface FleetState { schema: 1; selectedScenario: string; fleets: SavedFleet[] }
 export interface FleetListing extends FleetState { error: string | null }
@@ -51,10 +53,11 @@ function validate(value: unknown): FleetState {
     const updatedAtMs = fleet.updatedAtMs;
     const hosts = fleet.hosts.map((host: unknown): DiscoveredHost => {
       if (!record(host)) throw new Error("Invalid discovered host.");
-      exact(host, ["address", "firstDiscoveredAtMs", "lastDiscoveredAtMs"]);
+      exact(host, ["address", "firstDiscoveredAtMs", "lastDiscoveredAtMs", ...(Object.hasOwn(host, "pcMetadata") ? ["pcMetadata"] : [])]);
       if (!isMetadataAddress(host.address) || !time(host.firstDiscoveredAtMs) || !time(host.lastDiscoveredAtMs) ||
           host.firstDiscoveredAtMs > host.lastDiscoveredAtMs || host.firstDiscoveredAtMs < createdAtMs || host.lastDiscoveredAtMs > updatedAtMs) throw new Error("Invalid discovered host.");
-      return { address: host.address, firstDiscoveredAtMs: host.firstDiscoveredAtMs, lastDiscoveredAtMs: host.lastDiscoveredAtMs };
+      return { address: host.address, firstDiscoveredAtMs: host.firstDiscoveredAtMs, lastDiscoveredAtMs: host.lastDiscoveredAtMs,
+        ...(Object.hasOwn(host, "pcMetadata") ? { pcMetadata: parsePcMetadata(host.pcMetadata, host.lastDiscoveredAtMs) } : {}) };
     });
     if (new Set(hosts.map(host => host.address)).size !== hosts.length) throw new Error("Duplicate discovered host.");
     return { id: fleet.id, name: name(fleet.name), createdAtMs: fleet.createdAtMs, updatedAtMs: fleet.updatedAtMs, hosts };
@@ -153,16 +156,18 @@ export class SavedFleets {
         exact(value, ["op", "scenario"]);
         next.selectedScenario = scenario(value.scenario, next);
       } else if (value.op === "create") {
-        exact(value, ["op", "name", "addresses"]);
+        exact(value, ["op", "name", "addresses", ...(Object.hasOwn(value, "pcMetadata") ? ["pcMetadata"] : [])]);
         const roster = addresses(value.addresses);
+        const metadata = parsePcMetadataUpdates(value.pcMetadata, roster, stamp);
         if (roster.length === 0) throw new Error("Discover at least one public host before saving a fleet.");
         const fleet: SavedFleet = { id: randomUUID(), name: name(value.name), createdAtMs: stamp, updatedAtMs: stamp,
-          hosts: roster.map(address => ({ address, firstDiscoveredAtMs: stamp, lastDiscoveredAtMs: stamp })) };
+          hosts: roster.map(address => ({ address, firstDiscoveredAtMs: stamp, lastDiscoveredAtMs: stamp,
+            ...(metadata.get(address) ? { pcMetadata: metadata.get(address)! } : {}) })) };
         next.fleets.push(fleet); fleetId = fleet.id; changedId = fleet.id; next.selectedScenario = `fleet:${fleet.id}`;
       } else {
         const fields = value.op === "rename" ? ["op", "id", "name"] : value.op === "merge" || value.op === "remove-hosts" ? ["op", "id", "addresses"] : value.op === "delete" ? ["op", "id"] : null;
         if (!fields) throw new Error("Choose a supported fleet operation.");
-        exact(value, fields);
+        exact(value, [...fields, ...(value.op === "merge" && Object.hasOwn(value, "pcMetadata") ? ["pcMetadata"] : [])]);
         const fleet = next.fleets.find(item => item.id === value.id);
         if (!fleet) throw new Error("Choose a known saved fleet.");
         fleetId = fleet.id; changedId = fleet.id;
@@ -175,15 +180,24 @@ export class SavedFleets {
           if ([...removed].some(address => !fleet.hosts.some(host => host.address === address))) throw new Error("Choose hosts from this saved fleet.");
           fleet.hosts = fleet.hosts.filter(host => !removed.has(host.address)); fleet.updatedAtMs = stamp;
         } else {
-          for (const address of addresses(value.addresses)) {
+          const roster = addresses(value.addresses);
+          const metadata = parsePcMetadataUpdates(value.pcMetadata, roster, stamp);
+          for (const address of roster) {
             const host = fleet.hosts.find(item => item.address === address);
-            if (host) host.lastDiscoveredAtMs = stamp;
-            else fleet.hosts.push({ address, firstDiscoveredAtMs: stamp, lastDiscoveredAtMs: stamp });
+            if (host) {
+              host.lastDiscoveredAtMs = stamp;
+              if (metadata.has(address)) {
+                const update = metadata.get(address);
+                if (update) host.pcMetadata = update; else delete host.pcMetadata;
+              }
+            } else fleet.hosts.push({ address, firstDiscoveredAtMs: stamp, lastDiscoveredAtMs: stamp,
+              ...(metadata.get(address) ? { pcMetadata: metadata.get(address)! } : {}) });
           }
           fleet.updatedAtMs = stamp; next.selectedScenario = `fleet:${fleet.id}`;
         }
       }
       validate(next);
+      if (Buffer.byteLength(JSON.stringify(next)) > MAX_STATE_BYTES - 16 * 1024) throw new Error("Saved fleets exceed the storage capacity.");
       try {
         // Backup only the validated in-memory state, never a corrupt primary.
         await atomicPrivateJson(this.filename + ".bak", this.state);

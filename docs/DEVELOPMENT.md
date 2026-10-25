@@ -123,12 +123,19 @@ Jobs/Country changes, rather than pretending those changes were already in the
 upstream commit. Mobile adaptations are recorded separately. Keep both the source
 and download repositories on `main`; do not force-push or modify desktop branches.
 
-Network Discovery physical testing uses an explicit exception to stable
-publication: source candidate branch `review/android-network-discovery` and a
-signed `v0.2.0-rc.1` prerelease in the downloads repository. The prerelease omits
-`update.json`, is not GitHub's Latest release, and does not advance source `main`
-or the automatic Update channel. Promote only after the required physical
-acceptance, with the candidate's exact source and APK evidence recorded.
+The original Network Discovery candidate remains an immutable `v0.2.0-rc.1`
+prerelease. Version 0.2.1 advances the normal Update channel in response to the
+operator's explicit request to install this update through that button. The
+operator has confirmed eight hosts and saved-fleet reopening on the factory-OS
+Pixel; the broader GrapheneOS/network acceptance matrix remains pending. Do not
+claim that publication completes every physical acceptance scenario.
+
+PC telemetry tests also run via `npm run test:collector` (Python 3 standard
+library only). The recorder's Python image is pinned by digest in `GpuCollector`;
+source and image are verified before reusing existing labeled resources. See
+[PC telemetry](PC_TELEMETRY.md) for host-side authority, bounds and missing sources.
+The updater checks a small manifest only while foregrounded, at most every six
+hours, and never silently downloads or installs an APK.
 
 ## Runtime boundaries
 

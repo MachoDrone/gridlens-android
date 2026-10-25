@@ -271,3 +271,42 @@ test("saved timestamps outside the JavaScript Date range fail closed before they
     assert.equal(store.list().fleets.length, 0);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
+
+test("dated PC metadata survives upgrade, preserves old reads and clears ambiguous mappings", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "gridlens-pc-"));
+  let now = 1000;
+  try {
+    const store = await SavedFleets.load(directory, () => now);
+    const { fleetId: id } = await store.mutate({ op: "create", name: "Existing fleet", addresses: [first, second] });
+    const metadata = { pcId: "a".repeat(64), pcName: "pc-fixture", ipAddresses: ["192.0.2.20", "fd00:0:0:0:0:0:0:1"], observedAtMs: 1500 };
+    now = 2000;
+    await store.mutate({ op: "merge", id, addresses: [first], pcMetadata: [{ address: first, ...metadata }] });
+    const saved = store.get(id!)!;
+    assert.equal(saved.hosts[0]!.pcMetadata!.pcName, "pc-fixture");
+    assert.equal(saved.hosts[0]!.pcMetadata!.observedAtMs, 1500);
+    assert.deepEqual(saved.hosts[0]!.pcMetadata!.ipAddresses, ["192.0.2.20", "fd00::1"]);
+    assert.equal(saved.hosts[1]!.pcMetadata, undefined);
+    now = 3000;
+    await store.mutate({ op: "merge", id, addresses: [first] });
+    assert.equal(store.get(id!)!.hosts[0]!.pcMetadata!.observedAtMs, 1500, "missing metadata must not redate old evidence");
+    assert.deepEqual((await SavedFleets.load(directory)).list(), store.list());
+    await store.mutate({ op: "merge", id, addresses: [first], pcMetadata: [{ address: first, pcId: null, pcName: null, ipAddresses: [], observedAtMs: 2500 }] });
+    assert.equal(store.get(id!)!.hosts[0]!.pcMetadata, undefined, "ambiguous ownership clears the prior mapping");
+    assert.equal(store.get(id!)!.hosts.length, 2);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("PC metadata rejects secrets, unsafe names, invalid addresses, unknown hosts and future times atomically", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "gridlens-pc-invalid-"));
+  try {
+    const store = await SavedFleets.load(directory, () => 1000);
+    const good = { address: first, pcId: "a".repeat(64), pcName: "pc-fixture", ipAddresses: ["192.0.2.20"], observedAtMs: 900 };
+    for (const change of [{ password: "forbidden" }, { pcName: "<script>" }, { pcId: "unverified" },
+      { ipAddresses: ["example.com"] }, { ipAddresses: ["127.0.0.1"] }, { ipAddresses: ["::1"] },
+      { ipAddresses: ["::ffff:127.0.0.1"] }, { ipAddresses: ["192.0.2.20", "192.0.2.20"] },
+      { address: second }, { observedAtMs: 1001 }]) {
+      await assert.rejects(store.mutate({ op: "create", name: "Fixture", addresses: [first], pcMetadata: [{ ...good, ...change }] }));
+      assert.equal(store.list().fleets.length, 0);
+    }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});

@@ -26,9 +26,9 @@ git apply /path/to/gridlens-android/vendor/mobile-adaptations.patch
 If either check fails, reconcile the adapter against the changed backend; never
 ignore a patch failure or reimplement browser behavior to avoid it. Refresh the
 adapter patch if needed, replace `gridlens/` with the candidate, and update
-PROVENANCE.json's revision/disclosure, original hashes and final hashes. Keep the
-browser files byte-for-byte identical to the reviewed desktop snapshot. The
-root test verifies final hashes and requires unmodified browser hashes.
+PROVENANCE.json's revision/disclosure, original hashes and final hashes. Keep browser files byte-for-byte identical except the explicit marker-gated
+Android adaptations in ANDROID_ADAPTATIONS.md. The root test verifies every final
+hash and requires unmodified hashes outside the exact adaptation allowlist.
 
 Then run from the Android repository:
 

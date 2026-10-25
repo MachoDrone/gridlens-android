@@ -52,6 +52,8 @@ public final class SshDiscoveryTest {
                 public void destroy(ChannelSession channel) { }
             });
             outputs.put(DiscoveryPolicy.inventoryCommand("docker", null, false), NODE + PROXY);
+            outputs.put(PcMetadata.NAME_COMMAND, "fixture-pc\n");
+            outputs.put(PcMetadata.ADDRESSES_COMMAND, "192.0.2.10 198.51.100.5 fd42::10\n");
             server.start();
         }
         DiscoveryPolicy.Candidate candidate() { return new DiscoveryPolicy.Candidate("192.0.2.10", server.getPort(), "fixture"); }
@@ -78,13 +80,83 @@ public final class SshDiscoveryTest {
             fixture.outputs.put(DiscoveryPolicy.inventoryCommand("docker", "c".repeat(64), false), NODE + PROXY.replace(ADDRESS, "1".repeat(31) + "2"));
             SshDiscovery.Result result = SshDiscovery.inventory(fixture, fixture.candidate(), SshDiscovery.inspectIdentity(fixture, fixture.candidate()), credential, null);
             assertEquals(SshDiscovery.Status.SUCCESS, result.status); assertEquals(2, result.addresses.size()); assertEquals(0, result.unresolved);
-            assertEquals(Arrays.asList(DiscoveryPolicy.inventoryCommand("docker", null, false), DiscoveryPolicy.inventoryCommand("docker", "c".repeat(64), false), DiscoveryPolicy.inventoryCommand("podman", null, false)), fixture.commands);
+            assertEquals(Arrays.asList(DiscoveryPolicy.inventoryCommand("docker", null, false), DiscoveryPolicy.inventoryCommand("docker", "c".repeat(64), false), DiscoveryPolicy.inventoryCommand("podman", null, false), PcMetadata.NAME_COMMAND, PcMetadata.ADDRESSES_COMMAND), fixture.commands);
+            assertEquals("fixture-pc", result.pcMetadata.pcName);
+            assertEquals(Arrays.asList("192.0.2.10", "198.51.100.5", "fd42:0:0:0:0:0:0:10"), result.pcMetadata.ipAddresses);
+            assertTrue(result.pcMetadata.pcId.matches("[a-f0-9]{64}"));
+            assertTrue(System.currentTimeMillis() - result.pcMetadata.observedAtMs < 5000);
         }
     }
     @Test public void wrongPasswordAttemptsOnceAndNoInventoryRuns() throws Exception {
         try (Fixture fixture = new Fixture(); SshDiscovery.Credential credential = new SshDiscovery.Credential("operator", bytes("wrong"), null, null)) {
             SshDiscovery.Result result = SshDiscovery.inventory(fixture, fixture.candidate(), SshDiscovery.inspectIdentity(fixture, fixture.candidate()), credential, null);
             assertEquals(SshDiscovery.Status.AUTH_FAILED, result.status); assertEquals(1, fixture.passwords.get()); assertTrue(fixture.commands.isEmpty());
+            assertNull(result.pcMetadata);
+        }
+    }
+    @Test public void optionalPcMetadataFailurePreservesPublicIdentityAndVerifiedEndpoint() throws Exception {
+        try (Fixture fixture = new Fixture(); SshDiscovery.Credential credential = new SshDiscovery.Credential("operator", bytes("fixture-password"), null, null)) {
+            fixture.outputs.remove(PcMetadata.NAME_COMMAND); fixture.outputs.remove(PcMetadata.ADDRESSES_COMMAND);
+            SshDiscovery.Result result = SshDiscovery.inventory(fixture, fixture.candidate(), SshDiscovery.inspectIdentity(fixture, fixture.candidate()), credential, null);
+            assertEquals(SshDiscovery.Status.SUCCESS, result.status);
+            assertEquals(Collections.singletonList(ADDRESS), result.addresses);
+            assertNull(result.pcMetadata.pcName);
+            assertEquals(Collections.singletonList("192.0.2.10"), result.pcMetadata.ipAddresses);
+        }
+    }
+    @Test public void remoteMetadataCannotInjectMarkupHostnamesOrUnboundedAddresses() throws Exception {
+        try (Fixture fixture = new Fixture(); SshDiscovery.Credential credential = new SshDiscovery.Credential("operator", bytes("fixture-password"), null, null)) {
+            fixture.outputs.put(PcMetadata.NAME_COMMAND, "<script>invalid()</script>\n");
+            fixture.outputs.put(PcMetadata.ADDRESSES_COMMAND, "127.0.0.1 0.0.0.0 0.2.3.4 224.0.0.1 240.0.0.1 198.51.100.4%invalid example.test bad 192.0.2.10 198.51.100.7 ::1 fd42::12\n");
+            SshDiscovery.Identity identity = SshDiscovery.inspectIdentity(fixture, fixture.candidate());
+            SshDiscovery.Result result = SshDiscovery.inventory(fixture, fixture.candidate(), identity, credential, null);
+            assertNull(result.pcMetadata.pcName);
+            assertEquals(Arrays.asList("192.0.2.10", "198.51.100.7", "fd42:0:0:0:0:0:0:12"), result.pcMetadata.ipAddresses);
+            fixture.outputs.put(PcMetadata.NAME_COMMAND, "x".repeat(PcMetadata.MAX_RESPONSE_BYTES + 1));
+            result = SshDiscovery.inventory(fixture, fixture.candidate(), identity, credential, null);
+            assertEquals(SshDiscovery.Status.SUCCESS, result.status);
+            assertEquals(Collections.singletonList(ADDRESS), result.addresses);
+            assertNull(result.pcMetadata.pcName);
+            assertEquals(Collections.singletonList("192.0.2.10"), result.pcMetadata.ipAddresses);
+        }
+    }
+    @Test public void pcMetadataConflictIsExplicitAndCannotBeOverwrittenByAnotherDuplicate() throws Exception {
+        try (Fixture fixture = new Fixture(); Fixture other = new Fixture()) {
+            PcMetadata first = PcMetadata.observed(SshDiscovery.inspectIdentity(fixture, fixture.candidate()), "192.0.2.10", "fixture-pc", "198.51.100.7", 1000);
+            PcMetadata second = PcMetadata.observed(SshDiscovery.inspectIdentity(other, other.candidate()), "192.0.2.11", "other-pc", "198.51.100.8", 2000);
+            SshDiscovery.Result one = new SshDiscovery.Result(SshDiscovery.Status.SUCCESS, List.of(ADDRESS), 0, first);
+            SshDiscovery.Result two = new SshDiscovery.Result(SshDiscovery.Status.SUCCESS, List.of(ADDRESS), 0, second);
+            PcMetadata conflict = InspectionResults.metadataByAddress(Arrays.asList(one, two, one)).get(ADDRESS);
+            assertNotNull(conflict); assertNull(conflict.pcId); assertNull(conflict.pcName); assertTrue(conflict.ipAddresses.isEmpty());
+            assertEquals(2000, conflict.observedAtMs);
+            assertEquals(first, InspectionResults.merge(one, SshDiscovery.Result.of(SshDiscovery.Status.UNREACHABLE)).pcMetadata);
+        }
+    }
+    @Test public void laterMetadataDoesNotRenewOldNamesOrAddresses() throws Exception {
+        try (Fixture fixture = new Fixture()) {
+            SshDiscovery.Identity identity = SshDiscovery.inspectIdentity(fixture, fixture.candidate());
+            PcMetadata first = PcMetadata.observed(identity, "192.0.2.10", "old-name", "198.51.100.7", 1000);
+            PcMetadata second = PcMetadata.observed(identity, "192.0.2.11", null, null, 2000);
+            PcMetadata latest = PcMetadata.merge(first, second);
+            assertEquals(first.pcId, latest.pcId); assertNull(latest.pcName);
+            assertEquals(List.of("192.0.2.11"), latest.ipAddresses); assertEquals(2000, latest.observedAtMs);
+        }
+    }
+    @Test public void ordinaryGpuReadDoesNotProvisionAndFailureKeepsPublicDiscoveries() throws Exception {
+        try (Fixture fixture = new Fixture(); SshDiscovery.Credential credential = new SshDiscovery.Credential("operator", bytes("fixture-password"), null, null)) {
+            fixture.outputs.put(GpuCollector.listContainer(false), "");
+            SshDiscovery.Identity identity = SshDiscovery.inspectIdentity(fixture, fixture.candidate());
+            SshDiscovery.Result result = SshDiscovery.inventory(fixture, fixture.candidate(), identity, credential, null, "fixture-source", false);
+            assertEquals(SshDiscovery.Status.SUCCESS, result.status);
+            assertEquals(List.of(ADDRESS), result.addresses);
+            assertEquals(GpuCollector.Status.NOT_INSTALLED, result.gpuCollectorStatus);
+            assertTrue(result.pcMetadata.gpuTelemetryJson.contains("not-enabled"));
+            assertFalse(fixture.commands.stream().anyMatch(command -> command.contains(" volume create ") || command.contains(" run --detach ") || command.contains(" pull ")));
+            fixture.exits.put(GpuCollector.listContainer(false), 127);
+            result = SshDiscovery.inventory(fixture, fixture.candidate(), identity, credential, null, "fixture-source", true);
+            assertEquals(List.of(ADDRESS), result.addresses);
+            assertEquals(SshDiscovery.Status.SUCCESS, result.status);
+            assertEquals(GpuCollector.Status.UNAVAILABLE, result.gpuCollectorStatus);
         }
     }
     @Test public void deniedSudoAndUnresolvedNodesRemainHonest() throws Exception {

@@ -5,6 +5,7 @@ import android.app.AlertDialog;
 import android.app.ProgressDialog;
 import android.content.ClipData;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.Signature;
@@ -31,10 +32,14 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 
-/** User-requested updates from the separate public APK repository. No polling or silent installs. */
+/** Bounded foreground availability checks; downloads and installation require user actions. */
 @SuppressWarnings("deprecation")
 public final class UpdateController {
     private final Activity activity;
+    private final SharedPreferences preferences;
+    private final UpdateAvailability availability;
+    private final AvailabilityListener availabilityListener;
+    private final boolean automaticChecksEnabled;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final AtomicInteger generation = new AtomicInteger();
     private volatile HttpURLConnection activeConnection;
@@ -43,22 +48,60 @@ public final class UpdateController {
     private AlertDialog message;
     private volatile boolean destroyed;
     private boolean busy;
+    private boolean silentCheck;
     private boolean awaitingInstallPermission;
     private UpdatePolicy.Release pendingInstall;
 
+    public interface AvailabilityListener { void changed(String versionName); }
+
     public UpdateController(Activity activity) {
+        this(activity, versionName -> { }, true);
+    }
+
+    public UpdateController(Activity activity, AvailabilityListener listener, boolean automaticChecksEnabled) {
         this.activity = activity;
+        this.availabilityListener = listener;
+        this.automaticChecksEnabled = automaticChecksEnabled;
+        preferences = activity.getSharedPreferences("updates", Activity.MODE_PRIVATE);
+        UpdatePolicy.Release retained = null;
+        try {
+            String stored = preferences.getString("availableRelease", null);
+            if (stored != null && stored.length() <= UpdatePolicy.MAX_MANIFEST_BYTES) {
+                retained = parseRelease(new JSONObject(stored));
+            }
+        } catch (Exception ignored) { /* Invalid local metadata is never an update notification. */ }
+        availability = new UpdateAvailability(preferences.getLong("lastAttemptAtMs", 0), retained,
+                BuildConfig.VERSION_CODE, Build.VERSION.SDK_INT);
+        notifyAvailability();
     }
 
     public void checkForUpdate() {
-        if (destroyed || busy) return;
-        int operation = begin("Checking GitHub for an update…", false);
+        if (destroyed || (busy && !silentCheck)) return;
+        if (silentCheck) cancel();
+        check(false);
+    }
+
+    private void check(boolean silent) {
+        int operation;
+        if (silent) {
+            busy = true;
+            operation = generation.incrementAndGet();
+        } else {
+            operation = begin("Checking GitHub for an update…", false);
+        }
+        silentCheck = silent;
+        availability.attempted(System.currentTimeMillis());
+        preferences.edit().putLong("lastAttemptAtMs", availability.lastAttemptAtMs()).apply();
         task = worker.submit(() -> {
             try {
                 UpdatePolicy.Release release = readRelease(operation);
                 long installed = versionCode(installedPackage());
                 post(operation, () -> {
                     finishProgress();
+                    availability.accept(release, installed, Build.VERSION.SDK_INT);
+                    persistAvailability();
+                    notifyAvailability();
+                    if (silent) return;
                     if (!release.isNewerThan(installed)) {
                         showMessage("GridLens is up to date", "Installed version: " + BuildConfig.VERSION_NAME
                                 + ". No newer published Android release is available.");
@@ -76,7 +119,8 @@ public final class UpdateController {
                     }
                 });
             } catch (Exception error) {
-                fail(operation, error);
+                if (silent) post(operation, this::finishProgress);
+                else fail(operation, error);
             }
         });
     }
@@ -207,7 +251,18 @@ public final class UpdateController {
             awaitingInstallPermission = false;
             if (activity.getPackageManager().canRequestPackageInstalls()) requestInstall();
             else showMessage("Update not installed", "Installation permission was not enabled. Your current GridLens app is unchanged.");
+            return;
         }
+        if (destroyed || busy || !automaticChecksEnabled) return;
+        boolean due = availability.shouldCheck(System.currentTimeMillis());
+        preferences.edit().putLong("lastAttemptAtMs", availability.lastAttemptAtMs()).apply();
+        if (due) check(true);
+    }
+
+    public void onPause() {
+        // Availability requests belong to a visible app. An explicitly requested download keeps
+        // its existing lifetime and Android's mandatory confirmation flow.
+        if (silentCheck) cancel();
     }
 
     public void destroy() {
@@ -229,16 +284,39 @@ public final class UpdateController {
                 if (SystemClock.elapsedRealtime() - started > 30_000) throw new UpdateFailure("Checking for updates timed out.");
                 bytes.write(buffer, 0, count);
             }
-            JSONObject json = new JSONObject(new String(bytes.toByteArray(), StandardCharsets.UTF_8));
-            if (json.length() != 7) throw new UpdateFailure("The release manifest format is not supported.");
-            return new UpdatePolicy.Release((int) integer(json, "schemaVersion", 1, 1),
-                    integer(json, "versionCode", 1, Integer.MAX_VALUE), string(json, "versionName"),
-                    string(json, "apkUrl"), string(json, "sha256"), integer(json, "size", 1, UpdatePolicy.MAX_APK_BYTES),
-                    (int) integer(json, "minSdk", 26, 100));
+            return parseRelease(new JSONObject(new String(bytes.toByteArray(), StandardCharsets.UTF_8)));
         } finally {
             connection.disconnect();
             activeConnection = null;
         }
+    }
+
+    private static UpdatePolicy.Release parseRelease(JSONObject json) throws Exception {
+        if (json.length() != 7) throw new UpdateFailure("The release manifest format is not supported.");
+        return new UpdatePolicy.Release((int) integer(json, "schemaVersion", 1, 1),
+                integer(json, "versionCode", 1, Integer.MAX_VALUE), string(json, "versionName"),
+                string(json, "apkUrl"), string(json, "sha256"), integer(json, "size", 1, UpdatePolicy.MAX_APK_BYTES),
+                (int) integer(json, "minSdk", 26, 100));
+    }
+
+    private void persistAvailability() {
+        SharedPreferences.Editor editor = preferences.edit();
+        UpdatePolicy.Release release = availability.available();
+        if (release == null) editor.remove("availableRelease");
+        else {
+            try {
+                JSONObject json = new JSONObject().put("schemaVersion", 1).put("versionCode", release.versionCode)
+                        .put("versionName", release.versionName).put("apkUrl", release.apkUri.toString())
+                        .put("sha256", release.sha256).put("size", release.size).put("minSdk", release.minSdk);
+                editor.putString("availableRelease", json.toString());
+            } catch (org.json.JSONException ignored) { editor.remove("availableRelease"); }
+        }
+        editor.apply();
+    }
+
+    private void notifyAvailability() {
+        UpdatePolicy.Release release = availability.available();
+        availabilityListener.changed(release == null ? null : release.versionName);
     }
 
     private HttpURLConnection open(URI initial, String artifact, int operation) throws Exception {
@@ -354,6 +432,7 @@ public final class UpdateController {
     private void finishProgress() {
         if (progress != null) { progress.dismiss(); progress = null; }
         busy = false;
+        silentCheck = false;
     }
 
     private void fail(int operation, Exception error) {

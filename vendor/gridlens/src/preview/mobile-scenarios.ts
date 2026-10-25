@@ -1,5 +1,15 @@
+import { parseGpuTelemetry } from "./mobile-telemetry.ts";
+import type { GpuTelemetry } from "./mobile-telemetry.ts";
 /** Android-only public roster selection. Credentials and mutations stay native. */
-export interface MobileFleet { id: string; name: string; count: number; lastDiscoveredAtMs: number | null }
+export interface MobilePc {
+  pcId: string; pcName: string | null; ipAddresses: string[]; observedAtMs: number; gpuTelemetry?: GpuTelemetry;
+}
+export interface MobileFleet { id: string; name: string; count: number; lastDiscoveredAtMs: number | null; pcs: Record<string, MobilePc> }
+export function mobilePcAddresses(pc: MobilePc | undefined): { internal: string | null; global: string | null } {
+  const local = (ip: string): boolean => /^(?:10\.|192\.168\.|169\.254\.|172\.(?:1[6-9]|2[0-9]|3[01])\.|100\.(?:6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.|f[cd]|fe[89ab])/i.test(ip);
+  return { internal: pc?.ipAddresses.find(local) ?? null, global: pc?.ipAddresses.find(ip => !local(ip)) ?? null };
+}
+
 export interface MobileScenarios {
   enabled: boolean;
   selectedScenario: string;
@@ -40,14 +50,25 @@ export async function readMobileScenarios(document: Pick<Document, "querySelecto
         || /[\u0000-\u001f\u007f]/.test(item.name) || !Array.isArray(item.hosts)
         || !Number.isSafeInteger(item.updatedAtMs) || item.updatedAtMs < 0) throw new Error();
       ids.add(item.id);
+      const pcs: Record<string, MobilePc> = Object.create(null) as Record<string, MobilePc>;
       const discoveries = item.hosts.map((host: unknown) => {
         if (typeof host !== "object" || host === null || !("lastDiscoveredAtMs" in host)
           || typeof host.lastDiscoveredAtMs !== "number" || !Number.isSafeInteger(host.lastDiscoveredAtMs)
           || host.lastDiscoveredAtMs < 1 || host.lastDiscoveredAtMs > item.updatedAtMs) throw new Error();
+        if ("pcMetadata" in host && "address" in host && typeof host.address === "string") {
+          const pc = host.pcMetadata as MobilePc;
+          if (pc === null || typeof pc !== "object" || typeof pc.pcId !== "string" || !/^[a-f0-9]{64}$/.test(pc.pcId)
+            || !(pc.pcName === null || typeof pc.pcName === "string" && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,119}$/.test(pc.pcName))
+            || !Array.isArray(pc.ipAddresses) || pc.ipAddresses.length < 1 || pc.ipAddresses.length > 32
+            || pc.ipAddresses.some(ip => typeof ip !== "string" || ip.length > 45 || !/^[a-fA-F0-9:.]+$/.test(ip))
+            || !Number.isSafeInteger(pc.observedAtMs) || pc.observedAtMs < 1 || pc.observedAtMs > host.lastDiscoveredAtMs) throw new Error();
+          if (pc.gpuTelemetry !== undefined) pc.gpuTelemetry = parseGpuTelemetry(pc.gpuTelemetry);
+          pcs[host.address] = pc;
+        }
         return host.lastDiscoveredAtMs;
       });
       result.fleets.push({ id: item.id, name: item.name, count: item.hosts.length,
-        lastDiscoveredAtMs: discoveries.length ? Math.max(...discoveries) : null });
+        pcs, lastDiscoveredAtMs: discoveries.length ? Math.max(...discoveries) : null });
     }
     if (typeof value.selectedScenario === "string"
       && (["network-discovery", "supplied", "real200", "online-gpu-hosts"].includes(value.selectedScenario)

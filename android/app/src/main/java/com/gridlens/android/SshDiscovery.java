@@ -66,7 +66,17 @@ public final class SshDiscovery {
         public final Status status;
         public final List<String> addresses;
         public final int unresolved;
-        public Result(Status status, List<String> addresses, int unresolved) { this.status = status; this.addresses = Collections.unmodifiableList(new ArrayList<>(addresses)); this.unresolved = unresolved; }
+        public final PcMetadata pcMetadata;
+        public final GpuCollector.Status gpuCollectorStatus;
+        public Result(Status status, List<String> addresses, int unresolved) { this(status, addresses, unresolved, null); }
+        public Result(Status status, List<String> addresses, int unresolved, PcMetadata pcMetadata) {
+            this(status, addresses, unresolved, pcMetadata, null);
+        }
+        Result(Status status, List<String> addresses, int unresolved, PcMetadata pcMetadata, GpuCollector.Status gpuCollectorStatus) {
+            this.status = status; this.addresses = Collections.unmodifiableList(new ArrayList<>(addresses));
+            this.unresolved = unresolved; this.pcMetadata = pcMetadata;
+            this.gpuCollectorStatus = gpuCollectorStatus;
+        }
         static Result of(Status status) { return new Result(status, Collections.emptyList(), 0); }
     }
     public static final class BatchRequest {
@@ -74,9 +84,15 @@ public final class SshDiscovery {
         public final Identity identity;
         public final Credential credential;
         public final byte[] sudoPassword;
+        public final String collectorSource;
+        public final boolean enableGpuRecording;
         public BatchRequest(DiscoveryPolicy.Candidate candidate, Identity identity, Credential credential, byte[] sudoPassword) {
+            this(candidate, identity, credential, sudoPassword, null, false);
+        }
+        public BatchRequest(DiscoveryPolicy.Candidate candidate, Identity identity, Credential credential, byte[] sudoPassword, String collectorSource, boolean enableGpuRecording) {
             if (candidate == null || identity == null || credential == null) throw new IllegalArgumentException("Select and trust each computer first");
             this.candidate = candidate; this.identity = identity; this.credential = credential; this.sudoPassword = sudoPassword;
+            this.collectorSource = collectorSource; this.enableGpuRecording = enableGpuRecording;
         }
     }
     public interface BatchProgress { void update(DiscoveryPolicy.Candidate candidate, Result result); }
@@ -144,7 +160,11 @@ public final class SshDiscovery {
         public HostKey[] getHostKey(String host, String type) { return new HostKey[0]; }
     }
     public static Result inventory(DiscoveryNetwork network, DiscoveryPolicy.Candidate candidate, Identity trusted, Credential credential, byte[] sudoPassword) { return inventory(transport(network), candidate, trusted, credential, sudoPassword); }
+    public static Result inventory(DiscoveryNetwork network, DiscoveryPolicy.Candidate candidate, Identity trusted, Credential credential, byte[] sudoPassword, String collectorSource, boolean enableGpuRecording) { return inventory(transport(network), candidate, trusted, credential, sudoPassword, collectorSource, enableGpuRecording); }
     static Result inventory(Transport network, DiscoveryPolicy.Candidate candidate, Identity trusted, Credential credential, byte[] sudoPassword) {
+        return inventory(network, candidate, trusted, credential, sudoPassword, null, false);
+    }
+    static Result inventory(Transport network, DiscoveryPolicy.Candidate candidate, Identity trusted, Credential credential, byte[] sudoPassword, String collectorSource, boolean enableGpuRecording) {
         if (trusted == null || credential == null) throw new IllegalArgumentException("Native trust and credentials required");
         if (sudoPassword != null && sudoPassword.length > 4096) throw new IllegalArgumentException("Sudo password exceeds size limit");
         configureCryptoForAndroid();
@@ -153,6 +173,8 @@ public final class SshDiscovery {
         boolean connected = false;
         LinkedHashSet<String> addresses = new LinkedHashSet<>();
         int unresolved = 0;
+        PcMetadata pcMetadata = null;
+        GpuCollector.Status gpuCollectorStatus = null;
         try {
             session = session(jsch, network, candidate, credential.username, repository);
             if (credential.privateKey != null && credential.privateKey.length > 0) {
@@ -163,6 +185,7 @@ public final class SshDiscovery {
             }
             timeout = limit(session, CONNECT_MS);
             session.connect(CONNECT_MS); connected = true;
+            pcMetadata = PcMetadata.observed(trusted, candidate.address, null, null, System.currentTimeMillis());
             timeout.cancel(false); timeout = limit(session, 45000);
             long deadline = System.nanoTime() + 45000L * 1000000L;
             boolean any = false, denied = false;
@@ -182,13 +205,41 @@ public final class SshDiscovery {
                 }
             }
             network.ensureActive();
-            return new Result(denied ? Status.CONTAINER_ACCESS_REQUIRED : any ? Status.SUCCESS : Status.INVENTORY_FAILED, new ArrayList<>(addresses), unresolved);
+            // Names/IPs come from this authenticated PC, after its useful inventory is retained.
+            // Optional metadata failure never discards verified public Nosana identities.
+            String pcName = null, pcAddresses = null;
+            try {
+                CommandResult name = execute(session, network, PcMetadata.NAME_COMMAND, null, deadline, PcMetadata.MAX_RESPONSE_BYTES);
+                if (name.exit == 0) pcName = name.output;
+                CommandResult ips = execute(session, network, PcMetadata.ADDRESSES_COMMAND, null, deadline, PcMetadata.MAX_RESPONSE_BYTES);
+                if (ips.exit == 0) pcAddresses = ips.output;
+            } catch (IOException | JSchException ignored) { network.ensureActive(); }
+            pcMetadata = PcMetadata.observed(trusted, candidate.address, pcName, pcAddresses, System.currentTimeMillis());
+            if (collectorSource != null) {
+                // Only explicit native enable approval extends the operation to image download/create.
+                long collectorTimeout = enableGpuRecording ? 180000 : 30000;
+                session.setServerAliveInterval(5000);
+                session.setServerAliveCountMax(3);
+                timeout.cancel(false); timeout = limit(session, collectorTimeout);
+                long collectorDeadline = System.nanoTime() + collectorTimeout * 1000000L;
+                Session collectorSession = session;
+                GpuCollector.Outcome collector = GpuCollector.collect(collectorSource, enableGpuRecording, sudoPassword != null,
+                        (command, maxBytes, timeoutMs) -> {
+                            CommandResult response = execute(collectorSession, network, command, sudoPassword, collectorDeadline, maxBytes, timeoutMs);
+                            return new GpuCollector.Response(response.exit, response.output);
+                        });
+                network.ensureActive();
+                gpuCollectorStatus = collector.status;
+                if (collector.json != null && pcMetadata != null) pcMetadata = pcMetadata.withGpuTelemetry(collector.json);
+                if (enableGpuRecording && collector.status == GpuCollector.Status.ACCESS_REQUIRED) denied = true;
+            }
+            return new Result(denied ? Status.CONTAINER_ACCESS_REQUIRED : any ? Status.SUCCESS : Status.INVENTORY_FAILED, new ArrayList<>(addresses), unresolved, pcMetadata, gpuCollectorStatus);
         } catch (JSchException e) {
             if (repository.changed) return Result.of(Status.IDENTITY_CHANGED);
             if (network.isCancelled()) return Result.of(Status.CANCELLED);
             if (e.getMessage() != null && (e.getMessage().startsWith("Auth fail") || e.getMessage().startsWith("Auth cancel") || e.getMessage().contains("invalid privatekey"))) return Result.of(Status.AUTH_FAILED);
-            return new Result(connected ? Status.INVENTORY_FAILED : Status.UNREACHABLE, new ArrayList<>(addresses), unresolved);
-        } catch (IOException | RuntimeException e) { return new Result(network.isCancelled() ? Status.CANCELLED : Status.INVENTORY_FAILED, new ArrayList<>(addresses), unresolved); }
+            return new Result(connected ? Status.INVENTORY_FAILED : Status.UNREACHABLE, new ArrayList<>(addresses), unresolved, pcMetadata, gpuCollectorStatus);
+        } catch (IOException | RuntimeException e) { return new Result(network.isCancelled() ? Status.CANCELLED : Status.INVENTORY_FAILED, new ArrayList<>(addresses), unresolved, pcMetadata, gpuCollectorStatus); }
         finally { if (timeout != null) timeout.cancel(false); if (session != null) session.disconnect(); try { jsch.removeAllIdentity(); } catch (JSchException ignored) { } }
     }
     private static int collectWithApi(Session session, Transport network, List<DiscoveryPolicy.Container> containers,
@@ -223,8 +274,15 @@ public final class SshDiscovery {
         CommandResult(int exit, String output) { this.exit = exit; this.output = output; }
     }
     private static CommandResult execute(Session session, Transport network, String command, byte[] sudoPassword, long inventoryDeadline) throws IOException, JSchException {
+        return execute(session, network, command, sudoPassword, inventoryDeadline, DiscoveryPolicy.MAX_OUTPUT);
+    }
+    private static CommandResult execute(Session session, Transport network, String command, byte[] sudoPassword, long inventoryDeadline, int maxOutput) throws IOException, JSchException {
+        return execute(session, network, command, sudoPassword, inventoryDeadline, maxOutput, 8000);
+    }
+    private static CommandResult execute(Session session, Transport network, String command, byte[] sudoPassword, long inventoryDeadline, int maxOutput, long timeoutMs) throws IOException, JSchException {
         network.ensureActive();
-        long deadline = Math.min(inventoryDeadline, System.nanoTime() + 8000L * 1000000L);
+        if (System.nanoTime() >= inventoryDeadline) throw new IOException("Inventory timed out");
+        long deadline = Math.min(inventoryDeadline, System.nanoTime() + timeoutMs * 1000000L);
         ChannelExec channel = (ChannelExec) session.openChannel("exec");
         channel.setPty(false); channel.setAgentForwarding(false); channel.setCommand(command);
         channel.setErrStream(new OutputStream() { @Override public void write(int b) { } @Override public void write(byte[] b, int o, int n) { } });
@@ -240,7 +298,7 @@ public final class SshDiscovery {
                 while (input.available() > 0) {
                     int read = input.read(buffer, 0, Math.min(buffer.length, input.available()));
                     if (read < 0) break;
-                    if (output.size() + read > DiscoveryPolicy.MAX_OUTPUT) throw new IOException("Inventory response too large");
+                    if (output.size() + read > maxOutput) throw new IOException("Inventory response too large");
                     output.write(buffer, 0, read);
                 }
                 if (channel.isClosed() && input.available() == 0) return new CommandResult(channel.getExitStatus(), output.toString(StandardCharsets.UTF_8.name()));
@@ -249,7 +307,7 @@ public final class SshDiscovery {
         } finally { channel.disconnect(); }
     }
     public static List<Result> runBatch(DiscoveryNetwork network, List<BatchRequest> requests, BatchProgress progress) {
-        return runBatch(requests, progress, request -> inventory(network, request.candidate, request.identity, request.credential, request.sudoPassword), network::isCancelled);
+        return runBatch(requests, progress, request -> inventory(network, request.candidate, request.identity, request.credential, request.sudoPassword, request.collectorSource, request.enableGpuRecording), network::isCancelled);
     }
     interface Inventory { Result read(BatchRequest request); }
     static List<Result> runBatch(List<BatchRequest> requests, BatchProgress progress, Inventory inventory, java.util.function.BooleanSupplier cancelled) {

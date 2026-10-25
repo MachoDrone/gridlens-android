@@ -6,6 +6,7 @@ export const BROWSER_ASSETS = {
   "/contracts/fleet.js": ["contracts/fleet.js", "text/javascript; charset=utf-8"],
   "/contracts/online-hosts.js": ["contracts/online-hosts.js", "text/javascript; charset=utf-8"],
   "/preview/fleet-config.js": ["preview/fleet-config.js", "text/javascript; charset=utf-8"],
+  "/preview/mobile-telemetry.js": ["preview/mobile-telemetry.js", "text/javascript; charset=utf-8"],
   "/preview/mobile-scenarios.js": ["preview/mobile-scenarios.js", "text/javascript; charset=utf-8"],
   "/preview/fleet-transport.js": ["preview/fleet-transport.js", "text/javascript; charset=utf-8"],
   "/preview/job-history.js": ["preview/job-history.js", "text/javascript; charset=utf-8"],

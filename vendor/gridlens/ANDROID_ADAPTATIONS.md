@@ -7,7 +7,7 @@ includes uncommitted Jobs/Country work that existed in the selected app; checkin
 out the base commit alone does not reproduce it. No laptop roster, runtime data,
 key, credential or local test evidence is included.
 
-Fleet display rules, measurements and provider budgets are unchanged. Explicit
+Public-provider measurements and budgets are unchanged. Android PC/IP columns additionally use dated native discovery records. Explicit
 mobile adaptations support Android:
 
 - `scripts/preview-server.ts` has optional mobile hooks. Authorization runs before
@@ -42,3 +42,11 @@ The source desktop CLI still works and the full original check suite is retained
 
 Run `npm run check:vendor` from the Android repository for those checks. Run the
 root `npm run check` for Android runtime, artifact and inherited Fleet checks.
+
+Android 0.2.1 also adapts `mobile-scenarios.ts` and marker-gated `main.ts` to display
+validated PC names/IPs with the inherited sorting/display controls. New
+`mobile-telemetry.ts` validates and presents PC-level GPU history without assigning
+it to a host/job. Browser assets and their fixture include this module. Original
+source hashes remain unchanged; the complete patch reproduces every adapted file.
+The recording native bridge is still absent: only explicit native SSH actions can
+supply metadata or enable Docker recording. Public readers never gain credentials.

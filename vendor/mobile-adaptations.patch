@@ -1,65 +1,261 @@
---- a/scripts/preview-server.ts
-+++ b/scripts/preview-server.ts
-@@ -2,7 +2,7 @@
- import { selectJobHistoryHosts } from "../src/server/job-history-selection.ts";
- import { readFileSync } from "node:fs";
- import { createServer } from "node:http";
--import type { Server } from "node:http";
-+import type { IncomingMessage, Server, ServerResponse } from "node:http";
- import { resolve } from "node:path";
- import { fileURLToPath } from "node:url";
- import { hostAddressFilePath, loadHostAddressFile, real200HostAddressFilePath } from "./host-address-file.ts";
-@@ -47,6 +47,12 @@
- const defaultDirectory = fileURLToPath(new URL("../dist/", import.meta.url));
- const assets = BROWSER_ASSETS;
+diff --git a/src/preview/fleet-config.ts b/src/preview/fleet-config.ts
+--- a/src/preview/fleet-config.ts
++++ b/src/preview/fleet-config.ts
+@@ -26,9 +26,9 @@
+ }
  
-+/** Android composition hooks; absent in the unchanged desktop composition. */
-+export interface MobilePreviewHooks {
-+  authorize: (request: IncomingMessage, response: ServerResponse) => boolean;
-+  registerRosterUpdater: (update: (scenario: "supplied" | "real200", addresses: readonly string[]) => void) => void;
+ export function fleetResourceURL(config: FleetConfig, resource: FleetResource | "hosts" | "connection",
+-  scenario: "supplied" | "real200" | "online-gpu-hosts" = "supplied", revision?: string): string {
++  scenario: "supplied" | "real200" | "online-gpu-hosts" | "network-discovery" | `fleet:${string}` = "supplied", revision?: string): string {
+   const path = `${config.apiBase}/${resource}.json`;
+   if (config.sourceMode !== "preview" || scenario === "supplied" || resource === "connection") return path;
+-  return `${path}?scenario=${scenario}${scenario === "online-gpu-hosts" && resource !== "hosts" && revision
++  return `${path}?scenario=${encodeURIComponent(scenario)}${scenario === "online-gpu-hosts" && resource !== "hosts" && revision
+     ? `&revision=${encodeURIComponent(revision)}` : ""}`;
+ }
+diff --git a/src/preview/main.ts b/src/preview/main.ts
+--- a/src/preview/main.ts
++++ b/src/preview/main.ts
+@@ -1,4 +1,6 @@
++import { gpuRecordingFacts } from "./mobile-telemetry.ts";
+ import "./sidebar.ts";
++import { isSavedFleetScenario, readMobileScenarios, mobilePcAddresses } from "./mobile-scenarios.ts";
+ import { bindFleetViewport } from "./viewport.ts";
+ import { bindFleetTableScroll } from "./table-scroll.ts";
+ import { startConnectionIndicator } from "./connection.ts";
+@@ -59,7 +61,9 @@
+ bindFleetViewport(document.querySelector<HTMLElement>(".fleet-title-row")!);
+ // Service reachability is independent of source freshness and host API status.
+ const fleetConfig = readFleetConfig(document);
+-const requestedScenario = fleetConfig.sourceMode === "snapshot" ? null : new URLSearchParams(location.search).get("scenario");
++const mobileScenarios = await readMobileScenarios(document);
++const requestedScenario = fleetConfig.sourceMode === "snapshot" ? null
++  : new URLSearchParams(location.search).get("scenario") ?? (mobileScenarios.enabled ? mobileScenarios.selectedScenario : null);
+ const evidenceClock = createEvidenceClock();
+ const liveNow = () => evidenceClock.now();
+ // Expiry uses a conservative time bound. Elapsed clocks, source validation and
+@@ -88,8 +92,8 @@
+ const COLUMNS = [
+   ["stakedNos", "Staked NOS", "Toggle between a dull-green checkmark / red lowercase x and the actual / required NOS amounts. A current checkmark means exact vault NOS meets the current market’s displayed NOS target, including verified 0 / 0; x means it is below that target. Amount view rounds to whole NOS and uses bright green or red for the actual amount. Exact amounts drive sorting and comparison. This does not establish full market eligibility. Amounts still releasing during unstaking remain included; details distinguish duration-weighted xNOS. Shared public RPC checks every 30 minutes; readings expire after 35 minutes. Failed or expired comparisons stay gray; an unknown comparison is a dash."],
+   ["status", "Status", "Reported Nosana classification. ONBOARDED is displayed as COMMUNITY (yellow C); REJECTED as red R; PREMIUM as green P. Details preserve the raw response. This does not establish container health or current job activity."],
+-  ["pc", "PC", "The sample PC that owns this host. Select a PC cell for the row’s observation details."],
+-  ["ip", "IP", "Toggle between hidden (•), full global / internal addresses, global last octet and internal last octet. Compact IPv4 values include the leading dot, such as .102. IPv6 stays complete. Sorting always uses the full internal address. These are documentation-only sample addresses, not links or reachable PCs."],
++  ["pc", "PC", mobileScenarios.enabled ? "PC Name reported through verified SSH discovery. Tap for saved computer details. Rescan refreshes this dated inventory; public Nosana refresh does not." : "The sample PC that owns this host. Select a PC cell for the row’s observation details."],
++  ["ip", "IP", mobileScenarios.enabled ? "IP Addresses reported through verified SSH discovery. Cycle hidden, full global/internal, global suffix and internal suffix. Full addresses drive sorting. Details list every reported interface address; The list includes the verified SSH destination and reported interface addresses; a destination may be a NAT/VPN mapping." : "Toggle between hidden (•), full global / internal addresses, global last octet and internal last octet. Compact IPv4 values include the leading dot, such as .102. IPv6 stays complete. Sorting always uses the full internal address. These are documentation-only sample addresses, not links or reachable PCs."],
+   ["hostAddress", "Host Address", "A supplied public Nosana host address. Toggle between the first five characters (default) and the full address. Both views link to the same full address in Nosana Explorer, and sorting always uses the full address. Supplied addresses do not establish current host status or any measurements."],
+   ["sol", "SOL", "Confirmed SOL balance from public mainnet RPC, checked best effort every 30 seconds while visible. Three decimals are rounded down for display; exact lamports and provenance are in details and drive sorting. Failed or 60-second-old readings remain gray. Missing accounts remain unknown; verified zero remains zero."],
+   ["api", "API", "Last confirmed API result from Node Info, separate from State. Online stays green and Offline stays red. Bold means within its checking window; regular weight means stale or unconfirmed. Online uses a 30-second window. Offline stays bold until its recorded retry is overdue, including an eight-second request allowance. Details preserve original check times and the retry deadline. Amber Populating.. means no confirmed result is available yet. State OTHER can still be API Online. Timeouts and inconclusive checks do not overwrite the last confirmed result. This does not establish whether the PC or workload is running."],
+@@ -136,8 +140,8 @@
+ // These current column meanings need local observation or machine mapping.
+ // A future Nosana connector may deliver them; no collection is enabled here.
+ const LOCAL_SOURCE_NOTES: Readonly<Partial<Record<SortColumn, string>>> = {
+-  pc: "Local machine name or operator-defined PC grouping; its mapping to Nosana nodes is pending.",
+-  ip: "The internal/private PC address needs local mapping. A global address can come from that node’s Nosana observation and may be shared by several PCs; it must never be replaced with the viewing device’s IP.",
++  ...(!mobileScenarios.enabled ? { pc: "Local machine name or operator-defined PC grouping; its mapping to Nosana nodes is pending.",
++  ip: "The internal/private PC address needs local mapping. A global address can come from that node’s Nosana observation and may be shared by several PCs; it must never be replaced with the viewing device’s IP." } : {}),
+   gpuID: "The physical GPU index on the PC. Nosana’s exported device index is not yet verified as that physical slot.",
+ };
+ 
+@@ -769,6 +773,26 @@
+ });
+ 
+ const select = element<HTMLSelectElement>("scenario");
++if (mobileScenarios.enabled) {
++  const discoveryOption = document.createElement("option");
++  discoveryOption.value = "network-discovery";
++  discoveryOption.textContent = "Network Discovery";
++  select.append(discoveryOption);
++  for (const fleet of mobileScenarios.fleets) {
++    const option = document.createElement("option");
++    option.value = `fleet:${fleet.id}`;
++    option.textContent = `${fleet.name} (${fleet.count})`;
++    select.append(option);
++  }
++  // An unreadable/deleted selection fails visibly at its known-ID roster read.
++  // Never fall through to the imported roster or an unrelated saved fleet.
++  if (isSavedFleetScenario(requestedScenario) && !mobileScenarios.fleets.some(fleet => `fleet:${fleet.id}` === requestedScenario)) {
++    const option = document.createElement("option");
++    option.value = requestedScenario;
++    option.textContent = "Unavailable saved fleet";
++    select.append(option);
++  }
++}
+ const suppliedOption = document.createElement("option");
+ suppliedOption.value = "supplied";
+ suppliedOption.textContent = "Supplied Host Addresses";
+@@ -802,7 +826,29 @@
+ // Switching live scenarios starts a new page. Only Online GPU Hosts maintains
+ // membership dynamically, with each data read bound to a server-issued revision.
+ const liveScenario = requestedScenario === "online-gpu-hosts" ? "online-gpu-hosts"
+-  : requestedScenario === "real200" ? "real200" : "supplied";
++  : requestedScenario === "real200" ? "real200"
++  : mobileScenarios.enabled && requestedScenario === "network-discovery" ? "network-discovery"
++  : mobileScenarios.enabled && isSavedFleetScenario(requestedScenario) ? requestedScenario : "supplied";
++const savedFleet = mobileScenarios.fleets.find(fleet => `fleet:${fleet.id}` === liveScenario);
++const networkDiscoveryScenario = liveScenario === "network-discovery";
++const discoveredScenario = isSavedFleetScenario(liveScenario);
++if (mobileScenarios.enabled) {
++  const notice = document.createElement("p");
++  notice.id = "mobile-fleet-status";
++  notice.className = "scenario-description";
++  notice.setAttribute("role", "status");
++  notice.textContent = mobileScenarios.error ?? (discoveredScenario
++    ? `Saved fleet. Last verified discovery: ${savedFleet?.lastDiscoveredAtMs ? new Date(savedFleet.lastDiscoveredAtMs).toISOString() : "unavailable"}. Refresh reads public data; discovery dates do not establish fresh measurements.`
++    : "Search your network to find computers, then select and trust their SSH identities in Android. Saved fleets refresh over ordinary internet access.");
++  const search = document.createElement("a");
++  search.id = "mobile-network-search";
++  search.href = `/mobile/discovery${discoveredScenario ? `?fleet=${encodeURIComponent(liveScenario.slice(6))}` : ""}`;
++  search.textContent = discoveredScenario ? "Rescan" : "Search network";
++  search.hidden = !networkDiscoveryScenario && !discoveredScenario;
++  select.parentElement!.append(search);
++  select.parentElement!.after(notice);
++  notice.hidden = !mobileScenarios.error && !networkDiscoveryScenario && !discoveredScenario;
++}
+ const onlineScenario = liveScenario === "online-gpu-hosts";
+ let onlineStatus: OnlineRosterStatus | undefined;
+ let onlineRosterError: string | null = null;
+@@ -2436,10 +2482,61 @@
+   setText(element("scenario-description"), fleetConfig.sourceMode === "snapshot"
+     ? "The source supplies this fleet’s host list. Reload to read a changed roster; refreshing values preserves the current roster."
+     : onlineScenario ? "Online GPU Hosts checks Explorer’s queued/running candidates and shows only hosts with a current, validated API Online result. Online proof expires after 30 seconds; offline, unknown and expired results are hidden while their checks continue. Discovery refreshes every minute while viewed; removal from its candidate list requires two complete checks. Diagnostics cover all Explorer candidates, including hidden hosts. Duration reuses cached timing collected for Supplied Host Addresses or Real200; this scenario starts no job lookups. API reachability does not establish GPU health or current job activity. Shared request limits can leave readings pending or stale. No host file or restart is required when membership changes."
++    : mobileScenarios.enabled ? discoveredScenario
++      ? "Saved public host addresses use the existing shared providers, limits and source freshness. Reopening or refreshing never connects to SSH. Rescan merges verified discoveries; removal is explicit in Fleets."
++      : networkDiscoveryScenario ? "Search network opens native discovery. No scan starts automatically. Credentials stay in Android; they never enter this page."
++      : "Use Hosts to import public addresses. Imports remain separate from discovered fleets."
+     : `${liveScenario === "real200" ? "Real200 uses its separate supplied Host Address list; the count above reflects the file contents. " : ""}Addresses are read when the preview starts. Edit the supplied file outside the app and restart the preview to load changes.`);
+ }
+ 
++function renderMobilePc(cell: HTMLTableCellElement, key: "pc" | "ip", address: string): void {
++  const pc = savedFleet?.pcs[address];
++  const value = rowValue(cell, "host-details");
++  value.classList.add("host-details");
++  const label = key === "pc" ? "PC Name" : "IP Addresses";
++  const display = formatIPDisplay(mobilePcAddresses(pc), ipMode);
++  setText(value, key === "pc" ? pc?.pcName ?? "—" : display.text);
++  cell.dataset.pcObservedAt = String(pc?.observedAtMs ?? "");
++  value.setAttribute("aria-label", `${label}: ${key === "pc" ? pc?.pcName ?? "unknown" : display.description}. Open saved discovery details.`);
++  rememberInfo(cell, {
++    summary: [ink(pc ? `PC: ${pc.pcName ?? "name unavailable"}.` : "PC details unavailable. Use Rescan to read this computer.", pc ? "plain" : "warning")],
++    facts: pc ? [checkedFact(pc.observedAtMs, "Discovered"), `IP addresses: ${pc.ipAddresses.join(", ")}.`,
++      "Saved SSH discovery, not current reachability. Rescan refreshes PC inventory.",
++      ...(pc.gpuTelemetry ? [`GPU recorder: ${pc.gpuTelemetry.collector.status}. Expand GPU conditions below Scenario for recorded signals.`] : []),
++      "Includes the verified SSH destination plus reported interface addresses. A destination may be a NAT/VPN mapping; no public-IP service is queried."] : ["Public host addresses alone do not identify a PC name or its IP addresses."],
++    source: pc ? `Verified SSH identity digest: ${pc.pcId}\nObserved: ${new Date(pc.observedAtMs).toISOString()}` : "No machine observation is connected for this host.",
++  }, value);
++  value.onclick = () => openCellInfo(cell, label);
++  if (!value.parentElement) cell.replaceChildren(value);
 +}
 +
- export function previewPort(arguments_: readonly string[]): number {
-   if (arguments_.length === 0) return 4173;
-   const value = arguments_[1];
-@@ -62,7 +68,7 @@
++function renderMobileGpuRecordings(): void {
++  if (!mobileScenarios.enabled) return;
++  let panel = document.getElementById("mobile-gpu-recordings") as HTMLDetailsElement | null;
++  if (!panel) {
++    panel = document.createElement("details"); panel.id = "mobile-gpu-recordings";
++    const summary = document.createElement("summary"); summary.textContent = "GPU conditions (PC recordings)";
++    panel.append(summary);
++    const content = document.createElement("div"); content.className = "mobile-gpu-content"; panel.append(content);
++    element("mobile-fleet-status").after(panel);
++    panel.addEventListener("toggle", () => { if (panel?.open) updateMobileGpuDetails(panel); });
++  }
++  panel.hidden = !discoveredScenario;
++}
++function updateMobileGpuDetails(panel: HTMLDetailsElement): void {
++  const content = panel.querySelector(".mobile-gpu-content")!;
++  content.replaceChildren();
++  const pcs = new Map(Object.values(savedFleet?.pcs ?? {}).map(pc => [pc.pcId, pc]));
++  if (!pcs.size) { const text = document.createElement("p"); text.textContent = "Use Rescan to collect PC details and enable GPU recording."; content.append(text); }
++  for (const pc of pcs.values()) {
++    const title = document.createElement("h3"); title.textContent = pc.pcName ?? "Unnamed PC"; content.append(title);
++    for (const fact of gpuRecordingFacts(pc.gpuTelemetry, Date.now())) { const line = document.createElement("p"); line.textContent = fact; content.append(line); }
++  }
++  const note = document.createElement("p"); note.textContent = "Enabled recorders keep bounded history while the phone is closed. Rescan reads their latest saved observations; public-data Refresh does not connect to the PCs."; content.append(note);
++}
++
+ function renderSupplied(): void {
++  renderMobileGpuRecordings();
+   const nodeProjectionTime = liveNow();
+   if (onlineScenario) displayedOnlineHosts = new Map(suppliedAddresses.flatMap(address => {
+     const deadline = onlineHostProof(address, nodeProjectionTime);
+@@ -2453,10 +2550,12 @@
+     .map(row => [row.dataset.host!, row]));
+   const rows: HTMLTableRowElement[] = [];
+   const sortableRows = displayedAddresses.map((address) => ({
+-    pc: "", gpuIndex: null, containerName: "", solLamports: solRecords.get(address)?.lamports ?? null,
++    pc: savedFleet?.pcs[address]?.pcName ?? "", gpuIndex: null, containerName: "", solLamports: solRecords.get(address)?.lamports ?? null,
+     nosAmount: nosRecords.get(address)?.amount ?? null,
+     stakedNosAmount: stakingRecords.get(address)?.stake.amount ?? null, values: {
+       hostAddress: address,
++      pc: savedFleet?.pcs[address]?.pcName ?? null,
++      ip: mobilePcAddresses(savedFleet?.pcs[address]).internal ?? mobilePcAddresses(savedFleet?.pcs[address]).global,
+       latestJob: jobHistory.summary(address)?.job.address ?? null,
+       duration: liveDuration(address, nodeProjectionTime).elapsedSeconds,
+       queued: liveQueue(address, nodeProjectionTime).sortValue,
+@@ -2489,6 +2588,12 @@
+         else link.removeAttribute("title");
+         link.setAttribute("aria-label", `Open ${address} in Nosana Explorer (new tab)`);
+         if (!link.parentElement) cell.append(link);
++      } else if (mobileScenarios.enabled && (key === "pc" || key === "ip")) {
++        renderMobilePc(cell, key, address);
++      } else if (mobileScenarios.enabled && key === "rewards") {
++        setText(cell, "—");
++        cell.setAttribute("aria-label", "Rewards to claim unavailable: verified Nosana authorization is not connected.");
++        cell.title = "Exact claimable uptime rewards require Nosana authorization. No existing node keys are accessed. A PC collector does not unlock this amount.";
+       } else if (key === "sol") {
+         renderSolCell(cell, address, nodeProjectionTime);
+       } else if (key === "nos") {
+@@ -2546,7 +2651,11 @@
+     cell.className = "empty-message";
+     const message = document.createElement("span");
+     message.className = "empty-content";
+-    message.textContent = onlineScenario ? inputLoading ? "Finding Online GPU Hosts…" : inputError
++    message.textContent = mobileScenarios.enabled && (networkDiscoveryScenario || discoveredScenario)
++      ? inputLoading ? "Loading saved fleet…" : inputError ? "This saved fleet is unavailable. Open Fleets to review it."
++        : networkDiscoveryScenario ? "Search network to discover and save your fleet."
++        : "This saved fleet has no public host addresses. Use Rescan to add verified discoveries."
++      : onlineScenario ? inputLoading ? "Finding Online GPU Hosts…" : inputError
+       ? "Online GPU host discovery is unavailable. Retrying automatically."
+       : suppliedAddresses.length === 0 ? "Nosana’s indexer currently reports no queued or running candidates. The list updates automatically."
+         : "No Explorer candidates have a current API Online confirmation. Offline and unconfirmed hosts are hidden; checks continue automatically while viewed."
+@@ -2589,7 +2698,8 @@
+ function render(): void {
+   renderDisplaySettings();
+   setText(element("data-label"), fleetConfig.sourceMode === "snapshot" ? fleetConfig.sourceLabel
+-    : supplied ? onlineScenario ? "Online GPU Hosts" : liveScenario === "real200" ? "Real200" : "Supplied addresses" : "Sample data");
++    : supplied ? onlineScenario ? "Online GPU Hosts" : discoveredScenario ? savedFleet?.name ?? "Saved fleet"
++      : networkDiscoveryScenario ? "Network Discovery" : liveScenario === "real200" ? "Real200" : "Supplied addresses" : "Sample data");
+   setText(element("connection-note"), fleetConfig.sourceMode === "snapshot" ? "Original observation times preserved"
+     : supplied ? "Public Nosana metadata" : "No live connections");
+   setText(element("fleet-caption"), fleetConfig.sourceMode === "snapshot"
+@@ -2716,8 +2826,15 @@
  
- /** Developer-only preview. Port zero is allowed for isolated tests. */
- export async function startPreviewServer(
--  { directory = defaultDirectory, port = 4173, hostsFile, real200HostsFile, onHostsInputError, metadataProvider, nodeInfoProvider, jobProvider, queueProvider, solProvider, nosProvider, stakingProvider, onlineProvider, now = Date.now }: {
-+  { directory = defaultDirectory, port = 4173, hostsFile, real200HostsFile, onHostsInputError, metadataProvider, nodeInfoProvider, jobProvider, queueProvider, solProvider, nosProvider, stakingProvider, onlineProvider, mobile, now = Date.now }: {
-     directory?: string;
-     port?: number;
-     hostsFile?: string;
-@@ -76,6 +82,7 @@
-     nosProvider?: NosProvider;
-     stakingProvider?: StakingProvider;
-     onlineProvider?: OnlineHostsProvider;
-+    mobile?: MobilePreviewHooks;
-     /** Wire-envelope/cache-read time only; never renews evidence or active provider scheduling. */
-     now?: () => number;
-   } = {},
-@@ -159,6 +166,12 @@
-       balancesProvider?.retention, tokensProvider?.retention, stakesProvider?.retention,
-       marketQueueProvider.retention, scheduling.retention],
-   });
-+  mobile?.registerRosterUpdater((scenario, addresses) => {
-+    inputs[scenario].addresses = [...addresses];
-+    inputs[scenario].error = null;
-+    // Import changes selection only; caches, budgets and provider backoff survive.
-+    onlineRetention.replacePinned([...inputs.supplied.addresses, ...inputs.real200.addresses]);
-+  });
-   const sharedRoutes = createSharedProgressRead<string, Snapshot>(mergeHostUpdates);
-   type Read = (addresses: readonly string[], signal: AbortSignal, onUpdate: (update: Snapshot) => void) => Promise<Snapshot>;
-   const getNodeProvider = (): NodeInfoProvider => nodeProvider ??= createReconciledNodeInfoProvider({
-@@ -296,6 +309,7 @@
-     },
-   };
-   const server = createServer((request, response) => {
-+    if (mobile && !mobile.authorize(request, response)) return;
-     response.setHeader("Cache-Control", "no-store");
-     response.setHeader("X-Content-Type-Options", "nosniff");
-     if (request.method !== "GET" && request.method !== "HEAD") {
+ select.addEventListener("change", () => {
+   const scenario = SCENARIOS.find((value) => value.id === select.value);
+-  const nextLive = select.value === "supplied" || select.value === "real200" || select.value === "online-gpu-hosts" ? select.value : null;
++  const nextLive = select.value === "supplied" || select.value === "real200" || select.value === "online-gpu-hosts"
++    || mobileScenarios.enabled && (select.value === "network-discovery" || isSavedFleetScenario(select.value)) ? select.value : null;
+   if (!scenario && nextLive === null) return;
++  if (mobileScenarios.enabled && nextLive !== null) {
++    pageHidden = true;
++    resumeVisibleView();
++    location.assign(`/mobile/select?scenario=${encodeURIComponent(nextLive)}`);
++    return;
++  }
+   if (nextLive !== null && nextLive !== liveScenario) {
+     pageHidden = true;
+     resumeVisibleView();
+diff --git a/src/server/browser-assets.ts b/src/server/browser-assets.ts
+--- a/src/server/browser-assets.ts
++++ b/src/server/browser-assets.ts
+@@ -6,6 +6,8 @@
+   "/contracts/fleet.js": ["contracts/fleet.js", "text/javascript; charset=utf-8"],
+   "/contracts/online-hosts.js": ["contracts/online-hosts.js", "text/javascript; charset=utf-8"],
+   "/preview/fleet-config.js": ["preview/fleet-config.js", "text/javascript; charset=utf-8"],
++  "/preview/mobile-telemetry.js": ["preview/mobile-telemetry.js", "text/javascript; charset=utf-8"],
++  "/preview/mobile-scenarios.js": ["preview/mobile-scenarios.js", "text/javascript; charset=utf-8"],
+   "/preview/fleet-transport.js": ["preview/fleet-transport.js", "text/javascript; charset=utf-8"],
+   "/preview/job-history.js": ["preview/job-history.js", "text/javascript; charset=utf-8"],
+   "/preview/online-roster.js": ["preview/online-roster.js", "text/javascript; charset=utf-8"],
+diff --git a/scripts/online-retention.ts b/scripts/online-retention.ts
 --- a/scripts/online-retention.ts
 +++ b/scripts/online-retention.ts
 @@ -75,6 +75,18 @@
@@ -81,3 +277,316 @@
      get size(): number { return retiredAt.size; },
      get retiredSize(): number { return [...retiredAt.values()].filter(value => value !== null).length; },
      prune,
+diff --git a/scripts/preview-server.ts b/scripts/preview-server.ts
+--- a/scripts/preview-server.ts
++++ b/scripts/preview-server.ts
+@@ -2,7 +2,7 @@
+ import { selectJobHistoryHosts } from "../src/server/job-history-selection.ts";
+ import { readFileSync } from "node:fs";
+ import { createServer } from "node:http";
+-import type { Server } from "node:http";
++import type { IncomingMessage, Server, ServerResponse } from "node:http";
+ import { resolve } from "node:path";
+ import { fileURLToPath } from "node:url";
+ import { hostAddressFilePath, loadHostAddressFile, real200HostAddressFilePath } from "./host-address-file.ts";
+@@ -47,6 +47,16 @@
+ const defaultDirectory = fileURLToPath(new URL("../dist/", import.meta.url));
+ const assets = BROWSER_ASSETS;
+ 
++/** Android composition hooks; absent in the unchanged desktop composition. */
++export interface MobilePreviewHooks {
++  authorize: (request: IncomingMessage, response: ServerResponse) => boolean;
++  registerRosterUpdater: (update: (scenario: "supplied" | "real200", addresses: readonly string[]) => void) => void;
++  /** Mobile-only named public rosters. No discovery or SSH occurs here. */
++  savedFleet?: (id: string) => { addresses: string[]; revision: string } | undefined;
++  savedAddresses?: () => readonly string[];
++  registerSavedUpdater?: (update: () => void) => void;
++}
++
+ export function previewPort(arguments_: readonly string[]): number {
+   if (arguments_.length === 0) return 4173;
+   const value = arguments_[1];
+@@ -62,7 +72,7 @@
+ 
+ /** Developer-only preview. Port zero is allowed for isolated tests. */
+ export async function startPreviewServer(
+-  { directory = defaultDirectory, port = 4173, hostsFile, real200HostsFile, onHostsInputError, metadataProvider, nodeInfoProvider, jobProvider, queueProvider, solProvider, nosProvider, stakingProvider, onlineProvider, now = Date.now }: {
++  { directory = defaultDirectory, port = 4173, hostsFile, real200HostsFile, onHostsInputError, metadataProvider, nodeInfoProvider, jobProvider, queueProvider, solProvider, nosProvider, stakingProvider, onlineProvider, mobile, now = Date.now }: {
+     directory?: string;
+     port?: number;
+     hostsFile?: string;
+@@ -76,6 +86,7 @@
+     nosProvider?: NosProvider;
+     stakingProvider?: StakingProvider;
+     onlineProvider?: OnlineHostsProvider;
++    mobile?: MobilePreviewHooks;
+     /** Wire-envelope/cache-read time only; never renews evidence or active provider scheduling. */
+     now?: () => number;
+   } = {},
+@@ -154,10 +165,19 @@
+   }
+   const marketQueueProvider = createMarketQueueProvider({ activityPriority: scheduling.marketPriority });
+   const onlineRetention = createOnlineRetention({
+-    pinned: [...suppliedInput.addresses, ...real200Input.addresses], now,
++    pinned: [...suppliedInput.addresses, ...real200Input.addresses, ...(mobile?.savedAddresses?.() ?? [])], now,
+     caches: () => [provider?.retention, nodeProvider?.retention, jobsProvider?.retention, queuesProvider?.retention,
+       balancesProvider?.retention, tokensProvider?.retention, stakesProvider?.retention,
+       marketQueueProvider.retention, scheduling.retention],
++  });
++  mobile?.registerRosterUpdater((scenario, addresses) => {
++    inputs[scenario].addresses = [...addresses];
++    inputs[scenario].error = null;
++    // Import changes selection only; caches, budgets and provider backoff survive.
++    onlineRetention.replacePinned([...inputs.supplied.addresses, ...inputs.real200.addresses, ...(mobile?.savedAddresses?.() ?? [])]);
++  });
++  mobile?.registerSavedUpdater?.(() => {
++    onlineRetention.replacePinned([...inputs.supplied.addresses, ...inputs.real200.addresses, ...(mobile.savedAddresses?.() ?? [])]);
+   });
+   const sharedRoutes = createSharedProgressRead<string, Snapshot>(mergeHostUpdates);
+   type Read = (addresses: readonly string[], signal: AbortSignal, onUpdate: (update: Snapshot) => void) => Promise<Snapshot>;
+@@ -296,6 +316,7 @@
+     },
+   };
+   const server = createServer((request, response) => {
++    if (mobile && !mobile.authorize(request, response)) return;
+     response.setHeader("Cache-Control", "no-store");
+     response.setHeader("X-Content-Type-Options", "nosniff");
+     if (request.method !== "GET" && request.method !== "HEAD") {
+@@ -317,8 +338,17 @@
+     }
+     const parameters = new URLSearchParams((request.url ?? "").split("?").slice(1).join("?"));
+     const scenarios = parameters.getAll("scenario");
++    const savedScenario = mobile && scenarios.length === 1 && scenarios[0]!.startsWith("fleet:") ? scenarios[0]! : null;
++    const emptyDiscovery = mobile && scenarios.length === 1 && scenarios[0] === "network-discovery";
++    const savedFleet = savedScenario ? mobile?.savedFleet?.(savedScenario.slice(6)) : undefined;
++    if (savedScenario && !savedFleet && (path === "/preview/hosts.json" || Object.hasOwn(routes, path))) {
++      const body = JSON.stringify({ addresses: [], hosts: [], error: "Choose a known saved fleet." });
++      response.writeHead(404, { "Content-Type": "application/json; charset=utf-8", "Content-Length": Buffer.byteLength(body) });
++      response.end(request.method === "HEAD" ? undefined : body);
++      return;
++    }
+     if ((path === "/preview/hosts.json" || Object.hasOwn(routes, path)) &&
+-      (scenarios.length > 1 || scenarios.length === 1 && !["supplied", "real200", "online-gpu-hosts"].includes(scenarios[0]!))) {
++      (scenarios.length > 1 || scenarios.length === 1 && !savedScenario && !emptyDiscovery && !["supplied", "real200", "online-gpu-hosts"].includes(scenarios[0]!))) {
+       const body = JSON.stringify({ addresses: [], hosts: [], error: "Unknown preview scenario. Choose supplied, real200 or online-gpu-hosts." });
+       response.writeHead(400, { "Content-Type": "application/json; charset=utf-8", "Content-Length": Buffer.byteLength(body) });
+       response.end(request.method === "HEAD" ? undefined : body);
+@@ -335,7 +365,8 @@
+       response.end(request.method === "HEAD" ? undefined : body);
+       return;
+     }
+-    const input = online ? peekOnline() : inputs[scenario];
++    const input: HostAddressInput | OnlineHostsSnapshot = savedFleet ? { addresses: savedFleet.addresses, error: null }
++      : emptyDiscovery ? { addresses: [], error: null } : online ? peekOnline() : inputs[scenario];
+     if (path === "/preview/hosts.json") {
+       const sendInput = (value: HostAddressInput | OnlineHostsSnapshot): void => {
+         if (response.destroyed || response.writableEnded) return;
+@@ -456,7 +487,7 @@
+         if (complete) response.end();
+       };
+       const selectionKey = historySelection ? `:${JSON.stringify([...addresses].sort())}:${historySelection.refresh}` : "";
+-      void sharedRoutes(`${scenario}:${onlineRevision ?? ""}:${path}${watch ? ":watch" : ""}${selectionKey}`,
++      void sharedRoutes(`${savedScenario ?? scenario}:${savedFleet?.revision ?? onlineRevision ?? ""}:${path}${watch ? ":watch" : ""}${selectionKey}`,
+         (signal, emit) => read(addresses, signal, emit), consumer.signal,
+         progressive ? snapshot => stream(snapshot, false) : undefined,
+       ).then(
+diff --git a/test/preview-server.test.ts b/test/preview-server.test.ts
+--- a/test/preview-server.test.ts
++++ b/test/preview-server.test.ts
+@@ -19,7 +19,7 @@
+ import { blankStakingRecord, STAKING_REFRESH_INTERVAL_MS } from "../src/fleet/staking.ts";
+ 
+ const fixtureFiles = [
+-  "contracts/fleet.js", "contracts/online-hosts.js", "preview/fleet-config.js", "preview/fleet-transport.js", "preview/job-history.js", "preview/online-roster.js",
++  "contracts/fleet.js", "contracts/online-hosts.js", "preview/fleet-config.js", "preview/mobile-scenarios.js", "preview/mobile-telemetry.js", "preview/fleet-transport.js", "preview/job-history.js", "preview/online-roster.js",
+   "preview/evidence-clock.js", "preview/refresh-deadline.js", "preview/sidebar.js", "preview/viewport.js", "preview/table-scroll.js", "preview/connection.js",
+   "index.html", "styles.css", "preview/main.js", "preview/fixtures.js", "fleet/freshness.js", "fleet/sort.js", "fleet/ip-display.js", "fleet/duration.js", "fleet/market-display.js", "fleet/hardware-display.js", "fleet/host-metadata.js",
+   "fleet/node-info.js", "fleet/node-state.js", "fleet/node-api.js", "fleet/status-display.js", "fleet/country-display.js", "preview/state-refresh.js", "preview/info-content.js", "preview/column-help.js",
+diff --git a/src/preview/mobile-scenarios.ts b/src/preview/mobile-scenarios.ts
+new file mode 100644
+--- /dev/null
++++ b/src/preview/mobile-scenarios.ts
+@@ -0,0 +1,84 @@
++import { parseGpuTelemetry } from "./mobile-telemetry.ts";
++import type { GpuTelemetry } from "./mobile-telemetry.ts";
++/** Android-only public roster selection. Credentials and mutations stay native. */
++export interface MobilePc {
++  pcId: string; pcName: string | null; ipAddresses: string[]; observedAtMs: number; gpuTelemetry?: GpuTelemetry;
++}
++export interface MobileFleet { id: string; name: string; count: number; lastDiscoveredAtMs: number | null; pcs: Record<string, MobilePc> }
++export function mobilePcAddresses(pc: MobilePc | undefined): { internal: string | null; global: string | null } {
++  const local = (ip: string): boolean => /^(?:10\.|192\.168\.|169\.254\.|172\.(?:1[6-9]|2[0-9]|3[01])\.|100\.(?:6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.|f[cd]|fe[89ab])/i.test(ip);
++  return { internal: pc?.ipAddresses.find(local) ?? null, global: pc?.ipAddresses.find(ip => !local(ip)) ?? null };
++}
++
++export interface MobileScenarios {
++  enabled: boolean;
++  selectedScenario: string;
++  fleets: MobileFleet[];
++  error: string | null;
++}
++export function isSavedFleetScenario(value: string | null): value is `fleet:${string}` {
++  return value !== null && /^fleet:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);
++}
++export async function readMobileScenarios(document: Pick<Document, "querySelector">): Promise<MobileScenarios> {
++  const result: MobileScenarios = { enabled: false, selectedScenario: "network-discovery", fleets: [], error: null };
++  if (document.querySelector<HTMLMetaElement>('meta[name="gridlens-mobile"]')?.content !== "android") return result;
++  result.enabled = true;
++  try {
++    const response = await fetch("/mobile/fleets", { credentials: "same-origin", cache: "no-store", signal: AbortSignal.timeout(8000) });
++    if (!response.ok || !response.body) throw new Error();
++    const reader = response.body.getReader();
++    let bytes = 0;
++    const chunks: Uint8Array[] = [];
++    try {
++      for (;;) {
++        const part = await reader.read();
++        if (part.done) break;
++        bytes += part.value.byteLength;
++        if (bytes > 8 * 1024 * 1024) throw new Error();
++        chunks.push(part.value);
++      }
++    } finally { await reader.cancel(); }
++    const body = new Uint8Array(bytes);
++    let offset = 0;
++    for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
++    const value = JSON.parse(new TextDecoder().decode(body)) as Record<string, unknown>;
++    if (value.schema !== 1 || !Array.isArray(value.fleets) || value.fleets.length > 100) throw new Error();
++    const ids = new Set<string>();
++    for (const item of value.fleets) {
++      if (typeof item !== "object" || item === null || typeof item.id !== "string" || !isSavedFleetScenario(`fleet:${item.id}`)
++        || ids.has(item.id) || typeof item.name !== "string" || !item.name.trim() || item.name.length > 80
++        || /[\u0000-\u001f\u007f]/.test(item.name) || !Array.isArray(item.hosts)
++        || !Number.isSafeInteger(item.updatedAtMs) || item.updatedAtMs < 0) throw new Error();
++      ids.add(item.id);
++      const pcs: Record<string, MobilePc> = Object.create(null) as Record<string, MobilePc>;
++      const discoveries = item.hosts.map((host: unknown) => {
++        if (typeof host !== "object" || host === null || !("lastDiscoveredAtMs" in host)
++          || typeof host.lastDiscoveredAtMs !== "number" || !Number.isSafeInteger(host.lastDiscoveredAtMs)
++          || host.lastDiscoveredAtMs < 1 || host.lastDiscoveredAtMs > item.updatedAtMs) throw new Error();
++        if ("pcMetadata" in host && "address" in host && typeof host.address === "string") {
++          const pc = host.pcMetadata as MobilePc;
++          if (pc === null || typeof pc !== "object" || typeof pc.pcId !== "string" || !/^[a-f0-9]{64}$/.test(pc.pcId)
++            || !(pc.pcName === null || typeof pc.pcName === "string" && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,119}$/.test(pc.pcName))
++            || !Array.isArray(pc.ipAddresses) || pc.ipAddresses.length < 1 || pc.ipAddresses.length > 32
++            || pc.ipAddresses.some(ip => typeof ip !== "string" || ip.length > 45 || !/^[a-fA-F0-9:.]+$/.test(ip))
++            || !Number.isSafeInteger(pc.observedAtMs) || pc.observedAtMs < 1 || pc.observedAtMs > host.lastDiscoveredAtMs) throw new Error();
++          if (pc.gpuTelemetry !== undefined) pc.gpuTelemetry = parseGpuTelemetry(pc.gpuTelemetry);
++          pcs[host.address] = pc;
++        }
++        return host.lastDiscoveredAtMs;
++      });
++      result.fleets.push({ id: item.id, name: item.name, count: item.hosts.length,
++        pcs, lastDiscoveredAtMs: discoveries.length ? Math.max(...discoveries) : null });
++    }
++    if (typeof value.selectedScenario === "string"
++      && (["network-discovery", "supplied", "real200", "online-gpu-hosts"].includes(value.selectedScenario)
++        || isSavedFleetScenario(value.selectedScenario) && ids.has(value.selectedScenario.slice(6)))) {
++      result.selectedScenario = value.selectedScenario;
++    }
++    if (value.error !== null) result.error = "Saved fleets need attention. Open Fleets to review recovery before making changes.";
++  } catch {
++    result.fleets = [];
++    result.error = "Saved fleets could not be loaded. Reopen Fleets to retry; saved records have not been removed.";
++  }
++  return result;
++}
+diff --git a/src/preview/mobile-telemetry.ts b/src/preview/mobile-telemetry.ts
+new file mode 100644
+--- /dev/null
++++ b/src/preview/mobile-telemetry.ts
+@@ -0,0 +1,94 @@
++/** Android PC recordings. No host-to-GPU or job attribution is inferred. */
++export const GPU_REASONS = {
++  swThermalSlowdown: "Thermal slowdown", hwThermalSlowdown: "Hardware thermal protection",
++  swPowerCap: "Power limiting", hwPowerBrake: "Power braking",
++} as const;
++type Reason = keyof typeof GPU_REASONS;
++interface ReasonHistory { supportedSamples: number; activeSamples: number; counterObservedUs: number | null; counterIntervals: number; counterResets: number }
++export interface GpuReading {
++  uuid: string; index: null; deviceMinor: number | null; observedAtMs: number;
++  reasons: Record<Reason, boolean | null>; durationUs: Record<Reason, number | null>;
++  history: { firstObservedAtMs: number; lastObservedAtMs: number; sampleCount: number; maxGapMs: number; reasons: Record<Reason, ReasonHistory> };
++}
++export interface GpuTelemetry {
++  schema: 1;
++  collector: { status: string; lastAttemptAtMs?: number | null; lastSuccessAtMs?: number | null; intervalSeconds?: number; retentionDays?: number; maxRecords?: number };
++  window?: { startAtMs: number; endAtMs: number };
++  gpus: GpuReading[];
++}
++const statuses = new Set(["ok", "unsupported", "query-failed", "invalid-response", "clock-regressed", "clock-untrusted", "stale", "starting", "unavailable", "not-enabled", "setup-failed"]);
++const number = (value: unknown, maximum = Number.MAX_SAFE_INTEGER): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= maximum;
++const time = (value: unknown): value is number => number(value, 8_640_000_000_000_000);
++function record(value: unknown, keys: string[], optional: string[] = []): Record<string, unknown> {
++  if (value === null || typeof value !== "object" || Array.isArray(value)
++    || keys.some(key => !Object.hasOwn(value, key)) || Object.keys(value).some(key => !keys.includes(key) && !optional.includes(key))) throw new Error("Invalid GPU recording.");
++  return value as Record<string, unknown>;
++}
++/** Fail closed on unknown fields; never carry arbitrary native output to saved data. */
++export function parseGpuTelemetry(value: unknown): GpuTelemetry {
++  const input = record(value, ["schema", "collector", "gpus"], ["window"]);
++  const collector = record(input.collector, ["status"], ["lastAttemptAtMs", "lastSuccessAtMs", "intervalSeconds", "retentionDays", "maxRecords"]);
++  if (input.schema !== 1 || typeof collector.status !== "string" || !statuses.has(collector.status)
++    || !Array.isArray(input.gpus) || input.gpus.length > 64) throw new Error("Invalid GPU recording.");
++  for (const key of ["lastAttemptAtMs", "lastSuccessAtMs"] as const) if (Object.hasOwn(collector, key) && collector[key] !== null && !time(collector[key])) throw new Error("Invalid GPU observation time.");
++  for (const [key, expected] of [["intervalSeconds", 15], ["retentionDays", 7], ["maxRecords", 20000]] as const)
++    if (Object.hasOwn(collector, key) && collector[key] !== expected) throw new Error("Unsupported GPU recording policy.");
++  if (input.window !== undefined) {
++    const window = record(input.window, ["startAtMs", "endAtMs"]);
++    if (!time(window.startAtMs) || !time(window.endAtMs) || window.endAtMs < window.startAtMs || window.endAtMs - window.startAtMs > 7 * 86_400_000) throw new Error("Invalid GPU recording window.");
++  }
++  const uuids = new Set<string>();
++  for (const raw of input.gpus) {
++    const gpu = record(raw, ["uuid", "index", "deviceMinor", "observedAtMs", "reasons", "durationUs", "history"]);
++    if (typeof gpu.uuid !== "string" || !/^GPU-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(gpu.uuid) || uuids.has(gpu.uuid)
++      || gpu.index !== null || !(gpu.deviceMinor === null || number(gpu.deviceMinor, 9999)) || !time(gpu.observedAtMs)) throw new Error("Invalid GPU identity.");
++    uuids.add(gpu.uuid);
++    const keys = Object.keys(GPU_REASONS);
++    const reasons = record(gpu.reasons, keys), counters = record(gpu.durationUs, keys);
++    const history = record(gpu.history, ["firstObservedAtMs", "lastObservedAtMs", "sampleCount", "maxGapMs", "reasons"]);
++    if (!time(history.firstObservedAtMs) || !time(history.lastObservedAtMs) || history.firstObservedAtMs > history.lastObservedAtMs
++      || history.lastObservedAtMs !== gpu.observedAtMs || !number(history.sampleCount, 20000) || history.sampleCount < 1 || !number(history.maxGapMs)) throw new Error("Invalid GPU history.");
++    if (history.maxGapMs > history.lastObservedAtMs - history.firstObservedAtMs
++      || history.sampleCount === 1 && (history.firstObservedAtMs !== history.lastObservedAtMs || history.maxGapMs !== 0)) throw new Error("Invalid GPU history interval.");
++    if (input.window === undefined) throw new Error("Missing GPU window.");
++    const window = input.window as { startAtMs: number; endAtMs: number };
++    if (history.firstObservedAtMs < window.startAtMs || history.lastObservedAtMs > window.endAtMs) throw new Error("GPU history exceeds its window.");
++    const histories = record(history.reasons, keys);
++    for (const key of keys) {
++      if (!(reasons[key] === null || typeof reasons[key] === "boolean") || !(counters[key] === null || number(counters[key]))) throw new Error("Invalid GPU signal.");
++      const counts = record(histories[key], ["supportedSamples", "activeSamples", "counterObservedUs", "counterIntervals", "counterResets"]);
++      for (const field of ["supportedSamples", "activeSamples", "counterIntervals", "counterResets"])
++        if (!number(counts[field], history.sampleCount)) throw new Error("Invalid GPU signal count.");
++      if ((counts.activeSamples as number) > (counts.supportedSamples as number)
++        || !(counts.counterObservedUs === null || number(counts.counterObservedUs))) throw new Error("Invalid GPU counter.");
++      if ((counts.counterIntervals as number) + (counts.counterResets as number) > history.sampleCount - 1
++        || (counts.counterIntervals === 0) !== (counts.counterObservedUs === null)
++        || reasons[key] !== null && counts.supportedSamples === 0
++        || reasons[key] === true && counts.activeSamples === 0
++        || reasons[key] === false && counts.activeSamples === counts.supportedSamples
++        || reasons[key] === null && counts.supportedSamples === history.sampleCount) throw new Error("Inconsistent GPU signal history.");
++    }
++  }
++  // Fields and scalar types have all been checked. Clone to avoid caller mutation.
++  return structuredClone(value) as GpuTelemetry;
++}
++
++export function gpuRecordingFacts(telemetry: GpuTelemetry | undefined, phoneNow: number): string[] {
++  if (!telemetry) return ["GPU recording is not connected. Enable it from Rescan on the selected PCs."];
++  const facts = [`Recorder: ${telemetry.collector.status.replaceAll("-", " ")}.`];
++  if (telemetry.window) facts.push(`Recorded window: ${new Date(telemetry.window.startAtMs).toISOString()} to ${new Date(telemetry.window.endAtMs).toISOString()}.`);
++  for (const gpu of telemetry.gpus) {
++    const age = phoneNow - gpu.observedAtMs;
++    facts.push(`${gpu.uuid}: last recorded ${new Date(gpu.observedAtMs).toISOString()}${age < -5000 ? "; PC and phone clocks disagree" : age > 45000 ? "; retained reading" : ""}.`);
++    for (const key of Object.keys(GPU_REASONS) as Reason[]) {
++      const reason = gpu.history.reasons[key];
++      const current = gpu.reasons[key] === null ? "unsupported / unknown" : gpu.reasons[key] ? "active in last sample" : "inactive in last sample";
++      facts.push(`${GPU_REASONS[key]}: ${current}; observed active in ${reason.activeSamples}/${reason.supportedSamples} supported samples.`);
++      if (reason.counterObservedUs !== null) facts.push(`${GPU_REASONS[key]} counter increase: ${(reason.counterObservedUs / 1_000_000).toFixed(3)} seconds across ${reason.counterIntervals} valid intervals; ${reason.counterResets} resets.`);
++    }
++    facts.push(`${gpu.history.sampleCount} samples; largest recorded gap ${(gpu.history.maxGapMs / 1000).toFixed(1)} seconds. Unobserved intervals remain unknown.`);
++  }
++  if (!telemetry.gpus.length) facts.push("No verified GPU readings were returned.");
++  facts.push("These are PC GPU observations. A host-to-GPU mapping has not been verified; no per-job throttling or causation is inferred.");
++  return facts;
++}

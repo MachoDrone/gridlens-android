@@ -222,7 +222,7 @@
     {
       "path": "src/preview/main.ts",
       "sourceSha256": "14277fed44c31c870188eba752bb334cdd3420bea2500a1168c98ca51a557af0",
-      "sha256": "e8913203a5fad10d69c3761f3458143ba141bfaa4d0a137778a150cca8600411"
+      "sha256": "d208c4606eb5f2bdcbc7f81a94f0549570f3de085656806ec6908fbc4a76eb5e"
     },
     {
       "path": "src/preview/online-roster.ts",
@@ -267,7 +267,7 @@
     {
       "path": "src/server/browser-assets.ts",
       "sourceSha256": "fb8e07ced089b3ba079a4f00c9bfaef4d9a2606b5ea013efaf9a0781bd8896aa",
-      "sha256": "56604d806d1e702d6fcbf490a0ff4a80a9c4e9d3384292d21ff7e1974900c728"
+      "sha256": "a991fc355d4b6549ff355e1cb1c53a74b150fa06d4da5dd920a7fdf9c65fd775"
     },
     {
       "path": "src/server/file-snapshot-store.ts",
@@ -832,7 +832,7 @@
     {
       "path": "test/preview-server.test.ts",
       "sourceSha256": "a7bd550e262a29d2a869c48076e12a52ba62e6b2028faf5bd76d89ea28ad591e",
-      "sha256": "0b7e2374d82975d6a5795a62e2103be750a48592ba0a4d2c2fcf5ddc60e106da"
+      "sha256": "fe23a73f88119e5a445c0f96578a070e93fe95a56cb2a3cdc5dfd1fe214cbfb6"
     },
     {
       "path": "test/provider-cancellation.test.ts",
@@ -967,7 +967,12 @@
     {
       "path": "src/preview/mobile-scenarios.ts",
       "sourceSha256": null,
-      "sha256": "1f18e41952e811aa99c574d09923a26f6c8bc68b2d36d5939fc1d4dca57fa134"
+      "sha256": "ce5ad2b662d06e157c1d1db16b7bca993bac241700b4c1ac4946429a6f84d6ab"
+    },
+    {
+      "path": "src/preview/mobile-telemetry.ts",
+      "sourceSha256": null,
+      "sha256": "acbd2ef0dcdcf9134a2a027a2139da243889b92fcbd2e9b182f71a776e1cdc49"
     }
   ],
   "androidAdaptations": {
@@ -977,6 +982,7 @@
       "src/preview/fleet-config.ts",
       "src/preview/main.ts",
       "src/preview/mobile-scenarios.ts",
+      "src/preview/mobile-telemetry.ts",
       "src/server/browser-assets.ts",
       "test/preview-server.test.ts"
     ],

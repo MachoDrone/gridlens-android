@@ -89,9 +89,19 @@ test("Android defaults to idle discovery and reopens saved fleets without discov
     assert.equal(reads.length, 0, "launch does not contact any provider for empty discovery");
     assert.equal(await page.locator("#scenario option[value=supplied]").count(), 1);
     const address = "1".repeat(32);
+    const gpuAt = Date.now() - 60000;
+    const reasonNames = ["swThermalSlowdown", "hwThermalSlowdown", "swPowerCap", "hwPowerBrake"];
+    const telemetry = { schema: 1, collector: { status: "ok" }, window: { startAtMs: gpuAt, endAtMs: gpuAt },
+      gpus: [{ uuid: "GPU-11111111-2222-3333-4444-555555555555", index: null, deviceMinor: 0, observedAtMs: gpuAt,
+        reasons: Object.fromEntries(reasonNames.map(key => [key, key === "swPowerCap" ? true : null])),
+        durationUs: Object.fromEntries(reasonNames.map(key => [key, null])),
+        history: { firstObservedAtMs: gpuAt, lastObservedAtMs: gpuAt, sampleCount: 1, maxGapMs: 0,
+          reasons: Object.fromEntries(reasonNames.map(key => [key, { supportedSamples: key === "swPowerCap" ? 1 : 0,
+            activeSamples: key === "swPowerCap" ? 1 : 0, counterObservedUs: null, counterIntervals: 0, counterResets: 0 }])) } }] };
+
     const created = await fetch(origin + "/mobile/fleets", { method: "POST", headers: {
       "X-GridLens-Token": runtime.token, "Content-Type": "application/json" },
-      body: JSON.stringify({ op: "create", name: "Customer <North>", addresses: [address] }) });
+      body: JSON.stringify({ op: "create", name: "Customer <North>", addresses: [address], pcMetadata: [{ address, pcId: "a".repeat(64), pcName: "fixture-pc", ipAddresses: ["192.168.9.42", "203.0.113.42"], observedAtMs: Date.now() - 5000, gpuTelemetry: telemetry }] }) });
     assert.equal(created.status, 200);
     const { fleetId } = await created.json() as { fleetId: string };
     await page.reload();
@@ -99,6 +109,26 @@ test("Android defaults to idle discovery and reopens saved fleets without discov
     assert.equal(await page.locator("#scenario").inputValue(), `fleet:${fleetId}`);
     assert.equal(await page.locator("#scenario option:checked").innerText(), "Customer <North> (1)");
     assert.equal(await page.locator("#mobile-network-search").innerText(), "Rescan");
+    assert.equal(await page.locator('td[data-col="pc"]').innerText(), "fixture-pc");
+    assert.equal(await page.locator('td[data-col="ip"]').innerText(), "•");
+    await page.locator('#ip-display-toggle').click();
+    assert.equal(await page.locator('td[data-col="ip"]').innerText(), "203.0.113.42 / 192.168.9.42");
+    await page.locator('#ip-display-toggle').click();
+    assert.equal(await page.locator('td[data-col="ip"]').innerText(), ".42");
+    await page.locator('td[data-col="pc"] button').click();
+    assert.match(await page.locator('dialog[open]').innerText(), /Saved SSH discovery, not current reachability/);
+    await page.keyboard.press("Escape");
+    await page.locator('#mobile-gpu-recordings > summary').click();
+    await page.locator("#mobile-gpu-recordings p").filter({ hasText: "Power limiting: active in last sample" }).waitFor();
+    const gpuText = await page.locator('#mobile-gpu-recordings').innerText();
+    assert.match(gpuText, /Power limiting: active in last sample/);
+    assert.match(gpuText, /Thermal slowdown: unsupported \/ unknown/);
+    assert.match(gpuText, /retained reading/);
+    assert.match(gpuText, /no per-job throttling or causation is inferred/);
+    assert(gpuText.includes(new Date(gpuAt).toISOString()));
+    assert.equal(await page.locator('td[data-col="gpuID"]').innerText(), "—", "PC GPU identity is not guessed as host GPU mapping");
+    assert.equal(await page.locator('td[data-col="rewards"]').innerText(), "—", "recorder access does not unlock rewards");
+
     assert.equal(await page.locator("#mobile-network-search").getAttribute("href"), `/mobile/discovery?fleet=${fleetId}`);
     assert.match(await page.locator("#mobile-fleet-status").innerText(), /discovery dates do not establish fresh measurements/);
     await page.locator("#preview-tools > summary").click();

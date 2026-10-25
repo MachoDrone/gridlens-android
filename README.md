@@ -8,12 +8,11 @@ continues independently.
 
 **[Download the signed Android APK](https://github.com/MachoDrone/gridlens-android-releases/releases/latest/download/gridlens-android.apk)**
 
-**Network Discovery test candidate:** [download v0.2.0-rc.1](https://github.com/MachoDrone/gridlens-android-releases/releases/download/v0.2.0-rc.1/gridlens-android.apk).
-The instructions below describe this candidate. The normal Update channel remains
-on v0.1.0 while physical acceptance is pending; that earlier version opens Online
-GPU Hosts. The candidate uses the same application/signing identity for an
-in-place update. Install over v0.1.0 without uninstalling; actual update-data
-preservation is part of [physical acceptance](docs/DISCOVERY_ACCEPTANCE.md).
+**Version 0.2.1** adds discovered PC names/IPs, optional PC-side GPU recording,
+and a green Update indicator for a known newer compatible release. It preserves
+saved fleets and the existing application/signing identity. Install over your
+current version; do not uninstall first. See [PC telemetry](docs/PC_TELEMETRY.md)
+for setup and the remaining rewards/per-job attribution limits.
 
 Android 8.0 or newer is required. This build includes arm64 phones and x86_64
 emulators. It does not include 32-bit Android or an iPhone application. The first
@@ -47,6 +46,13 @@ keep the existing provider caches and limits. The APK contains no operator roste
 The Fleet table, Jobs history, country display, sorting, display controls, touch
 navigation and freshness rules come from the recorded desktop source snapshot.
 Android's Scenario selector adds Network Discovery and named saved fleets.
+PC and IP now show dated native discovery metadata for saved fleets. Use Rescan
+once after upgrading an older fleet. During native review, **GPU recording…** can
+enable the optional Docker recorder on selected PCs; expand **GPU conditions (PC
+recordings)** below Scenario to inspect results. Ordinary Rescan reads existing
+recorders. Exact claimable rewards and per-job physical-GPU attribution remain
+unconnected; no existing node key is read.
+
 Phone and laptop have independent preferences, rosters and public-reader caches;
 they do not synchronize. Unknown columns remain unknown. Provider limits and
 network outages can leave values pending or stale on either device.
@@ -59,8 +65,14 @@ verifies the APK and opens Android's installer. On the first update, Android may
 ask you to allow installations from GridLens. Confirm the installation. Lists and
 settings survive app updates; uninstalling removes app-local data.
 
-The app checks only on demand. Publishing a new signed release makes it available
-to that button; a source-code commit alone is not an installable update. The download
+From 0.2.1, the app checks on opening/resuming at most once every six hours.
+Update becomes green and bold when a compatible newer release is known; a failed
+check retains previously confirmed availability. The label is the last check's
+result, not a continuous background subscription. Pressing Update rechecks now;
+download and installation still require confirmation. Older installed versions
+must be checked manually once to obtain this behavior.
+
+Publishing a new signed release makes it available to that button; a source-code commit alone is not an installable update. The download
 repository's workflow watches version bumps on this repository's `main`, runs the
 checks, builds and signs, then publishes the APK. It runs on a 15-minute schedule
 or manually; GitHub can delay scheduled runs. See [development](docs/DEVELOPMENT.md).

@@ -227,8 +227,18 @@ final class DiscoveryController {
                         reviewRequests(hosts, requests);
                     } catch (Exception error) { credentialError(); cancel(); }
                 });
-            }).setPositiveButton("Inspect selected PCs", (d, w) -> collect(requests))
+            }).setPositiveButton("Inspect selected PCs", (d, w) -> collect(requests, false))
+            .setNeutralButton("GPU recording…", (d, w) -> approveGpuRecording(hosts, requests))
             .setNegativeButton("Cancel", (d, w) -> cancel()).setOnCancelListener(d -> cancel()).show();
+    }
+    private void approveGpuRecording(List<Trusted> hosts, List<SshDiscovery.BatchRequest> requests) {
+        new AlertDialog.Builder(activity).setTitle("Enable GPU recording on selected PCs?")
+            .setMessage("Each selected PC needs existing Docker and NVIDIA container GPU support. GridLens will download a pinned Python image, create one labeled GPU recorder container and one named data volume, and keep recording every 15 seconds while the phone is closed. Records are capped at 7 days, 20,000 GPU samples and 16 MiB.\n\n"
+                + "The container has no network, published ports, host data-directory mounts or Docker socket. The existing NVIDIA runtime supplies GPU devices and driver libraries for utility readings. It has a read-only root filesystem and runs without privileged mode or Linux capabilities. Existing owned recording data is preserved. No host packages, services, networking, wallet access or workload changes are added.\n\n"
+                + "Rescan reads the saved PC telemetry over your trusted SSH connection. GPU conditions are PC-level; host/job association remains unknown until independently verified. These operations apply to all selected PCs; missing Docker/GPU support remains unavailable.")
+            .setPositiveButton("Enable and inspect", (d, w) -> collect(requests, true))
+            .setNegativeButton("Back", (d, w) -> reviewRequests(hosts, requests))
+            .setOnCancelListener(d -> cancel()).show();
     }
     interface CredentialReady { void ready(JSONObject value, boolean shared); }
     interface ScopeReady { void ready(boolean shared); }
@@ -330,8 +340,20 @@ final class DiscoveryController {
             finally { if (bytes != null) Arrays.fill(bytes, (byte)0); }
         }); return true;
     }
-    private void collect(List<SshDiscovery.BatchRequest> requests) {
-        working = true; int run = generation; busy("Identifying Nosana hosts", "Reading bounded container metadata on selected, trusted computers…");
+    private void collect(List<SshDiscovery.BatchRequest> selectedRequests, boolean enableGpuRecording) {
+        String collectorSource;
+        try (InputStream input = activity.getAssets().open("gpu-collector/collector.py")) {
+            collectorSource = new String(NodeRuntime.readBounded(input, GpuCollector.MAX_SOURCE_BYTES), StandardCharsets.UTF_8);
+        } catch (Exception error) {
+            message("GPU recorder unavailable", "The app's GPU recorder could not be loaded. No PC changes were started. Retry after updating GridLens.");
+            cancel(); return;
+        }
+        List<SshDiscovery.BatchRequest> requests = new ArrayList<>();
+        for (SshDiscovery.BatchRequest selected : selectedRequests) requests.add(new SshDiscovery.BatchRequest(selected.candidate,
+                selected.identity, selected.credential, selected.sudoPassword, collectorSource, enableGpuRecording));
+        working = true; int run = generation; busy("Identifying Nosana hosts", enableGpuRecording
+                ? "Reading selected PCs and enabling the approved GPU recorder. Downloading its image may take a few minutes…"
+                : "Reading bounded container metadata and existing GPU recordings on selected, trusted computers…");
         java.util.Map<String, SshDiscovery.Result> results = java.util.Collections.synchronizedMap(new java.util.LinkedHashMap<>());
         List<SshDiscovery.BatchRequest> needsSudo = java.util.Collections.synchronizedList(new ArrayList<>());
         DiscoveryNetwork selectedNetwork = network;
@@ -350,13 +372,17 @@ final class DiscoveryController {
                     boolean authFailure = results.values().stream().anyMatch(r -> r.status == SshDiscovery.Status.AUTH_FAILED);
                     if (authFailure) saveResults(results, requests.size()); else sudoNext(needsSudo, 0, results, requests.size());
                 });
-            } catch (Exception error) { ui(run, () -> { dismissProgress(); working = false; message("Inspection stopped", "The connection changed or inspection was cancelled. No workload or host configuration was changed."); cancel(); }); }
+            } catch (Exception error) { ui(run, () -> { dismissProgress(); working = false; message("Inspection stopped", enableGpuRecording
+                    ? "The connection changed or inspection was cancelled. Some approved GPU recorder operations may have completed. Existing recorders and saved GPU history remain on the selected PCs; rescan to check their status."
+                    : "The connection changed or inspection was cancelled. Read-only discovery did not change workloads or host configuration."); cancel(); }); }
         });
     }
     private void sudoNext(List<SshDiscovery.BatchRequest> requests, int index, java.util.Map<String, SshDiscovery.Result> results, int expected) {
         if (index >= requests.size()) { saveResults(results, expected); return; }
         SshDiscovery.BatchRequest request = requests.get(index); LinearLayout form = form();
-        label(form, display(request.candidate) + " needs elevated container access. Approve only the fixed, read-only Docker/Podman inventory commands. This does not grant an interactive shell, install software, read wallet files, restart workloads or change configuration.");
+        label(form, display(request.candidate) + (request.enableGpuRecording
+                ? " needs elevated Docker access. Approve the fixed inventory commands and the GPU recorder operations you selected: pinned image download, labeled container and named volume creation, or starting its existing owned container. Existing GPU records are preserved. No interactive shell, wallet files, host services or workload changes are allowed."
+                : " needs elevated container access. Approve only the fixed, read-only Docker/Podman inventory and existing owned GPU-recording reads. This does not grant an interactive shell, install software, read wallet files, restart workloads or change configuration."));
         EditText password = field(form, "This PC's sudo password (if required)", "", true);
         AlertDialog dialog = new AlertDialog.Builder(activity).setTitle("Approve inventory with sudo?").setView(scroll(form))
             .setPositiveButton("Approve this PC", (d, w) -> {
@@ -365,7 +391,7 @@ final class DiscoveryController {
                 DiscoveryNetwork selectedNetwork = network;
                 io.execute(() -> {
                     try {
-                        SshDiscovery.Result result = SshDiscovery.inventory(selectedNetwork, request.candidate, request.identity, request.credential, secret);
+                        SshDiscovery.Result result = SshDiscovery.inventory(selectedNetwork, request.candidate, request.identity, request.credential, secret, request.collectorSource, request.enableGpuRecording);
                         SshDiscovery.Result original = results.get(request.candidate.endpointKey());
                         results.put(request.candidate.endpointKey(), InspectionResults.merge(original, result));
                         ui(run, () -> { dismissProgress(); working = false; if (result.status == SshDiscovery.Status.AUTH_FAILED) saveResults(results, expected); else sudoNext(requests, index + 1, results, expected); });
@@ -386,16 +412,30 @@ final class DiscoveryController {
         StringBuilder pcDetails = new StringBuilder();
         for (java.util.Map.Entry<String, SshDiscovery.Result> result : results.entrySet())
             pcDetails.append("\n").append(result.getKey()).append(": ").append(status(result.getValue().status))
-                .append("; ").append(result.getValue().addresses.size()).append(" public addresses, ").append(result.getValue().unresolved).append(" unresolved observations");
+                .append("; ").append(result.getValue().addresses.size()).append(" public addresses, ").append(result.getValue().unresolved).append(" unresolved observations")
+                .append(result.getValue().gpuCollectorStatus == null ? "" : "; " + result.getValue().gpuCollectorStatus.label);
+        java.util.Map<String, PcMetadata> pcMetadata = InspectionResults.metadataByAddress(results.values());
+        long pcConflicts = pcMetadata.values().stream().filter(pc -> pc.pcId == null).count();
         String summary = addresses.size() + " verified public host addresses. " + unresolved + " unresolved Nosana instance observations. " + inaccessible + " inaccessible or failed PC inspections."
             + (authFailed ? " The credential batch stopped after an authentication failure; remaining PCs were not tried." : "")
             + (results.size() < expected ? " Some selected PCs were not inspected." : "")
-            + (unresolved > 0 ? " Normal and elevated inventory observations may refer to the same unresolved instance." : "") + pcDetails;
+            + (unresolved > 0 ? " Normal and elevated inventory observations may refer to the same unresolved instance." : "")
+            + (pcConflicts > 0 ? " " + pcConflicts + " host addresses appeared on conflicting PC identities; their PC name and IP addresses remain unknown." : "") + pcDetails;
         if (addresses.isEmpty()) { message("No verified host identities", summary + " Existing saved fleets remain unchanged."); cancel(); return; }
         String savedFleet = fleetId;
         int run = generation;
         JSONObject operation = new JSONObject();
         try { operation.put("op", savedFleet == null ? "create" : "merge").put("addresses", new JSONArray(addresses));
+            JSONArray metadata = new JSONArray();
+            for (java.util.Map.Entry<String, PcMetadata> entry : pcMetadata.entrySet()) {
+                PcMetadata pc = entry.getValue();
+                JSONObject reading = new JSONObject().put("address", entry.getKey()).put("pcId", pc.pcId == null ? JSONObject.NULL : pc.pcId)
+                        .put("pcName", pc.pcName == null ? JSONObject.NULL : pc.pcName)
+                        .put("ipAddresses", new JSONArray(pc.ipAddresses)).put("observedAtMs", pc.observedAtMs);
+                if (pc.pcId != null && pc.gpuTelemetryJson != null) reading.put("gpuTelemetry", new JSONObject(pc.gpuTelemetryJson));
+                metadata.put(reading);
+            }
+            operation.put("pcMetadata", metadata);
             if (savedFleet == null) operation.put("name", profile.getString("name")); else operation.put("id", savedFleet);
         } catch (Exception error) { storageError(); cancel(); return; }
         working = true; busy("Saving discovered fleet", summary);

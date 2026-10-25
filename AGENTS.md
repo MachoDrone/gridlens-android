@@ -17,9 +17,14 @@ does not establish GrapheneOS or physical-device compatibility.
 Read README.md and docs/DEVELOPMENT.md. Never include operator rosters, wallet keys,
 runtime data, signing keys or local evidence in Git or APKs. Only public addresses
 explicitly imported or verified by user-initiated native discovery belong in
-public fleet stores. Native SSH credentials belong only in the encrypted
+public fleet stores. Dated PC names/IPs and strictly validated PC-level GPU
+recordings from those verified SSH discoveries may accompany saved hosts. Never
+infer host-to-GPU/job mapping or claimable rewards from them. Native SSH credentials belong only in the encrypted
 no-backup vault, never Node or WebView.
 Do not access existing Nosana/Solana keys, change host networking or install host services.
+An explicit native GPU-recording approval may create/reuse only validated labeled
+GridLens Docker containers and local named volumes with the pinned image/source.
+Ordinary Rescan only reads existing recorders; public Refresh/reopening does no SSH.
 
 Keep vendored sources byte-identical except the explicit hashed adaptations in
 `vendor/gridlens/ANDROID_ADAPTATIONS.md`. Document and test native/runtime and

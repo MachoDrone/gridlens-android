@@ -25,8 +25,11 @@ storage is separate and is not a Node or WebView API.
 ```
 
 Each fleet has an opaque server-generated UUID `id`, a user `name`,
-`createdAtMs`, `updatedAtMs`, and `hosts`. Each host contains only its validated
-public `address`, `firstDiscoveredAtMs` and `lastDiscoveredAtMs`. Discovery dates
+`createdAtMs`, `updatedAtMs`, and `hosts`. Each host contains its validated public `address`, `firstDiscoveredAtMs` and
+`lastDiscoveredAtMs`, plus optional `pcMetadata` collected through native SSH.
+The metadata has `pcId` (SHA-256 of the pinned SSH public key), `pcName` (or null),
+`ipAddresses`, `observedAtMs` and optional `gpuTelemetry`. It contains no SSH
+credential, node key or authorization header. Old schema-1 records remain valid. Discovery dates
 record when native discoveries were saved; they are not metric observation times.
 
 `POST /mobile/fleets` takes JSON with one of these exact shapes:
@@ -53,7 +56,15 @@ Limits are 512 KiB per request, 100 fleets, 10,000 unique public addresses per f
 and 20,000 total saved host records. Names contain 1–80 characters without control
 characters. Native callers must accept a response up to 4 MiB. Addresses must be
 base58 values decoding to exactly 32 bytes; duplicate addresses fail the operation.
-No partial mutation is applied after validation failure.
+No partial mutation is applied after validation failure. Create/merge optionally
+accept `pcMetadata: [{address, pcId, pcName, ipAddresses, observedAtMs,
+gpuTelemetry?}]`; each address must belong to that operation's roster. A conflict
+sentinel uses null pcId/name and empty IPs to clear a previous ambiguous mapping.
+Omitted metadata preserves prior observation times. GPU summaries use a strict
+nested schema: only four reason flags/counters, bounded UUID histories, original
+source times, sampling/window metadata and enumerated status are accepted.
+Unknown fields fail closed. Saved files reserve 16 KiB below the 4 MiB read limit
+for newline and native response envelopes.
 
 ## Monitoring
 

@@ -1,6 +1,6 @@
 {
   "name": "gridlens-android",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "type": "module",
   "description": "Independent Android distribution of GridLens with the original Fleet UI and on-device public data runtime",
@@ -17,7 +17,8 @@
     "native:prepare": "node tools/prepare-native.ts",
     "test": "node --test test/*.test.ts",
     "check:vendor": "npm run check --prefix vendor/gridlens",
-    "check": "npm run typecheck && npm run build && npm test && npm run check:vendor"
+    "check": "npm run typecheck && npm run build && npm test && npm run test:collector && npm run check:vendor",
+    "test:collector": "python3 -B -m unittest discover -s test -p 'test_gpu_collector.py' -v"
   },
   "devDependencies": {
     "@types/node": "24.13.6",

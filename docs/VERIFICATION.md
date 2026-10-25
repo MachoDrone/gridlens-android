@@ -125,3 +125,49 @@ candidate's real app-update preservation remain pending. Use
 Candidate APK: 197,209,359 bytes; SHA-256
 `3e67ac56815a8b0eea568acb0d90371366f6a59bab3b711c40865f93de79cdf0`.
 It is distributed as a prerelease download, without an Update manifest.
+
+## Android 0.2.1 verification — October 24, 2026
+
+Version code 4 connects dated native PC/IP metadata, adds an explicit optional
+Docker GPU recorder, and highlights a validated newer update in green after a
+bounded foreground check. The operator requested installation through Update;
+this advances the normal channel without claiming the entire physical acceptance
+matrix is complete. The operator previously confirmed eight hosts and saved-fleet
+reopening on the factory-OS Pixel 10 Pro XL.
+
+Completed on the final code and pinned toolchains:
+
+- `npm run check` passes: 41 Android runtime, persistence, release-policy,
+  provenance and phone-browser tests; 17 Python collector tests; 816 inherited
+  application Node tests; all 332 inherited browser tests (11.6 minutes).
+- Clean Android build: all 56 JVM tests pass in both debug and release variants;
+  release lint and debug/instrumentation/release APK assembly pass.
+- The APK declares `com.gridlens.android`, version `0.2.1`, code `4`. Its release
+  certificate matches the existing pinned signing identity; APK signatures and
+  16 KiB ZIP alignment verify. All 45 bundled runtime files match their integrity
+  manifest; the packaged collector matches the reviewed source exactly.
+- The complete mobile adaptation patch reproduces all 194 vendored files from
+  192 independently hash-verified original source files. No desktop files or
+  processes were changed. Local rosters, credentials and build artifacts were
+  excluded from source publication.
+- JVM fixtures verify ownership/configuration checks and fixed Docker operations.
+  The real Java command builders preserve the complete Python source through shell
+  quoting; actual Go template execution verifies all 28 inspection fields against
+  synthetic Docker structures. This is not an actual Docker/NVIDIA startup test.
+
+An initial incremental Android build failed with D8 nest-host/classpath errors
+while native verification overlapped. A subsequent clean build ran after all
+other Gradle tasks ended and passed. The optional new emulator fixture could not
+boot because the installed image required more free disk space; that fixture was
+removed. No emulator or physical-device acceptance is claimed for this revision.
+Docker is unavailable in this development workspace, and no production PC was
+contacted or modified. NVIDIA container compatibility and device installation
+remain physical checks for the native enable flow.
+
+Exact automatic rewards remain unavailable: no supported authorization was
+established, existing node keys were not accessed, and no amount is substituted.
+GPU records remain PC-level; no host-to-GPU mapping or job causation is claimed.
+See [PC telemetry](PC_TELEMETRY.md) for setup and source limitations.
+
+Verified APK size: 197237842 bytes. SHA-256:
+`496f7c4caee8fb6b87e4744cb497cc5056bfb7df57726c913af602e4c8f866c7`.

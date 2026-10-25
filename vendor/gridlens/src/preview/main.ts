@@ -1,5 +1,6 @@
+import { gpuRecordingFacts } from "./mobile-telemetry.ts";
 import "./sidebar.ts";
-import { isSavedFleetScenario, readMobileScenarios } from "./mobile-scenarios.ts";
+import { isSavedFleetScenario, readMobileScenarios, mobilePcAddresses } from "./mobile-scenarios.ts";
 import { bindFleetViewport } from "./viewport.ts";
 import { bindFleetTableScroll } from "./table-scroll.ts";
 import { startConnectionIndicator } from "./connection.ts";
@@ -91,8 +92,8 @@ startConnectionIndicator(document.getElementById("fleet-connection")!, fleetReso
 const COLUMNS = [
   ["stakedNos", "Staked NOS", "Toggle between a dull-green checkmark / red lowercase x and the actual / required NOS amounts. A current checkmark means exact vault NOS meets the current market’s displayed NOS target, including verified 0 / 0; x means it is below that target. Amount view rounds to whole NOS and uses bright green or red for the actual amount. Exact amounts drive sorting and comparison. This does not establish full market eligibility. Amounts still releasing during unstaking remain included; details distinguish duration-weighted xNOS. Shared public RPC checks every 30 minutes; readings expire after 35 minutes. Failed or expired comparisons stay gray; an unknown comparison is a dash."],
   ["status", "Status", "Reported Nosana classification. ONBOARDED is displayed as COMMUNITY (yellow C); REJECTED as red R; PREMIUM as green P. Details preserve the raw response. This does not establish container health or current job activity."],
-  ["pc", "PC", "The sample PC that owns this host. Select a PC cell for the row’s observation details."],
-  ["ip", "IP", "Toggle between hidden (•), full global / internal addresses, global last octet and internal last octet. Compact IPv4 values include the leading dot, such as .102. IPv6 stays complete. Sorting always uses the full internal address. These are documentation-only sample addresses, not links or reachable PCs."],
+  ["pc", "PC", mobileScenarios.enabled ? "PC Name reported through verified SSH discovery. Tap for saved computer details. Rescan refreshes this dated inventory; public Nosana refresh does not." : "The sample PC that owns this host. Select a PC cell for the row’s observation details."],
+  ["ip", "IP", mobileScenarios.enabled ? "IP Addresses reported through verified SSH discovery. Cycle hidden, full global/internal, global suffix and internal suffix. Full addresses drive sorting. Details list every reported interface address; The list includes the verified SSH destination and reported interface addresses; a destination may be a NAT/VPN mapping." : "Toggle between hidden (•), full global / internal addresses, global last octet and internal last octet. Compact IPv4 values include the leading dot, such as .102. IPv6 stays complete. Sorting always uses the full internal address. These are documentation-only sample addresses, not links or reachable PCs."],
   ["hostAddress", "Host Address", "A supplied public Nosana host address. Toggle between the first five characters (default) and the full address. Both views link to the same full address in Nosana Explorer, and sorting always uses the full address. Supplied addresses do not establish current host status or any measurements."],
   ["sol", "SOL", "Confirmed SOL balance from public mainnet RPC, checked best effort every 30 seconds while visible. Three decimals are rounded down for display; exact lamports and provenance are in details and drive sorting. Failed or 60-second-old readings remain gray. Missing accounts remain unknown; verified zero remains zero."],
   ["api", "API", "Last confirmed API result from Node Info, separate from State. Online stays green and Offline stays red. Bold means within its checking window; regular weight means stale or unconfirmed. Online uses a 30-second window. Offline stays bold until its recorded retry is overdue, including an eight-second request allowance. Details preserve original check times and the retry deadline. Amber Populating.. means no confirmed result is available yet. State OTHER can still be API Online. Timeouts and inconclusive checks do not overwrite the last confirmed result. This does not establish whether the PC or workload is running."],
@@ -139,8 +140,8 @@ function rowValue(cell: HTMLTableCellElement, className: string): HTMLButtonElem
 // These current column meanings need local observation or machine mapping.
 // A future Nosana connector may deliver them; no collection is enabled here.
 const LOCAL_SOURCE_NOTES: Readonly<Partial<Record<SortColumn, string>>> = {
-  pc: "Local machine name or operator-defined PC grouping; its mapping to Nosana nodes is pending.",
-  ip: "The internal/private PC address needs local mapping. A global address can come from that node’s Nosana observation and may be shared by several PCs; it must never be replaced with the viewing device’s IP.",
+  ...(!mobileScenarios.enabled ? { pc: "Local machine name or operator-defined PC grouping; its mapping to Nosana nodes is pending.",
+  ip: "The internal/private PC address needs local mapping. A global address can come from that node’s Nosana observation and may be shared by several PCs; it must never be replaced with the viewing device’s IP." } : {}),
   gpuID: "The physical GPU index on the PC. Nosana’s exported device index is not yet verified as that physical slot.",
 };
 
@@ -2488,7 +2489,54 @@ function renderSuppliedStatus(nodeProjectionTime: number): void {
     : `${liveScenario === "real200" ? "Real200 uses its separate supplied Host Address list; the count above reflects the file contents. " : ""}Addresses are read when the preview starts. Edit the supplied file outside the app and restart the preview to load changes.`);
 }
 
+function renderMobilePc(cell: HTMLTableCellElement, key: "pc" | "ip", address: string): void {
+  const pc = savedFleet?.pcs[address];
+  const value = rowValue(cell, "host-details");
+  value.classList.add("host-details");
+  const label = key === "pc" ? "PC Name" : "IP Addresses";
+  const display = formatIPDisplay(mobilePcAddresses(pc), ipMode);
+  setText(value, key === "pc" ? pc?.pcName ?? "—" : display.text);
+  cell.dataset.pcObservedAt = String(pc?.observedAtMs ?? "");
+  value.setAttribute("aria-label", `${label}: ${key === "pc" ? pc?.pcName ?? "unknown" : display.description}. Open saved discovery details.`);
+  rememberInfo(cell, {
+    summary: [ink(pc ? `PC: ${pc.pcName ?? "name unavailable"}.` : "PC details unavailable. Use Rescan to read this computer.", pc ? "plain" : "warning")],
+    facts: pc ? [checkedFact(pc.observedAtMs, "Discovered"), `IP addresses: ${pc.ipAddresses.join(", ")}.`,
+      "Saved SSH discovery, not current reachability. Rescan refreshes PC inventory.",
+      ...(pc.gpuTelemetry ? [`GPU recorder: ${pc.gpuTelemetry.collector.status}. Expand GPU conditions below Scenario for recorded signals.`] : []),
+      "Includes the verified SSH destination plus reported interface addresses. A destination may be a NAT/VPN mapping; no public-IP service is queried."] : ["Public host addresses alone do not identify a PC name or its IP addresses."],
+    source: pc ? `Verified SSH identity digest: ${pc.pcId}\nObserved: ${new Date(pc.observedAtMs).toISOString()}` : "No machine observation is connected for this host.",
+  }, value);
+  value.onclick = () => openCellInfo(cell, label);
+  if (!value.parentElement) cell.replaceChildren(value);
+}
+
+function renderMobileGpuRecordings(): void {
+  if (!mobileScenarios.enabled) return;
+  let panel = document.getElementById("mobile-gpu-recordings") as HTMLDetailsElement | null;
+  if (!panel) {
+    panel = document.createElement("details"); panel.id = "mobile-gpu-recordings";
+    const summary = document.createElement("summary"); summary.textContent = "GPU conditions (PC recordings)";
+    panel.append(summary);
+    const content = document.createElement("div"); content.className = "mobile-gpu-content"; panel.append(content);
+    element("mobile-fleet-status").after(panel);
+    panel.addEventListener("toggle", () => { if (panel?.open) updateMobileGpuDetails(panel); });
+  }
+  panel.hidden = !discoveredScenario;
+}
+function updateMobileGpuDetails(panel: HTMLDetailsElement): void {
+  const content = panel.querySelector(".mobile-gpu-content")!;
+  content.replaceChildren();
+  const pcs = new Map(Object.values(savedFleet?.pcs ?? {}).map(pc => [pc.pcId, pc]));
+  if (!pcs.size) { const text = document.createElement("p"); text.textContent = "Use Rescan to collect PC details and enable GPU recording."; content.append(text); }
+  for (const pc of pcs.values()) {
+    const title = document.createElement("h3"); title.textContent = pc.pcName ?? "Unnamed PC"; content.append(title);
+    for (const fact of gpuRecordingFacts(pc.gpuTelemetry, Date.now())) { const line = document.createElement("p"); line.textContent = fact; content.append(line); }
+  }
+  const note = document.createElement("p"); note.textContent = "Enabled recorders keep bounded history while the phone is closed. Rescan reads their latest saved observations; public-data Refresh does not connect to the PCs."; content.append(note);
+}
+
 function renderSupplied(): void {
+  renderMobileGpuRecordings();
   const nodeProjectionTime = liveNow();
   if (onlineScenario) displayedOnlineHosts = new Map(suppliedAddresses.flatMap(address => {
     const deadline = onlineHostProof(address, nodeProjectionTime);
@@ -2502,10 +2550,12 @@ function renderSupplied(): void {
     .map(row => [row.dataset.host!, row]));
   const rows: HTMLTableRowElement[] = [];
   const sortableRows = displayedAddresses.map((address) => ({
-    pc: "", gpuIndex: null, containerName: "", solLamports: solRecords.get(address)?.lamports ?? null,
+    pc: savedFleet?.pcs[address]?.pcName ?? "", gpuIndex: null, containerName: "", solLamports: solRecords.get(address)?.lamports ?? null,
     nosAmount: nosRecords.get(address)?.amount ?? null,
     stakedNosAmount: stakingRecords.get(address)?.stake.amount ?? null, values: {
       hostAddress: address,
+      pc: savedFleet?.pcs[address]?.pcName ?? null,
+      ip: mobilePcAddresses(savedFleet?.pcs[address]).internal ?? mobilePcAddresses(savedFleet?.pcs[address]).global,
       latestJob: jobHistory.summary(address)?.job.address ?? null,
       duration: liveDuration(address, nodeProjectionTime).elapsedSeconds,
       queued: liveQueue(address, nodeProjectionTime).sortValue,
@@ -2538,6 +2588,12 @@ function renderSupplied(): void {
         else link.removeAttribute("title");
         link.setAttribute("aria-label", `Open ${address} in Nosana Explorer (new tab)`);
         if (!link.parentElement) cell.append(link);
+      } else if (mobileScenarios.enabled && (key === "pc" || key === "ip")) {
+        renderMobilePc(cell, key, address);
+      } else if (mobileScenarios.enabled && key === "rewards") {
+        setText(cell, "—");
+        cell.setAttribute("aria-label", "Rewards to claim unavailable: verified Nosana authorization is not connected.");
+        cell.title = "Exact claimable uptime rewards require Nosana authorization. No existing node keys are accessed. A PC collector does not unlock this amount.";
       } else if (key === "sol") {
         renderSolCell(cell, address, nodeProjectionTime);
       } else if (key === "nos") {
