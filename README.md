@@ -8,7 +8,13 @@ continues independently.
 
 **[Download the signed Android APK](https://github.com/MachoDrone/gridlens-android-releases/releases/latest/download/gridlens-android.apk)**
 
-**Version 0.2.3** matches the reference Fleet column presentation: PC uses the
+**Version 0.2.4** shows the installed version beneath GridLens, with a separate
+update-check status and time. Tap the app name for installed/latest version
+information. App-update checks run every five minutes while foregrounded, and
+Update can request a check immediately unless GitHub has requested a retry delay.
+A failed check is shown explicitly; a neutral button alone does not mean current.
+
+The Fleet columns match the reference Fleet column presentation: PC uses the
 normal table text size; IP cycles hidden → public/private → public suffix → private
 suffix; Rewards to claim uses rounded whole NOS links to the host’s Nosana page.
 Exact amounts still drive sorting and remain in details. Enabled PC monitoring
@@ -77,12 +83,22 @@ verifies the APK and opens Android's installer. On the first update, Android may
 ask you to allow installations from GridLens. Confirm the installation. Lists and
 settings survive app updates; uninstalling removes app-local data.
 
-From 0.2.1, the app checks on opening/resuming at most once every six hours.
-Update becomes green and bold when a compatible newer release is known; a failed
-check retains previously confirmed availability. The label is the last check's
-result, not a continuous background subscription. Pressing Update rechecks now;
-download and installation still require confirmation. Older installed versions
-must be checked manually once to obtain this behavior.
+The installed APK version is always visible beneath **GridLens**. The separate
+status line reports not checked, checking, an available version, the last
+successful current-version check, failure or Android incompatibility. Tap the
+app name to see installed/latest versions and the last successful check/attempt.
+
+From 0.2.4, automatic checks run on opening/resuming and every five minutes while
+the app stays in the foreground. They stop in the background and respect explicit
+GitHub retry delays. Update becomes green when a validated compatible newer
+release is known. A failed check retains that prior availability and shows the
+failure; it never becomes an "up to date" result. Pressing **Update** bypasses the
+local interval, but honors a provider-requested delay with a clear eligible time.
+Downloads and Android installation still require confirmation.
+
+Versions 0.2.1–0.2.3 checked only on opening/resuming, at most once every six hours;
+earlier versions checked only when tapped. If an older installed app is not green,
+tap Update to check now. Older versions learn about a new release when their next check runs.
 
 Publishing a new signed release makes it available to that button; a source-code commit alone is not an installable update. The download
 repository's workflow watches version bumps on this repository's `main`, runs the

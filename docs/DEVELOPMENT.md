@@ -134,8 +134,8 @@ PC telemetry tests also run via `npm run test:collector` (Python 3 standard
 library only). The recorder's Python image is pinned by digest in `GpuCollector`;
 source and image are verified before reusing existing labeled resources. See
 [PC telemetry](PC_TELEMETRY.md) for host-side authority, bounds and missing sources.
-The updater checks a small manifest only while foregrounded, at most every six
-hours, and never silently downloads or installs an APK.
+The updater checks a small manifest only while foregrounded and never silently
+downloads or installs an APK. Version 0.2.4 uses the five-minute policy below.
 
 ## Runtime boundaries
 
@@ -188,3 +188,21 @@ HTTPS echo lookup in one verified node per PC, sharing a persisted 30-minute
 PublicNetworkCache. Tests inject SSH/HTTPS and never connect to operator PCs.
 Network observation timestamps are independent of inventory and financial reads.
 Existing enabled monitoring receives the new values without another rescan.
+
+## Installed version and update status in 0.2.4
+
+The native toolbar reads the installed version from PackageInfo, falling back to
+BuildConfig; it never derives the installed version from the release feed. A
+separate native status line and app-information dialog preserve the latest
+validated release, last successful check and last attempt. Failed/interrupted
+checks remain distinct from a successful up-to-date observation. Retained newer
+compatible release evidence still controls the green button.
+
+One main-thread timer schedules five-minute manifest checks only while the
+Activity is foregrounded. Pause/destroy cancel it and automatic requests; manual
+checks can bypass the local interval. GitHub Retry-After deadlines are durable
+and apply to both manual and automatic checks. They are retry-eligible times,
+not forecasts of recovery. Rotation/cancellation cannot discard or shorten a
+received deadline. APK download, size/hash/package/version/certificate checks and
+Android's final installation confirmation retain their existing boundaries.
+This policy is for app updates; PC and Nosana polling intervals are unchanged.

@@ -66,6 +66,7 @@ public final class SmokeInstrumentation extends Instrumentation {
             require(page.getString("url").startsWith("http://127.0.0.1:"), "Fleet is not running on phone loopback");
             require(page.getString("url").contains("scenario=fresh"), "Test unexpectedly selected a live scenario");
             require(!page.getString("text").contains("could not load"), "Runtime startup failed");
+            verifyUpdatePresentation(current);
             JSONObject ready = NodeRuntime.ready(getTargetContext());
             require(ready != null, "Runtime did not publish its private readiness file");
             String origin = "http://127.0.0.1:" + ready.getInt("port");
@@ -102,12 +103,119 @@ public final class SmokeInstrumentation extends Instrumentation {
             runOnMainSync(() -> { callActivityOnPause(current); callActivityOnResume(current); });
             require(DiscoveryNetwork.startedSearchesForTesting() == 0 && DiscoveryNetwork.startedConnectionsForTesting() == 0,
                 "Opening/resuming/refreshing Network Discovery started a search");
-            result.putString("stream", "PASS: embedded Node/WebView boot, eight synthetic hosts, loopback authentication, roster validation/persistence, pause/resume, actual Android APK rejection and narrow update provider. No live provider or GitHub requests.\n");
+            result.putString("stream", "PASS: embedded Node/WebView boot, eight synthetic hosts, loopback authentication, roster validation/persistence, pause/resume, installed-version/update-status presentation at 390dp, actual Android APK rejection and narrow update provider. No live provider or GitHub requests.\n");
             finish(Activity.RESULT_OK, result);
         } catch (Exception | AssertionError error) {
             result.putString("stream", (nativeOnly ? "FAIL (native-only): " : "FAIL: ") + error.getClass().getSimpleName() + ": " + error.getMessage() + "\n");
             finish(Activity.RESULT_CANCELED, result);
         }
+    }
+
+    /** Synthetic policy transitions exercise native text/color without checking GitHub. */
+    private void verifyUpdatePresentation(MainActivity activity) {
+        runOnMainSync(() -> {
+            android.view.View decor = activity.getWindow().getDecorView();
+            android.widget.TextView version = decor.findViewWithTag("app-version");
+            android.widget.TextView status = decor.findViewWithTag("app-update-status");
+            android.widget.Button action = decor.findViewWithTag("app-update-action");
+            android.view.View brand = decor.findViewWithTag("app-brand");
+            android.view.View toolbar = decor.findViewWithTag("app-toolbar");
+            require(version != null && status != null && action != null, "Installed version or update status is missing");
+            require(version.getText().toString().equals("v" + BuildConfig.VERSION_NAME), "Toolbar version is not the installed APK version");
+            require(brand.getContentDescription().toString().contains(BuildConfig.VERSION_NAME), "Installed version is not accessible");
+            require(status.getVisibility() == android.view.View.VISIBLE, "Runtime completion hid update status");
+            UpdateAvailability.State original = activity.updateStateForTesting();
+            require(original != null, "Updater did not supply its initial status");
+            UpdateAvailability fixture = new UpdateAvailability(0, null, BuildConfig.VERSION_CODE, android.os.Build.VERSION.SDK_INT);
+            android.graphics.drawable.Drawable originalBackground = action.getBackground();
+            long checkedAt = System.currentTimeMillis() - 60000;
+            try {
+                activity.updateStateForTesting(fixture.snapshot(BuildConfig.VERSION_NAME));
+                require(status.getText().toString().equals(activity.getString(R.string.update_status_not_checked)), "Initial update status is not visible");
+                verifyUpdateButtonContrast(action, false, originalBackground);
+                fixture.attempted(checkedAt);
+                activity.updateStateForTesting(fixture.snapshot(BuildConfig.VERSION_NAME));
+                require(status.getText().toString().equals(activity.getString(R.string.update_status_checking)), "Checking status is not visible");
+                verifyUpdateButtonContrast(action, false, originalBackground);
+                UpdatePolicy.Release newer = new UpdatePolicy.Release(1, BuildConfig.VERSION_CODE + 1L, "99.0.0",
+                        "https://github.com/MachoDrone/gridlens-android-releases/releases/download/v99.0.0/gridlens-android.apk", "a".repeat(64), 123, 26);
+                UpdateAvailability undated = new UpdateAvailability(0, newer, BuildConfig.VERSION_CODE, android.os.Build.VERSION.SDK_INT);
+                activity.updateStateForTesting(undated.snapshot(BuildConfig.VERSION_NAME));
+                require(status.getText().toString().equals(activity.getString(R.string.update_status_available_undated, "99.0.0")), "Migrated availability invented a successful check time");
+                fixture.accept(newer, BuildConfig.VERSION_CODE, android.os.Build.VERSION.SDK_INT, checkedAt);
+                activity.updateStateForTesting(fixture.snapshot(BuildConfig.VERSION_NAME));
+                require(status.getText().toString().contains("99.0.0") && status.getText().toString().contains("checked"), "Available version/check time is missing");
+                require(action.getBackgroundTintList() != null && action.getBackgroundTintList().getDefaultColor() == android.graphics.Color.rgb(16, 232, 12), "A verified available update is not green");
+                verifyUpdateButtonContrast(action, true, originalBackground);
+                require(version.getText().toString().equals("v" + BuildConfig.VERSION_NAME), "Available release replaced the installed-version label");
+                fixture.failed();
+                activity.updateStateForTesting(fixture.snapshot(BuildConfig.VERSION_NAME));
+                require(status.getText().toString().contains("Check failed") && status.getText().toString().contains("99.0.0"), "Failed check hides retained update evidence");
+                require(action.getBackgroundTintList().getDefaultColor() == android.graphics.Color.rgb(16, 232, 12), "Failed check erased a verified update highlight");
+                verifyUpdateButtonContrast(action, true, originalBackground);
+                UpdatePolicy.Release current = new UpdatePolicy.Release(1, BuildConfig.VERSION_CODE, BuildConfig.VERSION_NAME,
+                        "https://github.com/MachoDrone/gridlens-android-releases/releases/download/v" + BuildConfig.VERSION_NAME + "/gridlens-android.apk", "b".repeat(64), 123, 26);
+                fixture.accept(current, BuildConfig.VERSION_CODE, android.os.Build.VERSION.SDK_INT, checkedAt + 1);
+                activity.updateStateForTesting(fixture.snapshot(BuildConfig.VERSION_NAME));
+                require(status.getText().toString().contains("Up to date") && status.getText().toString().contains("checked"), "Last successful up-to-date check is not visible");
+                require(!status.getText().toString().contains("99.0.0"), "Successful latest-release check retained withdrawn availability text");
+                verifyUpdateButtonContrast(action, false, originalBackground);
+                fixture.failed();
+                activity.updateStateForTesting(fixture.snapshot(BuildConfig.VERSION_NAME));
+                require(status.getText().toString().contains("Check failed"), "Failure without an available update is not explicit");
+                verifyUpdateButtonContrast(action, false, originalBackground);
+                UpdateAvailability failedFirstCheck = new UpdateAvailability(0, null, BuildConfig.VERSION_CODE, android.os.Build.VERSION.SDK_INT);
+                failedFirstCheck.failed();
+                activity.updateStateForTesting(failedFirstCheck.snapshot(BuildConfig.VERSION_NAME));
+                require(status.getText().toString().equals(activity.getString(R.string.update_status_failed)), "First failed check does not explain retrying");
+                verifyUpdateButtonContrast(action, false, originalBackground);
+                int width = Math.round(390 * activity.getResources().getDisplayMetrics().density);
+                int left = toolbar.getLeft(), top = toolbar.getTop(), right = toolbar.getRight(), bottom = toolbar.getBottom();
+                toolbar.measure(android.view.View.MeasureSpec.makeMeasureSpec(width, android.view.View.MeasureSpec.EXACTLY),
+                        android.view.View.MeasureSpec.makeMeasureSpec(0, android.view.View.MeasureSpec.UNSPECIFIED));
+                toolbar.layout(0, 0, width, toolbar.getMeasuredHeight());
+                try {
+                    for (String tag : new String[]{"app-fleets-action", "app-hosts-action", "app-update-action"}) {
+                        android.view.View button = decor.findViewWithTag(tag);
+                        require(button != null && button.getVisibility() == android.view.View.VISIBLE && button.getLeft() >= brand.getRight()
+                                && button.getRight() <= width && button.getWidth() > 0, "Toolbar action is clipped at 390dp");
+                    }
+                    require(version.getLayout() != null && version.getLayout().getEllipsisCount(0) == 0, "Installed version is clipped at 390dp");
+                } finally {
+                    toolbar.measure(android.view.View.MeasureSpec.makeMeasureSpec(right - left, android.view.View.MeasureSpec.EXACTLY),
+                            android.view.View.MeasureSpec.makeMeasureSpec(bottom - top, android.view.View.MeasureSpec.EXACTLY));
+                    toolbar.layout(left, top, right, bottom); toolbar.requestLayout();
+                }
+            } finally { activity.updateStateForTesting(original); }
+        });
+    }
+
+    private static void verifyUpdateButtonContrast(android.widget.Button button, boolean available,
+            android.graphics.drawable.Drawable originalBackground) {
+        require(button.isEnabled() && button.getVisibility() == android.view.View.VISIBLE && button.getAlpha() > 0.99f,
+                "Update action is not visibly enabled");
+        require(button.getText().toString().equals(button.getContext().getString(R.string.update_button)), "Update caption is missing");
+        require(button.getContentDescription() != null && button.getContentDescription().length() > 0, "Update action has no accessible description");
+        require(button.getBackground() == originalBackground, "Update styling replaced the native drawable/ripple");
+        android.content.res.ColorStateList tint = button.getBackgroundTintList();
+        require(tint != null, "Update button has no explicit background tint");
+        int background = tint.getColorForState(button.getDrawableState(), tint.getDefaultColor());
+        int foreground = button.getCurrentTextColor();
+        require(background == (available ? android.graphics.Color.rgb(16, 232, 12) : android.graphics.Color.rgb(89, 89, 89)), "Update background does not match its availability state");
+        require(foreground == (available ? android.graphics.Color.BLACK : android.graphics.Color.WHITE), "Update caption color does not match its background");
+        require(android.graphics.Color.alpha(background) == 255 && android.graphics.Color.alpha(foreground) == 255, "Update colors must remain opaque");
+        double light = Math.max(luminance(background), luminance(foreground));
+        double dark = Math.min(luminance(background), luminance(foreground));
+        require((light + 0.05) / (dark + 0.05) >= 4.5, "Update caption has insufficient contrast");
+    }
+    private static double luminance(int color) {
+        return 0.2126 * linearChannel(android.graphics.Color.red(color))
+                + 0.7152 * linearChannel(android.graphics.Color.green(color))
+                + 0.0722 * linearChannel(android.graphics.Color.blue(color));
+    }
+    private static double linearChannel(int value) {
+        double scaled = value / 255.0;
+        return scaled <= 0.04045 ? scaled / 12.92 : Math.pow((scaled + 0.055) / 1.055, 2.4);
     }
 
     /** Exercises the real package parser and provider without downloading or installing anything. */

@@ -61,3 +61,11 @@ unknown is not zero. Public IP comes from the fixed native ipify read inside one
 verified node per PC, shared and cached for 30 minutes. Private addresses come
 from PC interfaces. Never substitute the phone's IP or SSH ingress for measured
 public egress; preserve independent retained timestamps on failure.
+
+Keep the installed APK version visible in the native toolbar and update outcomes.
+Update color is not the only status: show last successful check/result separately
+from failed, interrupted or unknown checks. App-update checks use one foreground
+five-minute timer; pause/destroy stop automatic work. Persist and honor provider
+retry deadlines across controllers/restarts, including manual checks. A successful
+response must not erase a later provider deadline. Downloads/installation remain
+explicit user actions, and the existing signature/integrity checks must remain.

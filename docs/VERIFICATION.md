@@ -257,3 +257,45 @@ copied: missing rewards remain unknown. Non-Android snapshot behavior is preserv
 through the trusted Android marker and explicit hashed source adaptations.
 No developer connection to an operator PC, live wallet read, workload restart,
 host installation or network configuration change was made for this update.
+
+## Android 0.2.4 version and update visibility — October 26, 2026
+
+Version code 7 shows the installed APK version beneath GridLens, a separate update
+status/check time, and app information when the brand is tapped. The installed
+version comes from the APK, never the release feed. A neutral button is not used
+as evidence of an up-to-date installation. Five-minute foreground checks replace
+the old six-hour resume-only policy; manual checks bypass the local interval but
+honor explicit provider delays. Downloads and installation remain user confirmed.
+
+Verification:
+
+- `npm run check` passes: 104 app/runtime/helper/browser tests, 27 recorder tests,
+  816 inherited Node tests and all 332 browser tests (11.6 minutes).
+- All 113 Android unit tests pass in both debug and release variants. Updater
+  tests cover status distinctions, retained availability, timer eligibility,
+  provider delays, stale metadata writers, late responses across controllers and
+  successful checks that must not erase a future provider deadline. Clean builds,
+  final rebuild, release lint and APK assembly pass.
+- Isolated Android API 36 x86_64 Smoke passes with unchanged five-second JavaScript
+  callback timeout. It verifies installed-version visibility, independent latest
+  release display, status transitions, green availability retained on failure,
+  exact 390dp toolbar layout, caption accessibility, opaque colors, at least
+  4.5:1 button contrast and preservation of the native background drawable.
+- Final visual review confirms visible v0.2.4, explicit update status and a readable
+  gray/white Update button alongside Fleets/Hosts. The fixture's screenshot width
+  is 586 pixels (391dp after emulator rounding); the test separately measures the
+  toolbar at exactly 390dp. Only synthetic app data were used.
+
+An initial screenshot exposed a blank-looking neutral button: resetting a null
+background tint cleared its themed fill while retaining white text. The final
+build explicitly uses #595959 with white text for neutral states, preserving
+bright green/black for known available updates. The earlier failed visual evidence
+is retained locally; the corrected build passed the strengthened checks.
+
+Provider retry state has one serialized, monotonic writer shared across controller
+instances. Ordinary status writes cannot overwrite it; dispatch reads current
+shared storage and success does not clear a later deadline. Retry times are
+eligibility bounds, not promises of recovery. No PC/Nosana polling, credentials,
+wallet access or collection behavior changed. No physical phone or operator PC
+was accessed during these checks; actual installed phone version cannot be inferred
+from the public release manifest or an unhighlighted button.

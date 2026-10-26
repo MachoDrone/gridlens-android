@@ -13,6 +13,8 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
+import android.text.TextUtils;
+import android.text.format.DateUtils;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowInsets;
@@ -45,10 +47,13 @@ public final class MainActivity extends Activity {
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private WebView webView;
     private TextView status;
+    private TextView installedVersion;
+    private TextView updateStatus;
+    private String installedVersionName;
+    private UpdateAvailability.State updateState;
+    private AlertDialog appInformation;
     private Button recovery;
     private Button update;
-    private ColorStateList updateDefaultTint;
-    private ColorStateList updateDefaultText;
     private Typeface updateDefaultTypeface;
     private UpdateController updates;
     private DiscoveryController discovery;
@@ -68,6 +73,7 @@ public final class MainActivity extends Activity {
             savedUrl = state.getString("url");
             importScenario = state.getString("importScenario");
         }
+        installedVersionName = readInstalledVersionName();
         createViews();
         updates = new UpdateController(this, this::showUpdateAvailability,
                 !(BuildConfig.DEBUG && "fresh".equals(getIntent().getStringExtra("scenario"))));
@@ -86,35 +92,76 @@ public final class MainActivity extends Activity {
             return insets.consumeSystemWindowInsets();
         });
         LinearLayout toolbar = new LinearLayout(this);
+        toolbar.setTag("app-toolbar");
         toolbar.setGravity(Gravity.CENTER_VERTICAL);
         toolbar.setPadding(dp(12), 0, dp(4), 0);
+        LinearLayout brand = new LinearLayout(this);
+        brand.setTag("app-brand");
+        brand.setOrientation(LinearLayout.VERTICAL);
+        brand.setGravity(Gravity.CENTER_VERTICAL);
+        brand.setMinimumHeight(dp(52));
+        brand.setPadding(0, dp(4), dp(4), dp(4));
+        brand.setFocusable(true);
+        brand.setContentDescription(getString(R.string.app_information_description, installedVersionName));
+        brand.setTooltipText(getString(R.string.app_information_title));
+        brand.setOnClickListener(view -> showAppInformation());
         TextView title = new TextView(this);
         title.setText(R.string.app_name);
         title.setTextSize(18);
         title.setTextColor(Color.WHITE);
         title.setTypeface(null, android.graphics.Typeface.BOLD);
-        toolbar.addView(title, new LinearLayout.LayoutParams(0, dp(52), 1));
-        title.setGravity(Gravity.CENTER_VERTICAL);
+        title.setSingleLine(true);
+        title.setEllipsize(TextUtils.TruncateAt.END);
+        title.setIncludeFontPadding(false);
+        title.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        brand.addView(title);
+        installedVersion = new TextView(this);
+        installedVersion.setTag("app-version");
+        installedVersion.setText(getString(R.string.installed_version_short, installedVersionName));
+        installedVersion.setTextSize(12);
+        installedVersion.setTextColor(Color.rgb(184, 194, 206));
+        installedVersion.setSingleLine(true);
+        installedVersion.setEllipsize(TextUtils.TruncateAt.END);
+        installedVersion.setIncludeFontPadding(false);
+        installedVersion.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        brand.addView(installedVersion);
+        toolbar.addView(brand, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
         Button fleets = new Button(this);
+        fleets.setTag("app-fleets-action");
         fleets.setText(R.string.fleets_button);
         fleets.setContentDescription("Network discovery and saved fleets");
         fleets.setOnClickListener(view -> { if (discovery != null) discovery.show(null); else Toast.makeText(this, "GridLens is still starting.", Toast.LENGTH_SHORT).show(); });
         toolbar.addView(fleets, new LinearLayout.LayoutParams(dp(76), dp(48)));
         Button hosts = new Button(this);
+        hosts.setTag("app-hosts-action");
         hosts.setText(R.string.hosts_button);
         hosts.setContentDescription("Import host address list");
         hosts.setOnClickListener(view -> chooseRoster());
         toolbar.addView(hosts, new LinearLayout.LayoutParams(dp(76), dp(48)));
         update = new Button(this);
+        update.setTag("app-update-action");
         update.setText(R.string.update_button);
         update.setContentDescription("Check for an Android app update");
         update.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
-        updateDefaultTint = update.getBackgroundTintList();
-        updateDefaultText = update.getTextColors();
+        // The theme may expose no tint even when its drawable looks gray. Resetting
+        // that null tint can turn the button white, so make both neutral colors explicit.
+        update.setBackgroundTintList(ColorStateList.valueOf(Color.rgb(89, 89, 89)));
+        update.setTextColor(Color.WHITE);
         updateDefaultTypeface = update.getTypeface();
         update.setOnClickListener(view -> updates.checkForUpdate());
         toolbar.addView(update, new LinearLayout.LayoutParams(dp(84), dp(48)));
         root.addView(toolbar);
+        updateStatus = new TextView(this);
+        updateStatus.setTag("app-update-status");
+        updateStatus.setText(R.string.update_status_not_checked);
+        updateStatus.setTextSize(11);
+        updateStatus.setTextColor(Color.rgb(184, 194, 206));
+        updateStatus.setPadding(dp(16), dp(2), dp(16), dp(5));
+        updateStatus.setMinHeight(dp(24));
+        updateStatus.setMaxLines(2);
+        updateStatus.setEllipsize(TextUtils.TruncateAt.END);
+        updateStatus.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        root.addView(updateStatus, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
         status = new TextView(this);
         status.setText(R.string.starting_runtime);
         status.setTextColor(Color.LTGRAY);
@@ -385,6 +432,7 @@ public final class MainActivity extends Activity {
         handler.removeCallbacksAndMessages(null);
         io.shutdownNow();
         if (updates != null) updates.destroy();
+        if (appInformation != null) appInformation.dismiss();
         if (discovery != null) discovery.destroy();
         webView.stopLoading();
         webView.destroy();
@@ -394,18 +442,79 @@ public final class MainActivity extends Activity {
         if (webView.canGoBack()) webView.goBack(); else super.onBackPressed();
     }
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
-    private void showUpdateAvailability(String versionName) {
+    private void showUpdateAvailability(UpdateAvailability.State state) {
+        if (destroyed) return;
+        updateState = state;
+        String versionName = state.availableVersionName;
         boolean available = versionName != null;
-        update.setBackgroundTintList(available ? ColorStateList.valueOf(Color.rgb(16, 232, 12)) : updateDefaultTint);
-        update.setTextColor(available ? ColorStateList.valueOf(Color.BLACK) : updateDefaultText);
+        update.setBackgroundTintList(ColorStateList.valueOf(available ? Color.rgb(16, 232, 12) : Color.rgb(89, 89, 89)));
+        update.setTextColor(available ? Color.BLACK : Color.WHITE);
         update.setTypeface(available ? Typeface.create(updateDefaultTypeface, Typeface.BOLD) : updateDefaultTypeface);
-        String description = available ? "GridLens " + versionName + " update available. Tap to check and install."
-                : "Check for an Android app update";
+        String summary = updateStatusText(state);
+        updateStatus.setText(summary);
+        updateStatus.setContentDescription(summary);
+        boolean warning = "failed".equals(state.status) || "incompatible".equals(state.status);
+        updateStatus.setTextColor(warning ? Color.rgb(251, 191, 36) : "available".equals(state.status)
+                ? Color.rgb(16, 232, 12) : Color.rgb(184, 194, 206));
+        String description = summary + ". " + getString(R.string.update_action_description);
         update.setContentDescription(description);
         update.setTooltipText(description);
+        if (appInformation != null && appInformation.isShowing()) appInformation.setMessage(appInformationText());
+    }
+    private String readInstalledVersionName() {
+        try {
+            String value = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+            if (value != null && !value.isEmpty()) return value;
+        } catch (android.content.pm.PackageManager.NameNotFoundException ignored) { }
+        return BuildConfig.VERSION_NAME;
+    }
+    private String checkedTime(long atMs) {
+        if (atMs <= 0) return getString(R.string.update_check_time_unknown);
+        return DateUtils.formatDateTime(this, atMs, DateUtils.FORMAT_SHOW_DATE | DateUtils.FORMAT_SHOW_TIME
+                | DateUtils.FORMAT_ABBREV_MONTH | DateUtils.FORMAT_ABBREV_TIME);
+    }
+    private String updateStatusText(UpdateAvailability.State state) {
+        switch (state.status) {
+            case "checking":
+                return state.availableVersionName == null ? getString(R.string.update_status_checking)
+                        : getString(R.string.update_status_checking_retained, state.availableVersionName);
+            case "available":
+                if (state.lastSuccessfulCheckAtMs <= 0) return getString(R.string.update_status_available_undated, state.availableVersionName);
+                return getString(R.string.update_status_available, state.availableVersionName, checkedTime(state.lastSuccessfulCheckAtMs));
+            case "up-to-date":
+                return getString(R.string.update_status_current, state.latestVersionName, checkedTime(state.lastSuccessfulCheckAtMs));
+            case "failed":
+                if (state.availableVersionName != null && state.lastSuccessfulCheckAtMs <= 0) return getString(R.string.update_status_failed_available_undated, state.availableVersionName);
+                if (state.availableVersionName != null) return getString(R.string.update_status_failed_available, state.availableVersionName, checkedTime(state.lastSuccessfulCheckAtMs));
+                if (state.latestVersionName != null && state.lastSuccessfulCheckAtMs <= 0) return getString(R.string.update_status_failed_previous_undated, state.latestVersionName);
+                if (state.latestVersionName != null) return getString(R.string.update_status_failed_previous, state.latestVersionName, checkedTime(state.lastSuccessfulCheckAtMs));
+                return getString(R.string.update_status_failed);
+            case "incompatible":
+                return getString(R.string.update_status_incompatible, state.latestVersionName);
+            default:
+                return getString(R.string.update_status_not_checked);
+        }
+    }
+    private String appInformationText() {
+        String latest = updateState == null || updateState.latestVersionName == null ? getString(R.string.update_version_unknown)
+                : getString(R.string.installed_version_short, updateState.latestVersionName);
+        return getString(R.string.app_information_details, installedVersionName, latest,
+                updateState == null ? getString(R.string.update_status_not_checked) : updateStatusText(updateState),
+                checkedTime(updateState == null ? 0 : updateState.lastSuccessfulCheckAtMs), checkedTime(updateState == null ? 0 : updateState.lastAttemptAtMs));
+    }
+    private void showAppInformation() {
+        if (destroyed) return;
+        if (appInformation != null) appInformation.dismiss();
+        appInformation = new AlertDialog.Builder(this).setTitle(R.string.app_information_title).setMessage(appInformationText())
+                .setPositiveButton(android.R.string.ok, null).show();
     }
     private void showStatus(String text) { status.setText(text); status.setVisibility(View.VISIBLE); }
     private void showRecoveryStatus(String text) { showStatus(text); recovery.setVisibility(View.VISIBLE); }
     WebView webViewForTesting() { return webView; }
     String originForTesting() { return origin; }
+    void updateStateForTesting(UpdateAvailability.State state) {
+        if (!BuildConfig.DEBUG || !"fresh".equals(getIntent().getStringExtra("scenario"))) throw new IllegalStateException("Synthetic debug Activity required");
+        showUpdateAvailability(state);
+    }
+    UpdateAvailability.State updateStateForTesting() { return updateState; }
 }
