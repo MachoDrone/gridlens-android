@@ -8,12 +8,18 @@ continues independently.
 
 **[Download the signed Android APK](https://github.com/MachoDrone/gridlens-android-releases/releases/latest/download/gridlens-android.apk)**
 
-**Version 0.2.2** puts PC monitoring setup in the app. Open a saved fleet and choose
-**Enable / repair monitoring** once. The app reuses saved SSH connections, verifies
-the exact nodes, reads claimable rewards inside authorized node containers, and
-records GPU conditions for association with job intervals. Routine monitoring
-needs no rescans or developer access to the PCs. Install over the existing app;
-do not uninstall first. See [rewards and GPU implementation](docs/REWARDS_AND_GPU_TELEMETRY_GAPS.md).
+**Version 0.2.3** matches the reference Fleet column presentation: PC uses the
+normal table text size; IP cycles hidden → public/private → public suffix → private
+suffix; Rewards to claim uses rounded whole NOS links to the host’s Nosana page.
+Exact amounts still drive sorting and remain in details. Enabled PC monitoring
+now checks public egress from a verified node using ipify and reads the PC’s
+private interface address, with one shared lookup per PC every 30 minutes.
+The phone’s IP is never substituted, and old readings keep their source times.
+
+Open a saved fleet and choose **Enable / repair monitoring** once if it is not
+already enabled. Existing enabled monitoring picks up these IP reads after the
+update; routine refresh needs no rescan. Install over the existing app without
+uninstalling. See [rewards and GPU implementation](docs/REWARDS_AND_GPU_TELEMETRY_GAPS.md).
 
 Android 8.0 or newer is required. This build includes arm64 phones and x86_64
 emulators. It does not include 32-bit Android or an iPhone application. The first

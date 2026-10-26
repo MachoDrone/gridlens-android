@@ -178,3 +178,13 @@ remain unchanged. Native monitoring uses four fair foreground slots, persisted
 per-node authorization and shared reward cooldowns. Node/WebView cache reads
 cannot trigger signing or arbitrary SSH. Receipt of an observation preserves
 source times and cannot establish new reachability or causal job attribution.
+
+## Android 0.2.3 column alignment
+
+The reference IP cycle and whole-NOS rewards presentation are marker-gated Android
+adaptations. PC/IP text uses the compact table size; exact rewards/source dates
+remain independent from rounded display. Native PublicIpReader executes a fixed
+HTTPS echo lookup in one verified node per PC, sharing a persisted 30-minute
+PublicNetworkCache. Tests inject SSH/HTTPS and never connect to operator PCs.
+Network observation timestamps are independent of inventory and financial reads.
+Existing enabled monitoring receives the new values without another rescan.

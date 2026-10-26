@@ -1,8 +1,8 @@
 import { createMobileMonitoring } from "./mobile-monitoring.ts";
-import { rewardView, rewardAtoms, jobGpuConditions } from "../fleet/pc-observations.ts";
+import { rewardView, rewardAtoms, jobGpuConditions, networkView } from "../fleet/pc-observations.ts";
 import { gpuRecordingFacts } from "./mobile-telemetry.ts";
 import "./sidebar.ts";
-import { isSavedFleetScenario, readMobileScenarios, mobilePcAddresses } from "./mobile-scenarios.ts";
+import { isSavedFleetScenario, readMobileScenarios, mobilePcAddresses, formatMobileIPDisplay } from "./mobile-scenarios.ts";
 import { bindFleetViewport } from "./viewport.ts";
 import { bindFleetTableScroll } from "./table-scroll.ts";
 import { startConnectionIndicator } from "./connection.ts";
@@ -64,6 +64,7 @@ bindFleetViewport(document.querySelector<HTMLElement>(".fleet-title-row")!);
 // Service reachability is independent of source freshness and host API status.
 const fleetConfig = readFleetConfig(document);
 const mobileScenarios = await readMobileScenarios(document);
+if (mobileScenarios.enabled) document.documentElement.dataset.gridlensMobile = "android";
 const requestedScenario = fleetConfig.sourceMode === "snapshot" ? null
   : new URLSearchParams(location.search).get("scenario") ?? (mobileScenarios.enabled ? mobileScenarios.selectedScenario : null);
 const evidenceClock = createEvidenceClock();
@@ -95,7 +96,7 @@ const COLUMNS = [
   ["stakedNos", "Staked NOS", "Toggle between a dull-green checkmark / red lowercase x and the actual / required NOS amounts. A current checkmark means exact vault NOS meets the current market’s displayed NOS target, including verified 0 / 0; x means it is below that target. Amount view rounds to whole NOS and uses bright green or red for the actual amount. Exact amounts drive sorting and comparison. This does not establish full market eligibility. Amounts still releasing during unstaking remain included; details distinguish duration-weighted xNOS. Shared public RPC checks every 30 minutes; readings expire after 35 minutes. Failed or expired comparisons stay gray; an unknown comparison is a dash."],
   ["status", "Status", "Reported Nosana classification. ONBOARDED is displayed as COMMUNITY (yellow C); REJECTED as red R; PREMIUM as green P. Details preserve the raw response. This does not establish container health or current job activity."],
   ["pc", "PC", mobileScenarios.enabled ? "PC Name reported through verified SSH discovery. Tap for saved computer details. Rescan refreshes this dated inventory; public Nosana refresh does not." : "The sample PC that owns this host. Select a PC cell for the row’s observation details."],
-  ["ip", "IP", mobileScenarios.enabled ? "IP Addresses reported through verified SSH discovery. Cycle hidden, full global/internal, global suffix and internal suffix. Full addresses drive sorting. Details list every reported interface address; The list includes the verified SSH destination and reported interface addresses; a destination may be a NAT/VPN mapping." : "Toggle between hidden (•), full global / internal addresses, global last octet and internal last octet. Compact IPv4 values include the leading dot, such as .102. IPv6 stays complete. Sorting always uses the full internal address. These are documentation-only sample addresses, not links or reachable PCs."],
+  ["ip", "IP", mobileScenarios.enabled ? "IP Addresses reported through verified SSH discovery. Cycle hidden, full public/private, public last octet and private last octet, matching the reference display without leading dots. IPv6 stays complete. Full addresses drive sorting. Details list every reported interface address; Enabled monitoring adds a dated public egress IP and reported private interface IP. NAT or a PC-side VPN can affect the public address; the phone’s own IP is never substituted." : "Toggle between hidden (•), full global / internal addresses, global last octet and internal last octet. Compact IPv4 values include the leading dot, such as .102. IPv6 stays complete. Sorting always uses the full internal address. These are documentation-only sample addresses, not links or reachable PCs."],
   ["hostAddress", "Host Address", "A supplied public Nosana host address. Toggle between the first five characters (default) and the full address. Both views link to the same full address in Nosana Explorer, and sorting always uses the full address. Supplied addresses do not establish current host status or any measurements."],
   ["sol", "SOL", "Confirmed SOL balance from public mainnet RPC, checked best effort every 30 seconds while visible. Three decimals are rounded down for display; exact lamports and provenance are in details and drive sorting. Failed or 60-second-old readings remain gray. Missing accounts remain unknown; verified zero remains zero."],
   ["api", "API", "Last confirmed API result from Node Info, separate from State. Online stays green and Offline stays red. Bold means within its checking window; regular weight means stale or unconfirmed. Online uses a 30-second window. Offline stays bold until its recorded retry is overdue, including an eight-second request allowance. Details preserve original check times and the retry deadline. Amber Populating.. means no confirmed result is available yet. State OTHER can still be API Online. Timeouts and inconclusive checks do not overwrite the last confirmed result. This does not establish whether the PC or workload is running."],
@@ -110,7 +111,7 @@ const COLUMNS = [
   ["dl", "DL", "Reported download Mbps from Node Info info.network.download_mbps. This is saved network data, not a speed test triggered by this page. An all-zero default triplet is unknown."],
   ["ul", "UL", "Reported upload Mbps from Node Info info.network.upload_mbps. The specific test provider and measurement time are not supplied. No FAST/Libre/Ookla fallback is applied."],
   ["ping", "Ping", "Reported ping milliseconds from Node Info info.network.ping_ms. Display is rounded; sorting preserves the reported value. An all-zero default triplet is unknown."],
-  ["rewards", "Rewards to claim", mobileScenarios.enabled ? "Exact claimable host-uptime NOS read inside an explicitly authorized node container. Enable monitoring once in Fleets. Saved SSH reads refresh while the app is open. Keys remain in the node; authorization is sent only to Nosana. Stale or failed reads retain dated amounts in gray. No claims or transactions are made." : "The exact claimable host-uptime amount. No rewards source or wallet is connected; no estimate or other balance is substituted."],
+  ["rewards", "Rewards to claim", mobileScenarios.enabled ? "Claimable host-uptime NOS, rounded to the nearest whole NOS for display. The amount links to this host’s Nosana page. Exact six-decimal values drive sorting and remain in the amount’s description with its original observation time. Enable monitoring once in Fleets. Saved SSH reads refresh while the app is open. Keys remain in the node; authorization is sent only to Nosana. Stale or failed reads retain dated amounts in gray. No claims or transactions are made." : "The exact claimable host-uptime amount. No rewards source or wallet is connected; no estimate or other balance is substituted."],
   ["nos", "NOS", "Confirmed NOS in each host’s standard associated token account, checked best effort every two minutes while visible. Display rounds to whole NOS; exact six-decimal amounts drive sorting. Additional wallet token accounts, staking and claimable rewards are excluded. A freshly verified absent standard account means zero there; failures remain unknown or retain gray values. Readings expire after three minutes."],
   ["market", "Market", "Toggle between the full reported market label and its first two characters. Sorting uses the full label. Supplied hosts resolve their market address through Nosana’s market lookup, preferring its slug. Missing labels stay unknown. This association does not identify the physical GPU or establish current activity; recommendations are separate."],
   ["gpuID", "GPU ID", mobileScenarios.enabled ? "A physical PC GPU index is not inferred from a container index. Enabled monitoring verifies GPU UUID allocation and shows observed conditions in Jobs." : "The current physical GPU index, resolved from measured UUID identity. No hardware observations are connected."],
@@ -374,7 +375,9 @@ for (const id of ["clear-sort", "sidebar-clear-sort"]) {
 element("column-info").addEventListener("click", () => {
   const column = COLUMNS.find(([key]) => key === activeSort.column);
   if (column) showInfo(column[1], {
-    summary: mobileScenarios.enabled && column[0] === "rewards" ? "Exact claimable host-uptime NOS from the authorized node reader; unavailable readings stay unknown."
+    summary: mobileScenarios.enabled && column[0] === "pc" ? "The PC name from verified SSH discovery, displayed in the normal table style."
+      : mobileScenarios.enabled && column[0] === "ip" ? "Toggle hidden, full public/private, public suffix and private suffix. Public IP is checked from a node on the PC; saved source times remain available in details."
+      : mobileScenarios.enabled && column[0] === "rewards" ? "Exact claimable host-uptime NOS from the authorized node reader; unavailable readings stay unknown."
       : mobileScenarios.enabled && column[0] === "gpuID" ? "Physical GPU index is not inferred. Verified GPU UUID allocation and job conditions are available through enabled monitoring."
         : COLUMN_HELP[column[0]],
     ...(LOCAL_SOURCE_NOTES[column[0]] ? { facts: [[ink("Local data or mapping is not connected yet.", "warning")]] } : {}),
@@ -2025,7 +2028,7 @@ function renderRow({ pcView: pc, runtime, host, addresses, durationInput, durati
         break;
       }
       case "ip": {
-        const display = formatIPDisplay(addresses, ipMode);
+        const display = mobileScenarios.enabled ? formatMobileIPDisplay(addresses, ipMode) : formatIPDisplay(addresses, ipMode);
         cell.textContent = display.text;
         cell.title = brief(display.description.replace(". Internal:", "; Internal:"));
         cell.setAttribute("aria-label", display.description);
@@ -2503,22 +2506,31 @@ function renderSuppliedStatus(nodeProjectionTime: number): void {
     : `${liveScenario === "real200" ? "Real200 uses its separate supplied Host Address list; the count above reflects the file contents. " : ""}Addresses are read when the preview starts. Edit the supplied file outside the app and restart the preview to load changes.`);
 }
 
+function mobileAddresses(address: string): IPAddresses {
+  const fallback = mobilePcAddresses(savedFleet?.pcs[address]);
+  const observed = networkView(mobileMonitoring?.index.get(address), liveNow());
+  return { global: observed.publicIp, internal: observed.privateIp ?? fallback.internal };
+}
+
 function renderMobilePc(cell: HTMLTableCellElement, key: "pc" | "ip", address: string): void {
   const pc = savedFleet?.pcs[address];
   const value = rowValue(cell, "host-details");
   value.classList.add("host-details");
   const label = key === "pc" ? "PC Name" : "IP Addresses";
-  const display = formatIPDisplay(mobilePcAddresses(pc), ipMode);
+  const observed = networkView(mobileMonitoring?.index.get(address), liveNow());
+  const display = formatMobileIPDisplay(mobileAddresses(address), ipMode);
   setText(value, key === "pc" ? pc?.pcName ?? "—" : display.text);
   cell.dataset.pcObservedAt = String(pc?.observedAtMs ?? "");
   value.setAttribute("aria-label", `${label}: ${key === "pc" ? pc?.pcName ?? "unknown" : display.description}. Open saved discovery details.`);
   rememberInfo(cell, {
-    summary: [ink(pc ? `PC: ${pc.pcName ?? "name unavailable"}.` : "PC details unavailable. Use Rescan to read this computer.", pc ? "plain" : "warning")],
-    facts: pc ? [checkedFact(pc.observedAtMs, "Discovered"), `IP addresses: ${pc.ipAddresses.join(", ")}.`,
+    summary: [ink(key === "ip" ? "Public and private IP observations." : pc ? `PC: ${pc.pcName ?? "name unavailable"}.` : "PC name unavailable.", pc || key === "ip" ? "plain" : "warning")],
+    facts: [...(pc ? [checkedFact(pc.observedAtMs, "Discovered"), `Discovered addresses: ${pc.ipAddresses.join(", ")}.`] : []),
+      ...(observed.publicIp ? [`${observed.publicRetained ? "Retained public" : "Public"} IP: ${observed.publicIp}.`, checkedFact(observed.publicObservedAtMs, "Public IP checked")] : ["Public egress IP has not been returned by enabled PC monitoring."]),
+      ...(observed.privateIp ? [`${observed.privateRetained ? "Retained private" : "Private"} IP: ${observed.privateIp}.`, checkedFact(observed.privateObservedAtMs, "Private IP checked")] : []),
       "Saved SSH discovery, not current reachability. Rescan refreshes PC inventory.",
-      ...(pc.gpuTelemetry ? [`GPU recorder: ${pc.gpuTelemetry.collector.status}. Expand GPU conditions below Scenario for recorded signals.`] : []),
-      "Includes the verified SSH destination plus reported interface addresses. A destination may be a NAT/VPN mapping; no public-IP service is queried."] : ["Public host addresses alone do not identify a PC name or its IP addresses."],
-    source: pc ? `Verified SSH identity digest: ${pc.pcId}\nObserved: ${new Date(pc.observedAtMs).toISOString()}` : "No machine observation is connected for this host.",
+      ...(pc?.gpuTelemetry ? [`GPU recorder: ${pc.gpuTelemetry.collector.status}. Expand GPU conditions below Scenario for recorded signals.`] : []),
+      "Public egress is checked from a verified node on this PC using ipify; NAT or a PC-side VPN can affect it. The phone’s own IP is never used. Private IP comes from the PC’s reported interfaces; until that read succeeds, a dated discovery address may be shown."],
+    source: pc ? `Verified SSH identity digest: ${pc.pcId}\nObserved: ${new Date(pc.observedAtMs).toISOString()}` : "No saved machine-name observation is connected for this host.",
   }, value);
   value.onclick = () => openCellInfo(cell, label);
   if (!value.parentElement) cell.replaceChildren(value);
@@ -2592,7 +2604,7 @@ function renderSupplied(): void {
     stakedNosAmount: stakingRecords.get(address)?.stake.amount ?? null, values: {
       hostAddress: address,
       pc: savedFleet?.pcs[address]?.pcName ?? null,
-      ip: mobilePcAddresses(savedFleet?.pcs[address]).internal ?? mobilePcAddresses(savedFleet?.pcs[address]).global,
+      ip: mobileAddresses(address).internal ?? mobileAddresses(address).global,
       latestJob: jobHistory.summary(address)?.job.address ?? null,
       duration: liveDuration(address, nodeProjectionTime).elapsedSeconds,
       queued: liveQueue(address, nodeProjectionTime).sortValue,
@@ -2629,11 +2641,27 @@ function renderSupplied(): void {
         renderMobilePc(cell, key, address);
       } else if (mobileScenarios.enabled && key === "rewards") {
         const view = rewardView(mobileMonitoring?.index.get(address), nodeProjectionTime);
-        const exact = view.amount;
-        setText(cell, exact === null ? "—" : exact.replace(/(\.[0-9]*?)0+$/, "$1").replace(/\.$/, ""));
+        const atoms = rewardAtoms(view.amount);
+        const exact = atoms === null ? null : view.amount;
         cell.classList.toggle("metadata-retained", exact !== null && !view.current);
         const description = exact === null ? `Rewards unavailable (${view.status}). Enable or repair monitoring in Fleets.`
-          : `${view.current ? "" : "Retained "}${exact} NOS claimable for host uptime. Observed ${timestamp(view.observedAtMs)}. Latest status: ${view.status}.`;
+          : `${view.current ? "" : "Retained "}${exact} NOS claimable for host uptime. Display rounded to the nearest whole NOS. Observed ${timestamp(view.observedAtMs)}. Latest status: ${view.status}.`;
+        if (exact === null || atoms === null) {
+          setText(cell, "—");
+        } else {
+          const link = cell.querySelector<HTMLAnchorElement>(".mobile-rewards-value") ?? document.createElement("a");
+          link.className = "mobile-rewards-value";
+          link.href = `https://host.nosana.com/${encodeURIComponent(address)}`;
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+          // Same nearest-whole display as the reference Fleet, without floating-point
+          // rounding near half-NOS boundaries. The original amount remains untouched.
+          const rounded = (BigInt(atoms) + 500_000n) / 1_000_000n;
+          setText(link, rounded.toString());
+          link.setAttribute("aria-label", `${description} Open this host’s Nosana page (new tab).`);
+          link.title = description;
+          if (!link.parentElement) cell.replaceChildren(link);
+        }
         cell.setAttribute("aria-label", description); cell.title = description;
       } else if (key === "sol") {
         renderSolCell(cell, address, nodeProjectionTime);

@@ -52,3 +52,12 @@ in MachoDrone/gridlens-android-releases. This authorization does not publish des
 work. Review exact staged content and release artifacts for data and credentials.
 Release signing material belongs only in protected local storage or GitHub Actions
 secrets. Do not force-push. Keep the application ID and signing identity stable.
+
+Android PC text matches the normal table style: 11px, regular weight. IP cycles
+hidden, full public/private, public suffix and private suffix without leading
+dots; IPv6 stays complete. Rewards use rounded whole-NOS links in reference green.
+Exact reward amounts and source times remain unchanged for sorting and details;
+unknown is not zero. Public IP comes from the fixed native ipify read inside one
+verified node per PC, shared and cached for 30 minutes. Private addresses come
+from PC interfaces. Never substitute the phone's IP or SSH ingress for measured
+public egress; preserve independent retained timestamps on failure.

@@ -225,3 +225,35 @@ The app performs actual per-PC verification after the user's native monitoring
 approval. Unsupported layouts or denied Nosana reads remain explicit; an app
 build/test result is not a claim that every operator PC has already been checked.
 See [the Android rewards/GPU flow](REWARDS_AND_GPU_TELEMETRY_GAPS.md).
+
+## Android 0.2.3 column alignment — October 26, 2026
+
+Version code 6 uses normal 11px regular PC text, the reference four-mode IP cycle,
+and nearest-whole-NOS green reward links. Exact rewards and their original times
+remain available for sorting/details. Verified zero and unknown remain distinct.
+Public egress is read inside a verified node through the fixed ipify HTTPS helper;
+private IP comes from reported PC interfaces. One persisted lookup per PC per
+30 minutes serves all its hosts, including cached failures. Public/private source
+times are independent and old observations are not renewed by display or retry.
+
+Verification on the final candidate:
+
+- `npm run check` passes: 104 app/runtime/helper/browser tests, 27 recorder tests,
+  816 inherited Node tests, and all 332 inherited browser tests (11.8 minutes).
+- All 100 Android unit tests pass in each debug and release variant. Clean APK
+  builds and release lint pass. Fixed helper execution, no redirects, response
+  bounds, global/private IP classification, cached failures, restart persistence,
+  concurrent per-PC sharing and identity-check ordering use isolated fixtures.
+- Phone-browser tests cover all four IP modes, saved mode after reload, retained
+  addresses/source times after failure, ordinary PC/IP typography, exact reward
+  sorting despite equal rounded displays, half-NOS boundaries, green host-page
+  links, gray retained links, verified zero and unknown values.
+- The APK retains the existing application ID and release certificate. Signature,
+  16 KiB alignment, bundled runtime hashes and helper-source hashes verify.
+
+The reference formatter/styles were checked against the original public worker
+at commit 5384d91f0e02738a654540624bdcb355c9442fe0. Its false-zero fallback is not
+copied: missing rewards remain unknown. Non-Android snapshot behavior is preserved
+through the trusted Android marker and explicit hashed source adaptations.
+No developer connection to an operator PC, live wallet read, workload restart,
+host installation or network configuration change was made for this update.

@@ -9,7 +9,7 @@ import { startAndroidRuntime, SESSION_COOKIE } from "../runtime/server.ts";
 import type { GpuSample, PcUpdate } from "../vendor/gridlens/src/fleet/pc-observations.ts";
 import type { JobHistoryRecord } from "../vendor/gridlens/src/fleet/job-history.ts";
 
-const first = "1".repeat(32), second = "1".repeat(31) + "2";
+const first = "1".repeat(32), second = "1".repeat(31) + "2", third = "1".repeat(31) + "3";
 const gpuUuid = "GPU-00000000-1111-2222-3333-444444444444";
 const binding = { pcId: "a".repeat(64), runtime: "docker" as const, wrapperId: null, nodeContainerId: "b".repeat(64) };
 const row = (page: Page, address: string) => page.locator(`#fleet-rows > tr[data-host="${address}"]`);
@@ -42,7 +42,8 @@ test("phone Fleet reads exact rewards and retained failures from the native cach
     ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : {}) });
   try {
     const created = await fetch(origin + "/mobile/fleets", { method: "POST", headers: native,
-      body: JSON.stringify({ op: "create", name: "Synthetic monitored fleet", addresses: [first, second] }) });
+      body: JSON.stringify({ op: "create", name: "Synthetic monitored fleet", addresses: [first, second, third],
+        pcMetadata: [{ address: first, pcId: binding.pcId, pcName: "fixture-pc", ipAddresses: ["192.0.2.20"], observedAtMs: Date.now() - 5000 }] }) });
     assert.equal(created.status, 200);
     const { fleetId } = await created.json() as { fleetId: string };
     const at = Math.floor(Date.now() / 1000) * 1000 - 5000;
@@ -54,7 +55,10 @@ test("phone Fleet reads exact rewards and retained failures from the native cach
     const gpuSamples: GpuSample[] = [-60000, -45000, 0].map((offset, index) =>
       [at + offset, 0, 15, 0, index === 0 ? 100 : 200, null, null, null]);
     await post([
-      { address: first, binding, rewards: { schema: 1, address: first, observedAtMs: at, status: "ok", amount: "123.456789" },
+      { address: first, binding,
+        network: { schema: 1, source: "node-egress-ipify", status: "ok", observedAtMs: at,
+          publicIp: "8.8.4.4", publicObservedAtMs: at, privateIp: "192.168.9.42", privateObservedAtMs: at },
+        rewards: { schema: 1, address: first, observedAtMs: at, status: "ok", amount: "123.456789" },
         monitoring: { status: "active", checkedAtMs: at },
         gpu: { schema: 2, address: first, observedAtMs: at, status: "ok", gpuUuids: [gpuUuid], intervalSeconds: 15,
           fromAtMs: at - 60000, toAtMs: at, truncated: false, clockTrusted: true, samples: gpuSamples } },
@@ -83,13 +87,40 @@ test("phone Fleet reads exact rewards and retained failures from the native cach
     await page.goto(origin + `/?scenario=fleet:${fleetId}`);
     const amount = row(page, first).locator('td[data-col="rewards"]');
     const zero = row(page, second).locator('td[data-col="rewards"]');
-    await exactText(amount, "123.456789"); await exactText(zero, "0");
+    await exactText(amount, "123"); await exactText(zero, "0");
+    await exactText(row(page, third).locator('td[data-col="rewards"]'), "—");
+    assert.equal(await row(page, third).locator('td[data-col="rewards"] a').count(), 0, "an unavailable amount has no invented zero or amount link");
+    const rewardLink = amount.locator("a");
+    assert.equal(await rewardLink.getAttribute("href"), `https://host.nosana.com/${first}`);
+    assert.equal(await rewardLink.getAttribute("target"), "_blank");
+    assert.equal(await rewardLink.getAttribute("rel"), "noopener noreferrer");
+    assert.match(await rewardLink.getAttribute("aria-label") ?? "", /123\.456789 NOS/);
+    assert.deepEqual(await rewardLink.evaluate(link => {
+      const style = getComputedStyle(link);
+      return { size: style.fontSize, weight: style.fontWeight, color: style.color, decoration: style.textDecorationLine };
+    }), { size: "11px", weight: "600", color: "rgb(21, 128, 61)", decoration: "none" });
+    assert.deepEqual(await row(page, first).locator('td[data-col="pc"] button').evaluate(button => {
+      const style = getComputedStyle(button), cell = getComputedStyle(button.parentElement!);
+      return { size: style.fontSize, cellSize: cell.fontSize, weight: style.fontWeight, colorMatchesCell: style.color === cell.color };
+    }), { size: "11px", cellSize: "11px", weight: "400", colorMatchesCell: true });
     assert.equal(await amount.evaluate(cell => cell.classList.contains("metadata-retained")), false);
     assert.equal(await zero.evaluate(cell => cell.classList.contains("metadata-retained")), false);
     assert.match(await amount.getAttribute("aria-label") ?? "", new RegExp(new Date(at).toISOString().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     assert.equal(await page.locator("#mobile-enable-monitoring").getAttribute("href"), `/mobile/monitoring?fleet=${fleetId}`);
     assert.equal(await page.locator("#mobile-enable-monitoring").innerText(), "Enable / repair monitoring");
     assert.equal(await page.evaluate(() => document.cookie), "", "native token remains HttpOnly");
+    const ip = row(page, first).locator('td[data-col="ip"]');
+    await exactText(ip, "•");
+    await page.locator('#ip-display-toggle').click();
+    await exactText(ip, "8.8.4.4 / 192.168.9.42");
+    assert.deepEqual(await ip.locator("button").evaluate(element => {
+      const style = getComputedStyle(element);
+      return [style.fontSize, style.fontWeight, style.color, style.textDecorationLine];
+    }), ["11px", "400", "rgb(136, 136, 136)", "none"]);
+    await page.locator('#ip-display-toggle').click(); await exactText(ip, "4");
+    await page.locator('#ip-display-toggle').click(); await exactText(ip, "42");
+    await page.locator('#ip-display-toggle').click(); await exactText(ip, "•");
+
 
     await page.locator('#column-headings th[data-col="rewards"]').click();
     await page.waitForFunction(address => document.querySelector<HTMLTableRowElement>('#fleet-rows > tr[data-host]')?.dataset.host === address, second);
@@ -126,7 +157,10 @@ test("phone Fleet reads exact rewards and retained failures from the native cach
       "a different host cannot borrow another PC's GPU samples");
 
     await post([
-      { address: first, binding, rewards: { schema: 1, address: first, observedAtMs: at + 1000, status: "authentication-failed" },
+      { address: first, binding,
+        network: { schema: 1, source: "node-egress-ipify", status: "unavailable", observedAtMs: at + 1000,
+          publicIp: null, publicObservedAtMs: null, privateIp: "192.168.9.42", privateObservedAtMs: at + 1000 },
+        rewards: { schema: 1, address: first, observedAtMs: at + 1000, status: "authentication-failed" },
         monitoring: { status: "authorization-required", checkedAtMs: at + 1000 } },
       { address: second, binding: { ...binding, nodeContainerId: "c".repeat(64) },
         rewards: { schema: 1, address: second, observedAtMs: at + 1000, status: "unavailable" },
@@ -135,14 +169,42 @@ test("phone Fleet reads exact rewards and retained failures from the native cach
     await page.locator("#preview-tools > summary").click();
     await page.locator("#refresh-view").click();
     await page.waitForFunction(address => document.querySelector(`#fleet-rows > tr[data-host="${address}"] td[data-col="rewards"]`)?.classList.contains("metadata-retained"), first);
-    await exactText(amount, "123.456789"); await exactText(zero, "0");
+    await exactText(amount, "123"); await exactText(zero, "0");
+    assert.equal(await amount.locator("a").evaluate(link => getComputedStyle(link).color), "rgb(136, 136, 136)");
     assert.match(await amount.getAttribute("aria-label") ?? "", /Retained 123\.456789 NOS/);
     assert.match(await amount.getAttribute("aria-label") ?? "", /authentication-failed/);
     assert.ok((await amount.getAttribute("aria-label"))!.includes(new Date(at).toISOString()), "failed attempts do not replace original success time");
     assert.equal(await zero.evaluate(cell => cell.classList.contains("metadata-retained")), true);
+    await page.locator('#ip-display-toggle').click();
+    await exactText(ip, "8.8.4.4 / 192.168.9.42");
+    await ip.locator("button").click();
+    assert.match(await page.locator("#info-dialog").innerText(), /Retained public IP: 8\.8\.4\.4/);
+    await page.locator("#close-info").click();
     await page.reload();
-    await exactText(row(page, first).locator('td[data-col="rewards"]'), "123.456789");
+    await exactText(row(page, first).locator('td[data-col="ip"]'), "8.8.4.4 / 192.168.9.42");
+    await exactText(row(page, first).locator('td[data-col="rewards"]'), "123");
     assert.equal(await row(page, first).locator('td[data-col="rewards"]').evaluate(cell => cell.classList.contains("metadata-retained")), true);
+    await page.locator("#preview-tools > summary").click();
+    const roundingCases = [["0.000001", "0"], ["0.499999", "0"], ["0.500000", "1"],
+      ["1.499999", "1"], ["1.500000", "2"], ["9000000000000.499999", "9000000000000"],
+      ["9000000000000.500000", "9000000000001"]] as const;
+    for (const [index, [exact, display]] of roundingCases.entries()) {
+      await post([{ address: first, binding, rewards: { schema: 1, address: first, observedAtMs: at + 2000 + index, status: "ok", amount: exact },
+        monitoring: { status: "active", checkedAtMs: at + 2000 + index } }]);
+      await page.locator("#refresh-view").click();
+      await page.waitForFunction(({ address, exact }) => document.querySelector(`#fleet-rows > tr[data-host="${address}"] td[data-col="rewards"] a`)?.getAttribute("aria-label")?.includes(`${exact} NOS`), { address: first, exact });
+      await exactText(row(page, first).locator('td[data-col="rewards"]'), display);
+    }
+    await post([
+      { address: first, binding, rewards: { schema: 1, address: first, observedAtMs: at + 3000, status: "ok", amount: "1.490001" } },
+      { address: second, binding: { ...binding, nodeContainerId: "c".repeat(64) }, rewards: { schema: 1, address: second, observedAtMs: at + 3000, status: "ok", amount: "1.490002" } },
+    ]);
+    await page.locator("#refresh-view").click();
+    await exactText(row(page, first).locator('td[data-col="rewards"]'), "1");
+    await exactText(row(page, second).locator('td[data-col="rewards"]'), "1");
+    await page.waitForFunction(address => document.querySelector<HTMLTableRowElement>('#fleet-rows > tr[data-host]')?.dataset.host === address, second);
+    await page.locator('#column-headings th[data-col="rewards"]').click();
+    await page.waitForFunction(address => document.querySelector<HTMLTableRowElement>('#fleet-rows > tr[data-host]')?.dataset.host === address, first);
     assert.deepEqual(forbidden, [], "browser cannot initiate native actions or public requests during cache refresh");
     assert.ok(historyRequests.includes(first) && historyRequests.includes(second));
     assert.deepEqual(errors, []);

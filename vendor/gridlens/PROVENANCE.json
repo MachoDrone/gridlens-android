@@ -222,7 +222,7 @@
     {
       "path": "src/preview/main.ts",
       "sourceSha256": "14277fed44c31c870188eba752bb334cdd3420bea2500a1168c98ca51a557af0",
-      "sha256": "b59ce2c32b2a108d46aacd20579e55a40c38630d5b149cba281017a403207afd"
+      "sha256": "3c210c55b4972e5ac40975120610423ea038ad7d8d07ef3d7ae12ec4f663d0ea"
     },
     {
       "path": "src/preview/online-roster.ts",
@@ -247,7 +247,7 @@
     {
       "path": "src/preview/styles.css",
       "sourceSha256": "4a72083cc6ac6185d98b1f71bcb59c87a13cff9e73f15ba6c8be0b311298000a",
-      "sha256": "4a72083cc6ac6185d98b1f71bcb59c87a13cff9e73f15ba6c8be0b311298000a"
+      "sha256": "e99cc23c0eb10241191204166f3f86ae80e5560ff12da89f409aeaccd23d5ae4"
     },
     {
       "path": "src/preview/table-scroll.ts",
@@ -967,7 +967,7 @@
     {
       "path": "src/preview/mobile-scenarios.ts",
       "sourceSha256": null,
-      "sha256": "ce5ad2b662d06e157c1d1db16b7bca993bac241700b4c1ac4946429a6f84d6ab"
+      "sha256": "0b99f47a9da87e4e963158d896c5d642ad3d0484ff801075e19aa4237da8e9fe"
     },
     {
       "path": "src/preview/mobile-telemetry.ts",
@@ -982,7 +982,7 @@
     {
       "path": "src/fleet/pc-observations.ts",
       "sourceSha256": null,
-      "sha256": "dfa0ca97c50aedf62f70301500acd2d7b8ff85df2bdad117906350cf4dbbda71"
+      "sha256": "aa9cf0fc9383040e0e472cee93bcb3220563e3c86504f418815fc25a3ae32bd0"
     }
   ],
   "androidAdaptations": {
@@ -997,6 +997,7 @@
       "src/preview/mobile-monitoring.ts",
       "src/preview/mobile-scenarios.ts",
       "src/preview/mobile-telemetry.ts",
+      "src/preview/styles.css",
       "src/server/browser-assets.ts",
       "test/preview-server.test.ts"
     ],

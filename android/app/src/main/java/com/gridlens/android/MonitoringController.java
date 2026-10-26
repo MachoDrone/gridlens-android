@@ -25,6 +25,7 @@ final class MonitoringController {
     private final Activity activity;
     private final DiscoveryStore store;
     private final String origin, token;
+    private final PublicNetworkCache networkCache;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService workers = Executors.newFixedThreadPool(MonitoringPolicy.MAX_CONCURRENT_PCS);
     private final Set<String> inFlight = Collections.synchronizedSet(new HashSet<>());
@@ -41,6 +42,11 @@ final class MonitoringController {
 
     MonitoringController(Activity activity, DiscoveryStore store, String origin, String token) {
         this.activity = activity; this.store = store; this.origin = origin; this.token = token;
+        android.content.SharedPreferences observations = activity.getSharedPreferences("pc-network-observations", android.content.Context.MODE_PRIVATE);
+        networkCache = new PublicNetworkCache(new PublicNetworkCache.Store() {
+            public String read(String pcId) { return observations.getString(pcId, null); }
+            public boolean write(String pcId, String value) { return observations.edit().putString(pcId, value).commit(); }
+        }, System::currentTimeMillis);
     }
     static void validateTarget(JSONObject target) throws Exception {
         for (String key : new String[]{"id", "fleetId", "profileId"})
@@ -262,7 +268,11 @@ final class MonitoringController {
                                     if (stop) target.put("paused", true).put("status", result.status);
                                     if (deadline > 0) target.put("rewardsRetryAtMs", Math.max(target.optLong("rewardsRetryAtMs"), deadline));
                                 } catch (Exception failure) { storageBlocked = true; throw new IllegalStateException("Monitoring restrictions could not be saved"); }
-                            }, () -> activeTarget(run, target) && !storageBlocked && Math.max(observedProviderRetryAt, store.rewardsRetryAtMs()) <= System.currentTimeMillis());
+                            }, () -> activeTarget(run, target) && !storageBlocked && Math.max(observedProviderRetryAt, store.rewardsRetryAtMs()) <= System.currentTimeMillis(),
+                            (binding, runner) -> networkCache.getOrRead(target.getString("pcId"), () -> {
+                                if (!activeTarget(run, target)) throw new IllegalStateException("Monitoring cancelled");
+                                return PublicIpReader.read(binding, target.getString("address"), target.optBoolean("sudoApproved"), runner, System::currentTimeMillis);
+                            }));
                     if (!activeTarget(run, target)) return;
                     boolean paused = target.optBoolean("paused");
                     boolean setupComplete = enable;
@@ -287,6 +297,7 @@ final class MonitoringController {
                         if (enable && (gpuReading == null || java.util.Arrays.asList("unavailable", "setup-failed", "not-enabled").contains(gpuReading.optString("status")))) setupComplete = false;
                         if (rewardReading != null) update.put("rewards", rewardReading);
                         if (gpuReading != null) update.put("gpu", gpuReading);
+                        if (result.networkJson != null) update.put("network", new JSONObject(result.networkJson));
                         postObservation(target.getString("fleetId"), update);
                         if (rewardReading != null && "ok".equals(rewardReading.optString("status"))) verifiedRewards.add(result.binding.address);
                         if (gpuReading != null) {

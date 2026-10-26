@@ -349,4 +349,43 @@ public final class SshDiscoveryTest {
             assertFalse(fixture.commands.contains(RewardsReader.readCommand("fixture-reward", two, false)));
         }
     }
+    @Test public void networkObservationUsesOneVerifiedNodePerPcAndOriginalTimesForEveryBinding() throws Exception {
+        NodeBinding first = new NodeBinding("docker", null, "a".repeat(64), ADDRESS);
+        NodeBinding second = new NodeBinding("docker", null, "b".repeat(64), "1".repeat(31) + "2");
+        try (Fixture fixture = new Fixture(); SshDiscovery.Credential credential = new SshDiscovery.Credential("operator", bytes("fixture-password"), null, null)) {
+            for (NodeBinding binding : List.of(first, second)) {
+                fixture.outputs.put(DiscoveryPolicy.bindingInspectionCommand(binding, false), binding.nodeContainerId + "\ttrue\tnosana/nosana-node:latest\tbridge\n");
+                fixture.outputs.put(DiscoveryPolicy.bindingAddressCommand(binding, false), binding.address + "\n");
+            }
+            fixture.outputs.put(PcMetadata.ADDRESSES_COMMAND, "192.168.3.20 172.17.0.1\n");
+            fixture.outputs.put(PublicIpReader.command(first, false), "8.8.8.8\n");
+            AtomicInteger lookups = new AtomicInteger();
+            SshDiscovery.NetworkLookup lookup = (binding, runner) -> {
+                assertSame(first, binding); lookups.incrementAndGet();
+                assertTrue(fixture.commands.contains(DiscoveryPolicy.bindingAddressCommand(first, false)));
+                return PublicIpReader.read(binding, fixture.candidate().address, false, runner, () -> 1000);
+            };
+            List<SshDiscovery.MonitoringResult> result = SshDiscovery.monitor(fixture, fixture.candidate(), SshDiscovery.inspectIdentity(fixture, fixture.candidate()), credential,
+                    null, List.of(first, second), null, null, false, false, false, Map.of(), null, current -> {}, () -> true, lookup);
+            assertEquals(1, lookups.get()); assertEquals(result.get(0).networkJson, result.get(1).networkJson);
+            PublicIpReader.Observation observed = PublicIpReader.parse(result.get(0).networkJson);
+            assertEquals("8.8.8.8", observed.publicIp); assertEquals("192.168.3.20", observed.privateIp); assertEquals(1000, observed.observedAtMs);
+            assertFalse(fixture.commands.contains(PublicIpReader.command(second, false)));
+        }
+    }
+    @Test public void publicIpLookupNeverRunsWhenHostOrNodeIdentityFailsVerification() throws Exception {
+        NodeBinding binding = new NodeBinding("docker", null, "a".repeat(64), ADDRESS);
+        try (Fixture fixture = new Fixture(); Fixture other = new Fixture(); SshDiscovery.Credential credential = new SshDiscovery.Credential("operator", bytes("fixture-password"), null, null)) {
+            SshDiscovery.Identity identity = SshDiscovery.inspectIdentity(fixture, fixture.candidate());
+            SshDiscovery.NetworkLookup denied = (ignored, runner) -> { fail("No public-IP request before exact trust and binding proof"); return null; };
+            List<SshDiscovery.MonitoringResult> result = SshDiscovery.monitor(other, other.candidate(), identity, credential, null, List.of(binding), null, null,
+                    false, false, false, Map.of(), null, current -> {}, () -> true, denied);
+            assertEquals("identity-changed", result.get(0).status); assertNull(result.get(0).networkJson);
+            fixture.outputs.put(DiscoveryPolicy.bindingInspectionCommand(binding, false), binding.nodeContainerId + "\ttrue\tnosana/nosana-node:latest\tbridge\n");
+            fixture.outputs.put(DiscoveryPolicy.bindingAddressCommand(binding, false), "1".repeat(31) + "2\n");
+            result = SshDiscovery.monitor(fixture, fixture.candidate(), identity, credential, null, List.of(binding), null, null,
+                    false, false, false, Map.of(), null, current -> {}, () -> true, denied);
+            assertEquals("binding-changed", result.get(0).status); assertNull(result.get(0).networkJson);
+        }
+    }
 }

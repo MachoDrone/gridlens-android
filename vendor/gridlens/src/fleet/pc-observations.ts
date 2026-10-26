@@ -13,14 +13,65 @@ export interface NodeGpuObservation {
   intervalSeconds: 15; fromAtMs: number; toAtMs: number; truncated: boolean; clockTrusted: boolean; samples: GpuSample[];
 }
 export interface MonitoringState { status: string; checkedAtMs: number }
-export interface PcUpdate { address: string; binding: NodeBinding; rewards?: RewardObservation; gpu?: NodeGpuObservation; monitoring?: MonitoringState }
-export interface PcObservation extends PcUpdate { receivedAtMs: number; lastGoodRewards?: RewardObservation }
+export interface PcNetworkObservation {
+  schema: 1; observedAtMs: number; status: "ok" | "unavailable"; source: "node-egress-ipify";
+  publicIp: string | null; publicObservedAtMs: number | null;
+  privateIp: string | null; privateObservedAtMs: number | null;
+}
+export interface PcUpdate { address: string; binding: NodeBinding; rewards?: RewardObservation; gpu?: NodeGpuObservation; monitoring?: MonitoringState; network?: PcNetworkObservation }
+export interface PcObservation extends PcUpdate { receivedAtMs: number; lastGoodRewards?: RewardObservation; lastGoodNetwork?: PcNetworkObservation }
 export interface PcObservationIndex extends Omit<PcObservation, "gpu"> { gpu?: Omit<NodeGpuObservation, "samples"> & { sampleCount: number } }
 export const time = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= 8_640_000_000_000_000;
 function object(value: unknown, required: readonly string[], optional: readonly string[] = []): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value) || required.some(key => !Object.hasOwn(value, key))
     || Object.keys(value).some(key => !required.includes(key) && !optional.includes(key))) throw new Error("Invalid PC observation fields.");
   return value as Record<string, unknown>;
+}
+/** Numeric IP literals only; never resolves a name or chooses a network target. */
+export function normalizedIp(value: unknown): string | null {
+  if (typeof value !== "string" || value.length > 45) return null;
+  if (/^(?:0|[1-9][0-9]{0,2})(?:\.(?:0|[1-9][0-9]{0,2})){3}$/.test(value))
+    return value.split(".").every(part => Number(part) <= 255) ? value : null;
+  if (!value.includes(":") || !/^[a-fA-F0-9:]+$/.test(value)) return null;
+  try { return new URL(`http://[${value}]/`).hostname.slice(1, -1).toLowerCase(); } catch { return null; }
+}
+export function privateIp(value: string): boolean {
+  const ip = normalizedIp(value); if (ip === null) return false;
+  if (ip.includes(":")) return /^(fc|fd)/.test(ip);
+  const [a, b] = ip.split(".").map(Number) as [number, number, number, number];
+  return a === 10 || a === 172 && b >= 16 && b <= 31 || a === 192 && b === 168 || a === 100 && b >= 64 && b <= 127;
+}
+export function publicIp(value: string): boolean {
+  const ip = normalizedIp(value); if (ip === null || privateIp(ip)) return false;
+  if (ip.includes(":")) return /^[23][0-9a-f]{3}:/.test(ip) && !/^2001:db8:/.test(ip) && !/^2001:(?:2:|1[0-9a-f]:|2[0-9a-f]:)/.test(ip);
+  const [a, b, c] = ip.split(".").map(Number) as [number, number, number, number];
+  return a !== 0 && a !== 127 && a < 224 && !(a === 169 && b === 254)
+    && !(a === 192 && (b === 0 && (c === 0 || c === 2) || b === 88 && c === 99)) && !(a === 198 && (b === 18 || b === 19 || b === 51 && c === 100))
+    && !(a === 203 && b === 0 && c === 113);
+}
+export function parsePcNetwork(value: unknown): PcNetworkObservation {
+  const input = object(value, ["schema", "observedAtMs", "status", "source", "publicIp", "publicObservedAtMs", "privateIp", "privateObservedAtMs"]);
+  if (input.schema !== 1 || input.source !== "node-egress-ipify" || !time(input.observedAtMs) || input.observedAtMs === 0
+    || !["ok", "unavailable"].includes(String(input.status))) throw new Error("Invalid PC network observation.");
+  for (const [field, at, valid] of [["publicIp", "publicObservedAtMs", publicIp], ["privateIp", "privateObservedAtMs", privateIp]] as const) {
+    if (input[field] === null ? input[at] !== null : typeof input[field] !== "string" || !valid(input[field])
+      || !time(input[at]) || input[at] === 0 || input[at] > input.observedAtMs) throw new Error("Invalid observed IP address.");
+  }
+  if ((input.status === "ok") !== (input.publicIp !== null)) throw new Error("Invalid public IP observation status.");
+  return { ...input, publicIp: input.publicIp === null ? null : normalizedIp(input.publicIp), privateIp: input.privateIp === null ? null : normalizedIp(input.privateIp) } as PcNetworkObservation;
+}
+export function networkView(record: Pick<PcObservation, "network" | "lastGoodNetwork"> | undefined, now: number) {
+  const latest = record?.network, retained = record?.lastGoodNetwork;
+  const usePublic = latest?.publicIp != null && (latest.publicObservedAtMs ?? 0) >= (retained?.publicObservedAtMs ?? 0);
+  const usePrivate = latest?.privateIp != null && (latest.privateObservedAtMs ?? 0) >= (retained?.privateObservedAtMs ?? 0);
+  const publicAddress = usePublic ? latest.publicIp : retained?.publicIp ?? null;
+  const privateAddress = usePrivate ? latest.privateIp : retained?.privateIp ?? null;
+  const publicAt = usePublic ? latest.publicObservedAtMs : retained?.publicObservedAtMs ?? null;
+  const privateAt = usePrivate ? latest.privateObservedAtMs : retained?.privateObservedAtMs ?? null;
+  const recent = (at: number | null): boolean => at !== null && now >= at && now < at + 35 * 60_000;
+  return { publicIp: publicAddress, privateIp: privateAddress, publicObservedAtMs: publicAt, privateObservedAtMs: privateAt,
+    publicRetained: publicAddress !== null && (!usePublic || !recent(publicAt)),
+    privateRetained: privateAddress !== null && (!usePrivate || !recent(privateAt)), status: latest?.status ?? "unavailable" };
 }
 export function parseBinding(value: unknown): NodeBinding {
   const input = object(value, ["pcId", "runtime", "wrapperId", "nodeContainerId"]);
@@ -63,28 +114,30 @@ export function parseNodeGpu(value: unknown, address: string): NodeGpuObservatio
   return input as unknown as NodeGpuObservation;
 }
 export function parsePcUpdate(value: unknown): PcUpdate {
-  const input = object(value, ["address", "binding"], ["rewards", "gpu", "monitoring"]);
+  const input = object(value, ["address", "binding"], ["rewards", "gpu", "monitoring", "network"]);
   if (!isMetadataAddress(input.address)) throw new Error("Invalid monitored host.");
   const output: PcUpdate = { address: input.address, binding: parseBinding(input.binding) };
   if (input.rewards !== undefined) output.rewards = parseReward(input.rewards, output.address);
   if (input.gpu !== undefined) output.gpu = parseNodeGpu(input.gpu, output.address);
+  if (input.network !== undefined) output.network = parsePcNetwork(input.network);
   if (input.monitoring !== undefined) {
     const state = object(input.monitoring, ["status", "checkedAtMs"]);
     if (!time(state.checkedAtMs) || !["active", "unreachable", "network-unavailable", "credentials-required", "identity-changed", "authorization-required", "binding-changed", "paused", "unsupported"].includes(String(state.status))) throw new Error("Invalid monitoring status.");
     output.monitoring = state as unknown as MonitoringState;
   }
-  if (!output.rewards && !output.gpu && !output.monitoring) throw new Error("Empty PC observation.");
+  if (!output.rewards && !output.gpu && !output.monitoring && !output.network) throw new Error("Empty PC observation.");
   return structuredClone(output);
 }
 export function parseSavedObservation(value: unknown): PcObservation {
-  const input = object(value, ["address", "binding", "receivedAtMs"], ["rewards", "gpu", "monitoring", "lastGoodRewards"]);
+  const input = object(value, ["address", "binding", "receivedAtMs"], ["rewards", "gpu", "monitoring", "network", "lastGoodRewards", "lastGoodNetwork"]);
   if (!time(input.receivedAtMs)) throw new Error("Invalid observation receipt time.");
-  const { receivedAtMs, lastGoodRewards, ...update } = input;
+  const { receivedAtMs, lastGoodRewards, lastGoodNetwork, ...update } = input;
   const output: PcObservation = { ...parsePcUpdate(update), receivedAtMs };
   if (lastGoodRewards !== undefined) {
     output.lastGoodRewards = parseReward(lastGoodRewards, output.address);
     if (output.lastGoodRewards.status !== "ok") throw new Error("Invalid retained reward.");
   }
+  if (lastGoodNetwork !== undefined) output.lastGoodNetwork = parsePcNetwork(lastGoodNetwork);
   return output;
 }
 export function rewardView(record: Pick<PcObservation, "rewards" | "lastGoodRewards" | "monitoring"> | undefined, now: number) {

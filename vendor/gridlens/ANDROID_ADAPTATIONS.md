@@ -61,3 +61,10 @@ fleets. Conditions require matched host, UUID allocation and verified job timing
 counter resets/gaps/unsupported signals stay explicit. New module assets are
 allowlisted and hash-recorded. No desktop checkout or public-provider budget is
 changed; browser code still has no credential, signing, Docker or SSH interface.
+
+Android 0.2.3 additionally adapts styles.css under the trusted Android root marker
+for ordinary PC/IP text and rounded green reward links. main.ts and
+mobile-scenarios.ts apply the reference IP display cycle without changing the
+inherited non-Android formatter. pc-observations.ts adds optional validated,
+independently dated public/private network readings; old snapshots remain valid.
+The phone never supplies its own public IP as a host measurement.

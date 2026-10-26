@@ -112,9 +112,11 @@ test("Android defaults to idle discovery and reopens saved fleets without discov
     assert.equal(await page.locator('td[data-col="pc"]').innerText(), "fixture-pc");
     assert.equal(await page.locator('td[data-col="ip"]').innerText(), "•");
     await page.locator('#ip-display-toggle').click();
-    assert.equal(await page.locator('td[data-col="ip"]').innerText(), "203.0.113.42 / 192.168.9.42");
+    assert.equal(await page.locator('td[data-col="ip"]').innerText(), "- / 192.168.9.42");
     await page.locator('#ip-display-toggle').click();
-    assert.equal(await page.locator('td[data-col="ip"]').innerText(), ".42");
+    assert.equal(await page.locator('td[data-col="ip"]').innerText(), "-", "SSH destinations do not establish public egress");
+    await page.locator('#ip-display-toggle').click();
+    assert.equal(await page.locator('td[data-col="ip"]').innerText(), "42");
     await page.locator('td[data-col="pc"] button').click();
     assert.match(await page.locator('dialog[open]').innerText(), /Saved SSH discovery, not current reachability/);
     await page.keyboard.press("Escape");

@@ -2,13 +2,24 @@ import { appendFile, mkdir, open, readdir, stat, unlink } from "node:fs/promises
 import { join } from "node:path";
 import { atomicPrivateJson, parseUniqueJson, FLEET_ID } from "./saved-fleets.ts";
 import { MAX_GPU_SAMPLES, parsePcUpdate, parseSavedObservation, sameBinding } from "../vendor/gridlens/src/fleet/pc-observations.ts";
-import type { PcUpdate, PcObservation, PcObservationIndex, NodeGpuObservation } from "../vendor/gridlens/src/fleet/pc-observations.ts";
+import type { PcUpdate, PcObservation, PcObservationIndex, NodeGpuObservation, PcNetworkObservation } from "../vendor/gridlens/src/fleet/pc-observations.ts";
 
 const MAX_FILE = 4 * 1024 * 1024;
 const MAX_CACHE = 64 * 1024 * 1024;
 const MAX_JOURNALS = 128 * 1024 * 1024;
 const MAX_HOSTS = 2048;
 const keyOf = (fleet: string, address: string): string => `${fleet}--${address}`;
+function knownNetwork(previous: PcNetworkObservation | undefined, latest: PcNetworkObservation): PcNetworkObservation | undefined {
+  const publicNew = latest.publicIp !== null && (latest.publicObservedAtMs ?? 0) >= (previous?.publicObservedAtMs ?? 0);
+  const privateNew = latest.privateIp !== null && (latest.privateObservedAtMs ?? 0) >= (previous?.privateObservedAtMs ?? 0);
+  const publicIp = publicNew ? latest.publicIp : previous?.publicIp ?? null;
+  const privateIp = privateNew ? latest.privateIp : previous?.privateIp ?? null;
+  if (publicIp === null && privateIp === null) return undefined;
+  const publicObservedAtMs = publicNew ? latest.publicObservedAtMs : previous?.publicObservedAtMs ?? null;
+  const privateObservedAtMs = privateNew ? latest.privateObservedAtMs : previous?.privateObservedAtMs ?? null;
+  return { schema: 1, source: "node-egress-ipify", status: publicIp === null ? "unavailable" : "ok",
+    publicIp, privateIp, publicObservedAtMs, privateObservedAtMs, observedAtMs: Math.max(publicObservedAtMs ?? 0, privateObservedAtMs ?? 0) };
+}
 function mergeGpu(prior: NodeGpuObservation | undefined, update: NodeGpuObservation): NodeGpuObservation {
   if (prior && !update.clockTrusted) return { ...structuredClone(prior), status: update.status, clockTrusted: false };
   if (prior && update.status !== "ok" && !update.gpuUuids.length && !update.samples.length)
@@ -29,6 +40,8 @@ function apply(prior: PcObservation | undefined, update: PcUpdate, receivedAtMs:
   }
   if (update.gpu && update.gpu.toAtMs > receivedAtMs + 5000) update.gpu = { ...update.gpu, status: "clock-untrusted", clockTrusted: false,
     samples: update.gpu.samples.filter(sample => sample[0] <= receivedAtMs + 5000) };
+  if (update.network && update.network.observedAtMs > receivedAtMs + 5000) update.network = { schema: 1, source: "node-egress-ipify", status: "unavailable",
+    observedAtMs: receivedAtMs, publicIp: null, privateIp: null, publicObservedAtMs: null, privateObservedAtMs: null };
   const base = prior && sameBinding(prior.binding, update.binding) ? prior : undefined;
   const next: PcObservation = { ...(base ?? {}), ...structuredClone(update), receivedAtMs };
   if (base?.rewards && update.rewards && update.rewards.observedAtMs < base.rewards.observedAtMs) next.rewards = base.rewards;
@@ -38,6 +51,11 @@ function apply(prior: PcObservation | undefined, update: PcUpdate, receivedAtMs:
     else next.gpu = mergeGpu(base?.gpu, update.gpu);
   }
   if (base?.monitoring && update.monitoring && update.monitoring.checkedAtMs < base.monitoring.checkedAtMs) next.monitoring = base.monitoring;
+  if (base?.network && update.network && update.network.observedAtMs < base.network.observedAtMs) next.network = base.network;
+  if (next.network) {
+    const good = knownNetwork(base?.lastGoodNetwork, next.network);
+    if (good) next.lastGoodNetwork = good;
+  }
   return next;
 }
 

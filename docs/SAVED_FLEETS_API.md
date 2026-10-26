@@ -103,7 +103,7 @@ or corrupted revision; it does not invent discovery or measurement freshness.
 ## Native monitoring observations (0.2.2)
 
 `POST /mobile/observations` requires the native token and accepts at most 2 MiB:
-`{schema:1,fleetId,updates:[{address,binding,rewards?,gpu?,monitoring?}]}`. The known
+`{schema:1,fleetId,updates:[{address,binding,rewards?,gpu?,monitoring?,network?}]}`. The known
 saved fleet owns every distinct updated address. Exact bindings contain pcId,
 runtime, wrapperId and nodeContainerId, without credentials. Rewards contain
 only public identity, exact six-decimal NOS, source time, status and bounded
@@ -121,3 +121,11 @@ successful reward amounts and GPU samples. Sample merges deduplicate actual
 source points. Data stays app-private and is purged when its fleet/host is removed.
 Private native approval/credential state is stored separately in Android Keystore
 protected storage and is never accepted or exposed by these endpoints.
+
+The optional network observation added in 0.2.3 is schema 1 with observedAtMs,
+status, publicIp/publicObservedAtMs, privateIp/privateObservedAtMs, and the fixed
+source node-egress-ipify. Numeric addresses are classified before persistence;
+unknown fields, invalid pairs and public/private misclassification fail closed.
+The store independently retains each last successful part in lastGoodNetwork.
+Older journals remain compatible. These fields contain no endpoint authority,
+credentials or request URL and cannot trigger connections from the browser.

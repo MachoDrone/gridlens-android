@@ -229,6 +229,11 @@ h1 { font-size: 18px; line-height: 22px; margin: 0; color: var(--nosana-green); 
 .fleet-table tbody tr:hover { background: #202020; }
 .fleet-table td[data-col="pc"] { padding: 0 4px; }
 .host-details { min-height: 32px; padding: 0 4px; border: 0; font-size: 14px; font-weight: 600; background: transparent; color: #f2f2f2; text-decoration: underline dotted #555; text-underline-offset: 3px; }
+:root[data-gridlens-mobile="android"] .fleet-table td:is([data-col="pc"], [data-col="ip"]) .host-details { font-size: inherit; font-weight: 400; color: inherit; }
+:root[data-gridlens-mobile="android"] .fleet-table td[data-col="ip"] .host-details { color: #888; text-decoration: none; }
+:root[data-gridlens-mobile="android"] .mobile-rewards-value { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; min-height: 24px; font-size: inherit; font-weight: 600; color: #15803d; text-decoration: none; }
+:root[data-gridlens-mobile="android"] .mobile-rewards-value:hover { text-decoration: underline; }
+:root[data-gridlens-mobile="android"] td.metadata-retained .mobile-rewards-value { color: #888; }
 .host-address { color: #60a5fa; text-underline-offset: 3px; }
 .fresh { color: var(--green); }
 .stale { color: var(--amber); }

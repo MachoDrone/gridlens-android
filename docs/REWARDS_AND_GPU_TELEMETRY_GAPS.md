@@ -103,3 +103,32 @@ They do not assert that every PC has a supported NVIDIA setup or that Nosana wil
 accept every node identity. The app performs those checks on the user's selected
 PCs and displays each result. Existing fleets/public monitoring remain available
 when a PC or provider is unavailable.
+
+## Column presentation and PC addresses in 0.2.3
+
+PC text uses the normal 11px regular table style. IP uses the reference four-mode
+cycle: hidden bullet, full public / private addresses, bare public IPv4 last
+octet, then bare private last octet. IPv6 remains complete. Modes are saved;
+full private addresses still drive sorting. Missing sides stay explicit, and an
+SSH destination is not silently substituted for the public egress address.
+
+Nosana's local Node Info redacts its IP, and the checked public metrics response
+has no usable public-IP field. The approved native connection therefore performs
+one fixed, bounded HTTPS request to api64.ipify.org inside a verified node, plus
+a read-only hostname -I on the PC. No extra host package or service is installed.
+The public address is that node's observed egress for the PC, which NAT or a
+PC-side VPN may affect; it is not a claim that every container uses the same
+route. The private address comes from reported PC interfaces. No wallet key,
+authorization header or private address is sent to ipify. The phone's connection
+is not used for this measurement.
+
+Each PC shares a persisted 30-minute lookup cache, including failures, across its
+hosts. Public and private parts retain separate timestamps; a failed or older
+part cannot renew or overwrite newer evidence. Saved values remain available as
+retained observations. Browser toggles and ordinary cache reads start no lookup.
+
+Rewards are rounded to the nearest whole NOS using integer arithmetic, styled in
+reference green and linked to host.nosana.com. Exact six-decimal NOS remains in
+accessible details and controls sorting, including amounts that round to the
+same number. Retained amounts stay gray. Verified zero has a zero link; an
+unknown amount stays a dash with no invented value.

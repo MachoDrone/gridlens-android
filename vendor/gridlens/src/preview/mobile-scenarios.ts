@@ -1,3 +1,5 @@
+import { formatIPDisplay } from "../fleet/ip-display.ts";
+import type { IPAddresses, IPDisplayMode } from "../fleet/ip-display.ts";
 import { parseGpuTelemetry } from "./mobile-telemetry.ts";
 import type { GpuTelemetry } from "./mobile-telemetry.ts";
 /** Android-only public roster selection. Credentials and mutations stay native. */
@@ -8,6 +10,14 @@ export interface MobileFleet { id: string; name: string; count: number; lastDisc
 export function mobilePcAddresses(pc: MobilePc | undefined): { internal: string | null; global: string | null } {
   const local = (ip: string): boolean => /^(?:10\.|192\.168\.|169\.254\.|172\.(?:1[6-9]|2[0-9]|3[01])\.|100\.(?:6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.|f[cd]|fe[89ab])/i.test(ip);
   return { internal: pc?.ipAddresses.find(local) ?? null, global: pc?.ipAddresses.find(ip => !local(ip)) ?? null };
+}
+
+/** Reference Android cycle: hidden, public/private, public suffix, private suffix. */
+export function formatMobileIPDisplay(addresses: IPAddresses, mode: IPDisplayMode): { text: string; description: string } {
+  if (mode === "dot") return { text: "•", description: "IP addresses hidden." };
+  const base = formatIPDisplay(addresses, mode);
+  if (mode === "full") return { text: `${addresses.global ?? "-"} / ${addresses.internal ?? "-"}`, description: base.description };
+  return { text: base.text === "—" ? "-" : base.text.replace(/^\.(?=\d+$)/, ""), description: base.description };
 }
 
 export interface MobileScenarios {

@@ -103,14 +103,19 @@ public final class SshDiscovery {
     public interface BatchProgress { void update(DiscoveryPolicy.Candidate candidate, Result result); }
     public static final class MonitoringResult {
         public final NodeBinding binding;
-        public final String rewardsJson, gpuJson, status;
+        public final String rewardsJson, gpuJson, status, networkJson;
         public final boolean suspendRewards;
         public final long retryAfterSeconds;
         public MonitoringResult(NodeBinding binding, String rewardsJson, String gpuJson, String status, boolean suspendRewards, long retryAfterSeconds) {
+            this(binding, rewardsJson, gpuJson, status, suspendRewards, retryAfterSeconds, null);
+        }
+        public MonitoringResult(NodeBinding binding, String rewardsJson, String gpuJson, String status, boolean suspendRewards, long retryAfterSeconds, String networkJson) {
             this.binding = binding; this.rewardsJson = rewardsJson; this.gpuJson = gpuJson; this.status = status;
             this.suspendRewards = suspendRewards; this.retryAfterSeconds = retryAfterSeconds;
+            this.networkJson = networkJson;
         }
     }
+    interface NetworkLookup { PublicIpReader.Observation read(NodeBinding binding, PublicIpReader.Runner runner) throws Exception; }
     public static List<MonitoringResult> monitor(DiscoveryNetwork network, DiscoveryPolicy.Candidate candidate, Identity trusted,
             Credential credential, byte[] sudoPassword, List<NodeBinding> bindings, String rewardsSource, String gpuSource,
             boolean enable, boolean readRewards, boolean readGpu) {
@@ -130,7 +135,13 @@ public final class SshDiscovery {
             Credential credential, byte[] sudoPassword, List<NodeBinding> bindings, String rewardsSource, String gpuSource,
             boolean enable, boolean readRewards, boolean readGpu, Map<String, Long> gpuSince, Set<String> rewardAddresses,
             java.util.function.Consumer<MonitoringResult> onResult, java.util.function.BooleanSupplier rewardsAllowed) {
-        return monitor(transport(network), candidate, trusted, credential, sudoPassword, bindings, rewardsSource, gpuSource, enable, readRewards, readGpu, gpuSince, rewardAddresses, onResult, rewardsAllowed);
+        return monitor(transport(network), candidate, trusted, credential, sudoPassword, bindings, rewardsSource, gpuSource, enable, readRewards, readGpu, gpuSince, rewardAddresses, onResult, rewardsAllowed, null);
+    }
+    static List<MonitoringResult> monitor(DiscoveryNetwork network, DiscoveryPolicy.Candidate candidate, Identity trusted,
+            Credential credential, byte[] sudoPassword, List<NodeBinding> bindings, String rewardsSource, String gpuSource,
+            boolean enable, boolean readRewards, boolean readGpu, Map<String, Long> gpuSince, Set<String> rewardAddresses,
+            java.util.function.Consumer<MonitoringResult> onResult, java.util.function.BooleanSupplier rewardsAllowed, NetworkLookup networkLookup) {
+        return monitor(transport(network), candidate, trusted, credential, sudoPassword, bindings, rewardsSource, gpuSource, enable, readRewards, readGpu, gpuSince, rewardAddresses, onResult, rewardsAllowed, networkLookup);
     }
     static List<MonitoringResult> monitor(Transport network, DiscoveryPolicy.Candidate candidate, Identity trusted,
             Credential credential, byte[] sudoPassword, List<NodeBinding> bindings, String rewardsSource, String gpuSource,
@@ -146,6 +157,12 @@ public final class SshDiscovery {
             Credential credential, byte[] sudoPassword, List<NodeBinding> bindings, String rewardsSource, String gpuSource,
             boolean enable, boolean readRewards, boolean readGpu, Map<String, Long> gpuSince, Set<String> rewardAddresses,
             java.util.function.Consumer<MonitoringResult> onResult, java.util.function.BooleanSupplier rewardsAllowed) {
+        return monitor(network, candidate, trusted, credential, sudoPassword, bindings, rewardsSource, gpuSource, enable, readRewards, readGpu, gpuSince, rewardAddresses, onResult, rewardsAllowed, null);
+    }
+    static List<MonitoringResult> monitor(Transport network, DiscoveryPolicy.Candidate candidate, Identity trusted,
+            Credential credential, byte[] sudoPassword, List<NodeBinding> bindings, String rewardsSource, String gpuSource,
+            boolean enable, boolean readRewards, boolean readGpu, Map<String, Long> gpuSince, Set<String> rewardAddresses,
+            java.util.function.Consumer<MonitoringResult> onResult, java.util.function.BooleanSupplier rewardsAllowed, NetworkLookup networkLookup) {
         if (trusted == null || credential == null || bindings == null || bindings.isEmpty() || bindings.size() > 64
                 || NodeBinding.unambiguous(bindings).size() != bindings.size() || sudoPassword != null && sudoPassword.length > 4096
                 || onResult == null || rewardsAllowed == null)
@@ -153,6 +170,7 @@ public final class SshDiscovery {
         configureCryptoForAndroid(); JSch jsch = new JSch(); Session session = null; ScheduledFuture<?> timeout = null;
         PinnedRepository repository = new PinnedRepository(trusted);
         List<MonitoringResult> results = new ArrayList<>();
+        String networkJson = null;
         try {
             session = session(jsch, network, candidate, credential.username, repository);
             if (credential.privateKey != null && credential.privateKey.length > 0) {
@@ -166,6 +184,7 @@ public final class SshDiscovery {
             long deadline = System.nanoTime() + operationMs * 1000000L;
             Session active = session;
             boolean rewardPaused = false;
+            boolean networkChecked = false;
             for (NodeBinding binding : bindings) {
                 network.ensureActive();
                 String wrapperMode = null;
@@ -179,6 +198,17 @@ public final class SshDiscovery {
                 if (nodeMode == null) { MonitoringResult failed = bindingFailure(binding, readGpu); emitMonitoring(onResult, failed); results.add(failed); continue; }
                 CommandResult identity = execute(active, network, DiscoveryPolicy.bindingAddressCommand(binding, sudoPassword != null), sudoPassword, deadline, 256);
                 if (identity.exit != 0 || !identity.output.trim().equals(binding.address)) { MonitoringResult failed = bindingFailure(binding, readGpu); emitMonitoring(onResult, failed); results.add(failed); continue; }
+                if (!networkChecked && networkLookup != null) {
+                    networkChecked = true;
+                    try {
+                        PublicIpReader.Observation observed = networkLookup.read(binding, (command, maxBytes, timeMs) -> {
+                            byte[] secret = command.startsWith("/usr/bin/sudo -S -p '' -- ") ? sudoPassword : null;
+                            CommandResult response = execute(active, network, command, secret, deadline, maxBytes, timeMs);
+                            return new PublicIpReader.Response(response.exit, response.output);
+                        });
+                        if (observed != null) networkJson = observed.json();
+                    } catch (Exception unavailable) { /* Optional network data cannot discard other verified readings. */ }
+                }
                 String rewards = null, gpu = null, status = "active"; boolean suspended = false; long retry = 0;
                 boolean rewardRead = false;
                 if (readRewards && !rewardPaused && (rewardAddresses == null || rewardAddresses.contains(binding.address)) && rewardsAllowed.getAsBoolean()) {
@@ -225,6 +255,10 @@ public final class SshDiscovery {
                 emitMonitoring(onResult, failed); results.add(failed);
             }
         } finally { if (timeout != null) timeout.cancel(false); if (session != null) session.disconnect(); try { jsch.removeAllIdentity(); } catch (JSchException ignored) { } }
+        if (networkJson != null) for (int i = 0; i < results.size(); i++) {
+            MonitoringResult result = results.get(i);
+            results.set(i, new MonitoringResult(result.binding, result.rewardsJson, result.gpuJson, result.status, result.suspendRewards, result.retryAfterSeconds, networkJson));
+        }
         return results;
     }
     private static boolean isolatedMode(String mode) { return mode != null && mode.matches("[A-Za-z0-9][A-Za-z0-9_.-]{0,255}") && !mode.equals("host"); }
