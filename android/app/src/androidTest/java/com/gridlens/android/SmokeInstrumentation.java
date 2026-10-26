@@ -17,12 +17,15 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
-/** Full synthetic app smoke by default; nativeOnly=true runs only isolated native vault checks. */
+/** Full smoke by default; explicit native-only and background-download fixtures remain separate. */
 public final class SmokeInstrumentation extends Instrumentation {
     private boolean nativeOnly;
+    private boolean backgroundDownload;
     @Override public void onCreate(Bundle arguments) {
         super.onCreate(arguments);
         nativeOnly = arguments != null && "true".equals(arguments.getString("nativeOnly"));
+        backgroundDownload = arguments != null && ("true".equals(arguments.getString("backgroundDownload"))
+                || "true".equals(arguments.getString("downloadOnly")));
         start();
     }
 
@@ -30,14 +33,27 @@ public final class SmokeInstrumentation extends Instrumentation {
         Bundle result = new Bundle();
         MainActivity activity = null;
         try {
+            require(!(nativeOnly && backgroundDownload), "Choose either nativeOnly or backgroundDownload/downloadOnly");
+            if (backgroundDownload) {
+                require(BuildConfig.DEBUG, "Background download verification requires a debug fixture app");
+                require(DiscoveryNetwork.startedSearchesForTesting() == 0 && DiscoveryNetwork.startedConnectionsForTesting() == 0,
+                    "Background download verification requires zero prior discovery/SSH activity");
+                UpdateDownloadVerification.verifyBackground(this);
+                require(DiscoveryNetwork.startedSearchesForTesting() == 0 && DiscoveryNetwork.startedConnectionsForTesting() == 0,
+                    "Background download verification unexpectedly started discovery/SSH");
+                result.putString("stream", "PASS (background-download only): foreground-service transfer advanced after Activity destruction/Home, reattached to the same job with downloaded/total MB and percent, and reached verified READY. Zero installer launches; installed APK version unchanged. No external download requests or PC discovery/SSH connections. Full Fleet smoke and physical-device behavior were not tested.\n");
+                finish(Activity.RESULT_OK, result);
+                return;
+            }
             if (nativeOnly) {
                 require(DiscoveryNetwork.startedSearchesForTesting() == 0 && DiscoveryNetwork.startedConnectionsForTesting() == 0,
                     "Native-only verification requires zero prior discovery/SSH activity");
                 DiscoveryVerification.verify(getTargetContext());
                 MonitoringVerification.verify(getTargetContext());
+                UpdateDownloadVerification.verifyStore(getTargetContext());
                 require(DiscoveryNetwork.startedSearchesForTesting() == 0 && DiscoveryNetwork.startedConnectionsForTesting() == 0,
                     "Native-only vault checks unexpectedly started network discovery/SSH");
-                result.putString("stream", "PASS: native Keystore and monitoring permissions only (DiscoveryVerification and MonitoringVerification); zero native discovery/SSH connections. No Activity or WebView launched. UI, embedded runtime, APK updates and physical PCs were not tested.\n");
+                result.putString("stream", "PASS: native Keystore, monitoring permissions and isolated update-store checks only; zero native discovery/SSH connections. No Activity or WebView launched. UI, embedded runtime, background APK transfer, installation and physical PCs were not tested.\n");
                 finish(Activity.RESULT_OK, result);
                 return;
             }
@@ -67,6 +83,8 @@ public final class SmokeInstrumentation extends Instrumentation {
             require(page.getString("url").contains("scenario=fresh"), "Test unexpectedly selected a live scenario");
             require(!page.getString("text").contains("could not load"), "Runtime startup failed");
             verifyUpdatePresentation(current);
+            verifyDownloadPresentation(current);
+            verifyDownloadServiceManifest();
             JSONObject ready = NodeRuntime.ready(getTargetContext());
             require(ready != null, "Runtime did not publish its private readiness file");
             String origin = "http://127.0.0.1:" + ready.getInt("port");
@@ -88,6 +106,7 @@ public final class SmokeInstrumentation extends Instrumentation {
             verifyUpdaterRejections(current);
             DiscoveryVerification.verify(getTargetContext());
             MonitoringVerification.verify(getTargetContext());
+            UpdateDownloadVerification.verifyStore(getTargetContext());
             require(DiscoveryNetwork.startedSearchesForTesting() == 0 && DiscoveryNetwork.startedConnectionsForTesting() == 0,
                 "Launch or ordinary Fleet operations started network discovery/SSH");
             runOnMainSync(() -> current.webViewForTesting().loadUrl(origin + "/?scenario=network-discovery"));
@@ -103,10 +122,10 @@ public final class SmokeInstrumentation extends Instrumentation {
             runOnMainSync(() -> { callActivityOnPause(current); callActivityOnResume(current); });
             require(DiscoveryNetwork.startedSearchesForTesting() == 0 && DiscoveryNetwork.startedConnectionsForTesting() == 0,
                 "Opening/resuming/refreshing Network Discovery started a search");
-            result.putString("stream", "PASS: embedded Node/WebView boot, eight synthetic hosts, loopback authentication, roster validation/persistence, pause/resume, installed-version/update-status presentation at 390dp, actual Android APK rejection and narrow update provider. No live provider or GitHub requests.\n");
+            result.putString("stream", "PASS: embedded Node/WebView boot, eight synthetic hosts, loopback authentication, roster validation/persistence, pause/resume, installed-version/update-status presentation at 390dp, download MB/total/percent presentation, private service declaration and isolated update-store recovery, actual Android APK rejection and narrow update provider. No live provider or GitHub requests.\n");
             finish(Activity.RESULT_OK, result);
         } catch (Exception | AssertionError error) {
-            result.putString("stream", (nativeOnly ? "FAIL (native-only): " : "FAIL: ") + error.getClass().getSimpleName() + ": " + error.getMessage() + "\n");
+            result.putString("stream", (backgroundDownload ? "FAIL (background-download only): " : nativeOnly ? "FAIL (native-only): " : "FAIL: ") + error.getClass().getSimpleName() + ": " + error.getMessage() + "\n");
             finish(Activity.RESULT_CANCELED, result);
         }
     }
@@ -188,6 +207,53 @@ public final class SmokeInstrumentation extends Instrumentation {
                 }
             } finally { activity.updateStateForTesting(original); }
         });
+    }
+
+    /** Display-only transfer fixtures cannot start a download or launch Android's installer. */
+    private void verifyDownloadPresentation(MainActivity activity) {
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        runOnMainSync(() -> {
+            try {
+                android.view.View decor = activity.getWindow().getDecorView();
+                android.widget.TextView status = decor.findViewWithTag("app-update-status");
+                android.widget.TextView version = decor.findViewWithTag("app-version");
+                android.widget.Button action = decor.findViewWithTag("app-update-action");
+                UpdateDownloadState originalDownload = activity.downloadStateForTesting();
+                UpdateAvailability.State originalAvailability = activity.updateStateForTesting();
+                try {
+                    UpdateDownloadState downloading = new UpdateDownloadState("fixture-transfer", "downloading", "99.0.0", 50_000_000, 200_000_000, "");
+                    activity.downloadStateForTesting(downloading);
+                    require(status.getText().toString().contains("50.00 / 200.00 MB · 25%"), "Download progress lost downloaded MB, total MB or percentage");
+                    require(action.getContentDescription().toString().contains("view progress or cancel"), "Update action does not explain active download controls");
+                    activity.updateStateForTesting(new UpdateAvailability(0, null, BuildConfig.VERSION_CODE, android.os.Build.VERSION.SDK_INT).snapshot(BuildConfig.VERSION_NAME));
+                    require(status.getText().toString().contains(downloading.progressText()), "Availability refresh replaced download progress");
+                    activity.downloadStateForTesting(new UpdateDownloadState("fixture-transfer", "downloading", "99.0.0", 100_000_000, 200_000_000, ""));
+                    require(status.getText().toString().contains("100.00 / 200.00 MB · 50%"), "Progress update lost its original total size");
+                    activity.downloadStateForTesting(new UpdateDownloadState("fixture-transfer", "verifying", "99.0.0", 200_000_000, 200_000_000, ""));
+                    require(status.getText().toString().contains("Verifying") && status.getText().toString().contains("200.00 / 200.00 MB · 100%"), "Verification hid the downloaded size or claimed installation");
+                    activity.downloadStateForTesting(new UpdateDownloadState("fixture-transfer", "ready", "99.0.0", 200_000_000, 200_000_000, ""));
+                    require(status.getText().toString().contains("tap Update to install") && status.getText().toString().contains("200.00 / 200.00 MB · 100%"), "Completed download does not retain size and explicit installation action");
+                    require(version.getText().toString().equals("v" + BuildConfig.VERSION_NAME), "A downloaded version replaced the installed-version label");
+                    for (String state : new String[]{"failed", "cancelled", "interrupted"}) {
+                        activity.downloadStateForTesting(new UpdateDownloadState("fixture-transfer", state, "99.0.0", 50_000_000, 200_000_000, "Fixture outcome"));
+                        require(status.getText().toString().contains(state) && status.getText().toString().contains("50.00 / 200.00 MB · 25%"), "Transfer outcome lost its progress evidence");
+                    }
+                } finally {
+                    activity.updateStateForTesting(originalAvailability);
+                    activity.downloadStateForTesting(originalDownload);
+                }
+            } catch (Throwable error) { failure.set(error); }
+        });
+        if (failure.get() != null) throw new AssertionError("Download presentation: " + failure.get().getMessage(), failure.get());
+    }
+
+    private void verifyDownloadServiceManifest() throws Exception {
+        android.content.pm.ServiceInfo service = getTargetContext().getPackageManager().getServiceInfo(
+                new android.content.ComponentName(getTargetContext(), "com.gridlens.android.UpdateDownloadService"), 0);
+        require(!service.exported, "Update download service is externally startable");
+        require((service.flags & android.content.pm.ServiceInfo.FLAG_STOP_WITH_TASK) == 0, "Closing the Activity task stops an approved download");
+        if (android.os.Build.VERSION.SDK_INT >= 29)
+            require(service.getForegroundServiceType() == android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC, "Update service requests unrelated foreground capabilities");
     }
 
     private static void verifyUpdateButtonContrast(android.widget.Button button, boolean available,

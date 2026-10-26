@@ -8,11 +8,11 @@ continues independently.
 
 **[Download the signed Android APK](https://github.com/MachoDrone/gridlens-android-releases/releases/latest/download/gridlens-android.apk)**
 
-**Version 0.2.4** shows the installed version beneath GridLens, with a separate
-update-check status and time. Tap the app name for installed/latest version
-information. App-update checks run every five minutes while foregrounded, and
-Update can request a check immediately unless GitHub has requested a retry delay.
-A failed check is shown explicitly; a neutral button alone does not mean current.
+**Version 0.2.5** makes Rewards to claim a darker green than NOS and moves an
+approved APK download into a bounded Android foreground service. Downloads can
+continue while you switch screens; progress shows downloaded MB / total MB and
+percentage. Returning to the app restores the transfer state, and installation
+still needs your action. Installed version and update-check status stay visible.
 
 The Fleet columns match the reference Fleet column presentation: PC uses the
 normal table text size; IP cycles hidden → public/private → public suffix → private
@@ -95,6 +95,18 @@ release is known. A failed check retains that prior availability and shows the
 failure; it never becomes an "up to date" result. Pressing **Update** bypasses the
 local interval, but honors a provider-requested delay with a clear eligible time.
 Downloads and Android installation still require confirmation.
+
+From 0.2.5, an approved download continues in an Android foreground service when
+you switch apps or close the GridLens screen. Its status shows downloaded MB,
+total MB and percentage; returning restores progress or the verified install
+offer. **Hide** dismisses progress; **Cancel download** stops the transfer.
+Notification permission is optional and never blocks downloading. A notification
+opens GridLens, where you choose **Install**; it never starts installation itself.
+Network failure, force-stop or Android ending the process may still interrupt a
+transfer. The app reports the interruption and lets you retry.
+
+When upgrading from 0.2.4 or earlier, keep GridLens open for that download. The
+new download behavior takes effect after 0.2.5 is installed.
 
 Versions 0.2.1–0.2.3 checked only on opening/resuming, at most once every six hours;
 earlier versions checked only when tapped. If an older installed app is not green,

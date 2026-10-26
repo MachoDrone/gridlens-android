@@ -98,7 +98,7 @@ test("phone Fleet reads exact rewards and retained failures from the native cach
     assert.deepEqual(await rewardLink.evaluate(link => {
       const style = getComputedStyle(link);
       return { size: style.fontSize, weight: style.fontWeight, color: style.color, decoration: style.textDecorationLine };
-    }), { size: "11px", weight: "600", color: "rgb(21, 128, 61)", decoration: "none" });
+    }), { size: "11px", weight: "600", color: "rgb(22, 101, 52)", decoration: "none" });
     assert.deepEqual(await row(page, first).locator('td[data-col="pc"] button').evaluate(button => {
       const style = getComputedStyle(button), cell = getComputedStyle(button.parentElement!);
       return { size: style.fontSize, cellSize: cell.fontSize, weight: style.fontWeight, colorMatchesCell: style.color === cell.color };

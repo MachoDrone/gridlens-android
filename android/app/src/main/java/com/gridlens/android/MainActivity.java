@@ -42,6 +42,8 @@ import java.util.concurrent.Executors;
 
 public final class MainActivity extends Activity {
     private static final int IMPORT_HOSTS = 41;
+    private static final int UPDATE_NOTIFICATIONS = 42;
+    private static final String SHOW_UPDATE_DOWNLOAD = UpdateDownloadService.SHOW_DOWNLOAD;
     private static final int MAX_ROSTER_BYTES = 512 * 1024;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService io = Executors.newSingleThreadExecutor();
@@ -51,6 +53,7 @@ public final class MainActivity extends Activity {
     private TextView updateStatus;
     private String installedVersionName;
     private UpdateAvailability.State updateState;
+    private UpdateDownloadState downloadState;
     private AlertDialog appInformation;
     private Button recovery;
     private Button update;
@@ -66,16 +69,19 @@ public final class MainActivity extends Activity {
     private boolean clearHistoryAfterLoad;
     private boolean pageFailed;
     private long startupAt;
+    private boolean showDownloadOnResume;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
         if (state != null) {
             savedUrl = state.getString("url");
             importScenario = state.getString("importScenario");
+            showDownloadOnResume = state.getBoolean("showDownloadOnResume");
         }
+        if (SHOW_UPDATE_DOWNLOAD.equals(getIntent().getAction())) showDownloadOnResume = true;
         installedVersionName = readInstalledVersionName();
         createViews();
-        updates = new UpdateController(this, this::showUpdateAvailability,
+        updates = new UpdateController(this, this::showUpdateAvailability, this::showUpdateDownloadState,
                 !(BuildConfig.DEBUG && "fresh".equals(getIntent().getStringExtra("scenario"))));
         startupAt = android.os.SystemClock.elapsedRealtime();
         NodeRuntime.start(this);
@@ -420,12 +426,23 @@ public final class MainActivity extends Activity {
             webView.evaluateJavascript("window.dispatchEvent(new PageTransitionEvent('pageshow'));", null);
         }
         if (updates != null) updates.onResume();
+        if (showDownloadOnResume && updates != null) {
+            showDownloadOnResume = false;
+            updates.showDownload();
+        }
         if (discovery != null) discovery.resumed();
+    }
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        if (!SHOW_UPDATE_DOWNLOAD.equals(intent.getAction())) return;
+        if (updates != null && !paused) updates.showDownload();
+        else showDownloadOnResume = true;
     }
     @Override protected void onSaveInstanceState(Bundle state) {
         super.onSaveInstanceState(state);
         state.putString("url", webView.getUrl());
         state.putString("importScenario", importScenario);
+        state.putBoolean("showDownloadOnResume", showDownloadOnResume);
     }
     @Override protected void onDestroy() {
         destroyed = true;
@@ -445,21 +462,58 @@ public final class MainActivity extends Activity {
     private void showUpdateAvailability(UpdateAvailability.State state) {
         if (destroyed) return;
         updateState = state;
-        String versionName = state.availableVersionName;
+        renderUpdateStatus();
+    }
+    private void showUpdateDownloadState(UpdateDownloadState state) {
+        if (destroyed) return;
+        downloadState = state;
+        renderUpdateStatus();
+    }
+    private void renderUpdateStatus() {
+        String versionName = updateState == null ? null : updateState.availableVersionName;
         boolean available = versionName != null;
         update.setBackgroundTintList(ColorStateList.valueOf(available ? Color.rgb(16, 232, 12) : Color.rgb(89, 89, 89)));
         update.setTextColor(available ? Color.BLACK : Color.WHITE);
         update.setTypeface(available ? Typeface.create(updateDefaultTypeface, Typeface.BOLD) : updateDefaultTypeface);
-        String summary = updateStatusText(state);
-        updateStatus.setText(summary);
-        updateStatus.setContentDescription(summary);
-        boolean warning = "failed".equals(state.status) || "incompatible".equals(state.status);
-        updateStatus.setTextColor(warning ? Color.rgb(251, 191, 36) : "available".equals(state.status)
+        boolean hasDownload = downloadState != null && !"idle".equals(downloadState.status);
+        String summary = hasDownload ? downloadStatusText(downloadState) : updateState == null
+                ? getString(R.string.update_status_not_checked) : updateStatusText(updateState);
+        if (!TextUtils.equals(updateStatus.getText(), summary)) updateStatus.setText(summary);
+        if (!TextUtils.equals(updateStatus.getContentDescription(), summary)) updateStatus.setContentDescription(summary);
+        boolean warning = hasDownload ? "failed".equals(downloadState.status) || "interrupted".equals(downloadState.status)
+                : updateState != null && ("failed".equals(updateState.status) || "incompatible".equals(updateState.status));
+        boolean ready = hasDownload ? downloadState.ready() : updateState != null && "available".equals(updateState.status);
+        updateStatus.setTextColor(warning ? Color.rgb(251, 191, 36) : ready
                 ? Color.rgb(16, 232, 12) : Color.rgb(184, 194, 206));
-        String description = summary + ". " + getString(R.string.update_action_description);
-        update.setContentDescription(description);
+        int actionDescription = hasDownload && downloadState.active() ? R.string.update_download_action_progress
+                : hasDownload && downloadState.ready() ? R.string.update_download_action_install : R.string.update_action_description;
+        String description = summary + ". " + getString(actionDescription);
+        if (!TextUtils.equals(update.getContentDescription(), description)) update.setContentDescription(description);
         update.setTooltipText(description);
         if (appInformation != null && appInformation.isShowing()) appInformation.setMessage(appInformationText());
+    }
+    private String downloadStatusText(UpdateDownloadState state) {
+        String version = state.versionName == null ? getString(R.string.app_name) : "v" + state.versionName;
+        switch (state.status) {
+            case "queued": return getString(R.string.update_download_queued, version, state.progressText());
+            case "downloading": return getString(R.string.update_download_progress, version, state.progressText());
+            case "verifying": return getString(R.string.update_download_verifying, version, state.progressText());
+            case "ready": return getString(R.string.update_download_ready, version, state.progressText());
+            case "failed": return getString(R.string.update_download_failed, state.progressText());
+            case "cancelled": return getString(R.string.update_download_cancelled, state.progressText());
+            case "interrupted": return getString(R.string.update_download_interrupted, state.progressText());
+            default: return getString(R.string.update_status_not_checked);
+        }
+    }
+    /** Optional notification visibility only; the approved service starts independently. */
+    void requestUpdateDownloadNotifications() {
+        if (destroyed || paused || isFinishing() || android.os.Build.VERSION.SDK_INT < 33
+                || checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED) return;
+        android.content.SharedPreferences preferences = getSharedPreferences("updates", MODE_PRIVATE);
+        if (preferences.getBoolean("downloadNotificationPermissionRequested", false)) return;
+        preferences.edit().putBoolean("downloadNotificationPermissionRequested", true).apply();
+        try { requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, UPDATE_NOTIFICATIONS); }
+        catch (RuntimeException ignored) { /* Notification denial/unavailability cannot cancel a download. */ }
     }
     private String readInstalledVersionName() {
         try {
@@ -498,9 +552,14 @@ public final class MainActivity extends Activity {
     private String appInformationText() {
         String latest = updateState == null || updateState.latestVersionName == null ? getString(R.string.update_version_unknown)
                 : getString(R.string.installed_version_short, updateState.latestVersionName);
-        return getString(R.string.app_information_details, installedVersionName, latest,
+        String details = getString(R.string.app_information_details, installedVersionName, latest,
                 updateState == null ? getString(R.string.update_status_not_checked) : updateStatusText(updateState),
                 checkedTime(updateState == null ? 0 : updateState.lastSuccessfulCheckAtMs), checkedTime(updateState == null ? 0 : updateState.lastAttemptAtMs));
+        if (downloadState != null && !"idle".equals(downloadState.status)) {
+            details += "\n\n" + downloadStatusText(downloadState);
+            if (downloadState.detail != null && !downloadState.detail.isEmpty()) details += "\n" + downloadState.detail;
+        }
+        return details;
     }
     private void showAppInformation() {
         if (destroyed) return;
@@ -517,4 +576,9 @@ public final class MainActivity extends Activity {
         showUpdateAvailability(state);
     }
     UpdateAvailability.State updateStateForTesting() { return updateState; }
+    void downloadStateForTesting(UpdateDownloadState state) {
+        if (!BuildConfig.DEBUG || !"fresh".equals(getIntent().getStringExtra("scenario"))) throw new IllegalStateException("Synthetic debug Activity required");
+        showUpdateDownloadState(state);
+    }
+    UpdateDownloadState downloadStateForTesting() { return downloadState; }
 }

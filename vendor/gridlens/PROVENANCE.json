@@ -247,7 +247,7 @@
     {
       "path": "src/preview/styles.css",
       "sourceSha256": "4a72083cc6ac6185d98b1f71bcb59c87a13cff9e73f15ba6c8be0b311298000a",
-      "sha256": "e99cc23c0eb10241191204166f3f86ae80e5560ff12da89f409aeaccd23d5ae4"
+      "sha256": "4b1911ed05076f4cde82b22cff004a850b823a3c639a27cd8b0a90a2fb15f12c"
     },
     {
       "path": "src/preview/table-scroll.ts",

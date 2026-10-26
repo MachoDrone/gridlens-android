@@ -132,3 +132,22 @@ reference green and linked to host.nosana.com. Exact six-decimal NOS remains in
 accessible details and controls sorting, including amounts that round to the
 same number. Retained amounts stay gray. Verified zero has a zero link; an
 unknown amount stays a dash with no invented value.
+
+## NAT and the public address
+
+NAT does not prevent an external public-IP lookup. The request runs inside a
+verified node on the PC, so the external service sees its translated outward
+address. Several PCs behind the same router can share that public address; a
+PC-side VPN or carrier NAT can affect which outward address is observed. The
+private interface address remains a separate value. The dual-stack ipify endpoint
+can also return a public IPv6 address.
+
+A missing public value is not evidence that NAT hides it from GridLens. Monitoring
+must be enabled and the lookup must succeed; failed or pending observations remain
+unknown, or retain the last value and original timestamp. Current lookup results,
+including failures, use the existing per-PC 30-minute cache. No developer-side
+connection to operator PCs is needed or performed to determine those values.
+
+From 0.2.5, current Rewards to claim uses darker green #166534, distinct from NOS
+#15803d. Retained amounts keep the existing gray, and numeric precision, sorting,
+links and unknown-versus-zero behavior are unchanged.

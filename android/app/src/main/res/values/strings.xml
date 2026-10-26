@@ -21,6 +21,15 @@
     <string name="update_status_failed_previous_undated">Check failed · last confirmed: v%1$s</string>
     <string name="update_status_failed">Update check failed · tap Update to retry</string>
     <string name="update_status_incompatible">v%1$s needs a newer Android version</string>
+    <string name="update_download_queued">Queued %1$s · %2$s</string>
+    <string name="update_download_progress">Downloading %1$s · %2$s</string>
+    <string name="update_download_verifying">Verifying %1$s · %2$s</string>
+    <string name="update_download_ready">%1$s downloaded · %2$s · tap Update to install</string>
+    <string name="update_download_failed">Download failed · %1$s · tap Update to retry</string>
+    <string name="update_download_cancelled">Download cancelled · %1$s</string>
+    <string name="update_download_interrupted">Download interrupted · %1$s · tap Update to retry</string>
+    <string name="update_download_action_progress">Tap Update to view progress or cancel the download.</string>
+    <string name="update_download_action_install">Tap Update to review and install the downloaded version.</string>
     <string name="starting_runtime">Starting GridLens on this phone…</string>
     <string name="open_app_settings">Open app settings</string>
     <string name="fleets_button">Fleets</string>

@@ -55,7 +55,7 @@ secrets. Do not force-push. Keep the application ID and signing identity stable.
 
 Android PC text matches the normal table style: 11px, regular weight. IP cycles
 hidden, full public/private, public suffix and private suffix without leading
-dots; IPv6 stays complete. Rewards use rounded whole-NOS links in reference green.
+dots; IPv6 stays complete. Rewards use rounded whole-NOS links in #166534, darker than NOS #15803d.
 Exact reward amounts and source times remain unchanged for sorting and details;
 unknown is not zero. Public IP comes from the fixed native ipify read inside one
 verified node per PC, shared and cached for 30 minutes. Private addresses come
@@ -69,3 +69,9 @@ five-minute timer; pause/destroy stop automatic work. Persist and honor provider
 retry deadlines across controllers/restarts, including manual checks. A successful
 response must not erase a later provider deadline. Downloads/installation remain
 explicit user actions, and the existing signature/integrity checks must remain.
+An approved APK transfer belongs to the bounded dataSync foreground service;
+Activity pause/destruction only detach its UI. Preserve downloaded/total MB and
+percentage, explicit cancellation, per-job file ownership and verification before
+readiness. Notifications open the app without installing. Notification permission
+denial cannot block the transfer. No background PC collection, boot restart or
+automatic installation is implied by this service.

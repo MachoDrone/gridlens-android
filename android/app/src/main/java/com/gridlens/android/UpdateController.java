@@ -42,14 +42,21 @@ public final class UpdateController {
     private final UpdatePersistence persistence;
     private final UpdateAvailability availability;
     private final AvailabilityListener availabilityListener;
+    private final DownloadListener downloadListener;
+    private final UpdateDownloadStore downloads;
     private final boolean automaticChecksEnabled;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable automaticCheck = this::checkAutomatically;
+    private final Runnable downloadPoll = this::refreshDownload;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final AtomicInteger generation = new AtomicInteger();
     private volatile HttpURLConnection activeConnection;
     private Future<?> task;
     private ProgressDialog progress;
+    private ProgressDialog downloadProgress;
+    private boolean wantsDownloadDialog;
+    private String unattachedDownloadId;
+    private long unattachedSinceElapsed;
     private AlertDialog message;
     private volatile boolean destroyed;
     private boolean busy;
@@ -60,14 +67,21 @@ public final class UpdateController {
     private UpdatePolicy.Release pendingInstall;
 
     public interface AvailabilityListener { void changed(UpdateAvailability.State state); }
+    public interface DownloadListener { void changed(UpdateDownloadState state); }
 
     public UpdateController(Activity activity) {
         this(activity, state -> { }, true);
     }
 
     public UpdateController(Activity activity, AvailabilityListener listener, boolean automaticChecksEnabled) {
+        this(activity, listener, state -> {}, automaticChecksEnabled);
+    }
+
+    public UpdateController(Activity activity, AvailabilityListener listener, DownloadListener downloadListener, boolean automaticChecksEnabled) {
         this.activity = activity;
         this.availabilityListener = listener;
+        this.downloadListener = downloadListener;
+        downloads = new UpdateDownloadStore(activity);
         this.automaticChecksEnabled = automaticChecksEnabled;
         preferences = activity.getSharedPreferences("updates", Activity.MODE_PRIVATE);
         persistence = new UpdatePersistence(new UpdatePersistence.Store() {
@@ -93,6 +107,17 @@ public final class UpdateController {
 
     public void checkForUpdate() {
         if (destroyed || (busy && !silentCheck)) return;
+        try {
+            UpdateDownloadStore.Record transfer = downloads.read();
+            if (transfer != null && transfer.release.versionCode > BuildConfig.VERSION_CODE && (transfer.state.active() || transfer.state.ready())) {
+                showDownload(); return;
+            }
+        } catch (Exception unavailable) { }
+        requestManifestCheck();
+    }
+
+    private void requestManifestCheck() {
+        if (destroyed || !foreground || (busy && !silentCheck)) return;
         if (silentCheck) cancel();
         availability.deferAutomaticUntil(persistence.cooldownDeadline());
         if (!availability.canCheckManually(System.currentTimeMillis())) {
@@ -136,7 +161,7 @@ public final class UpdateController {
                     } else {
                         message = new AlertDialog.Builder(activity)
                                 .setTitle("GridLens " + release.versionName + " is available")
-                                .setMessage(installedDescription() + "\n\nDownload the signed update (" + ((release.size + 1048575) / 1048576)
+                                .setMessage(installedDescription() + "\n\nDownload the signed update (" + String.format(java.util.Locale.ROOT, "%.2f", release.size / 1_000_000.0)
                                         + " MB). Your host lists and settings are kept. Android will ask you to confirm installation.")
                                 .setNegativeButton("Later", null)
                                 .setPositiveButton("Download update", (dialog, which) -> download(release))
@@ -157,69 +182,106 @@ public final class UpdateController {
     }
 
     private void download(UpdatePolicy.Release release) {
-        int operation = begin("Downloading GridLens " + release.versionName + "…", true);
-        task = worker.submit(() -> {
-            File partial = new File(activity.getCacheDir(), "updates/update.part");
-            try {
-                File folder = partial.getParentFile();
-                if (folder == null || (!folder.isDirectory() && !folder.mkdirs())) {
-                    throw new UpdateFailure("There is not enough accessible storage for the update.");
-                }
-                activity.revokeUriPermission(updateUri(), Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                MessageDigest digest = MessageDigest.getInstance("SHA-256");
-                long started = SystemClock.elapsedRealtime();
-                long total = 0;
-                HttpURLConnection connection = open(release.apkUri, "gridlens-android.apk", operation);
-                try (InputStream input = connection.getInputStream(); FileOutputStream output = new FileOutputStream(partial)) {
-                    long advertised = connection.getContentLengthLong();
-                    if (advertised >= 0 && advertised != release.size) {
-                        throw new UpdateFailure("The update size did not match its release manifest.");
-                    }
-                    byte[] buffer = new byte[64 * 1024];
-                    int count;
-                    int lastPercent = -1;
-                    while ((count = input.read(buffer)) != -1) {
-                        ensureActive(operation);
-                        if (SystemClock.elapsedRealtime() - started > 10 * 60_000L) {
-                            throw new UpdateFailure("The update download timed out. Try again on a stable connection.");
-                        }
-                        total += count;
-                        if (total > release.size || total > UpdatePolicy.MAX_APK_BYTES) {
-                            throw new UpdateFailure("The update exceeded its expected size.");
-                        }
-                        digest.update(buffer, 0, count);
-                        output.write(buffer, 0, count);
-                        int percent = (int) (100 * total / release.size);
-                        if (percent != lastPercent) {
-                            lastPercent = percent;
-                            post(operation, () -> { if (progress != null) progress.setProgress(percent); });
-                        }
-                    }
-                    output.getFD().sync();
-                } finally {
-                    connection.disconnect();
-                    activeConnection = null;
-                }
-                UpdatePolicy.verifyDownloaded(release, total, digest.digest());
-                verifyArchive(partial, release);
-                ensureActive(operation);
-                File apk = apkFile();
-                if (apk.exists() && !apk.delete()) throw new UpdateFailure("The previous update could not be replaced.");
-                if (!partial.renameTo(apk)) throw new UpdateFailure("The downloaded update could not be saved.");
-                post(operation, () -> {
-                    finishProgress();
-                    pendingInstall = release;
-                    requestInstall();
-                });
-            } catch (Exception error) {
-                partial.delete();
-                fail(operation, error);
+        if (destroyed || !foreground) return;
+        try {
+            if (!release.isNewerThan(versionCode(installedPackage()))) {
+                showMessage("GridLens is up to date", "This downloaded version is already installed."); return;
             }
-        });
+            UpdateDownloadService.start(activity, release);
+            wantsDownloadDialog = true;
+            refreshDownload();
+            if (activity instanceof MainActivity) ((MainActivity) activity).requestUpdateDownloadNotifications();
+        } catch (Exception error) {
+            refreshDownload();
+            long retryAt = persistence.cooldownDeadline();
+            if (retryAt > System.currentTimeMillis()) showMessage("Update download delayed", retryDescription(retryAt));
+            else showMessage("Download could not start", "Android could not start this update download. Check available storage and the update status, then retry while GridLens is open.");
+        }
+    }
+
+    /** Notification taps and the Update button only reveal state; installation still needs a tap. */
+    public void showDownload() {
+        if (destroyed || !foreground) return;
+        wantsDownloadDialog = true;
+        refreshDownload();
+    }
+
+    private void refreshDownload() {
+        handler.removeCallbacks(downloadPoll);
+        if (destroyed || !foreground) return;
+        try {
+            downloads.clearCompleted(BuildConfig.VERSION_CODE);
+            downloads.invalidateMissingReadyFile();
+            UpdateDownloadStore.Record record = downloads.read();
+            if (record != null && record.state.active() && !UpdateDownloadService.isRunning(record.state.id)) {
+                if (!record.state.id.equals(unattachedDownloadId)) { unattachedDownloadId = record.state.id; unattachedSinceElapsed = SystemClock.elapsedRealtime(); }
+                if (System.currentTimeMillis() - record.updatedAtMs >= 30_000 || SystemClock.elapsedRealtime() - unattachedSinceElapsed >= 30_000) {
+                    downloads.update(record.state.id, "interrupted", record.state.downloadedBytes,
+                            "The previous transfer was interrupted before completion. Tap Update to retry.");
+                    record = downloads.read();
+                }
+            } else {
+                unattachedDownloadId = null;
+            }
+            UpdateDownloadState state = record == null ? UpdateDownloadState.idle() : record.state;
+            downloadListener.changed(state);
+            if (state.active()) {
+                if (wantsDownloadDialog) showDownloadProgress(state);
+                handler.postDelayed(downloadPoll, 1000);
+            } else if (wantsDownloadDialog) {
+                wantsDownloadDialog = false;
+                dismissDownloadProgress();
+                if (record != null && state.ready()) offerInstall(record);
+                else if (record != null) showMessage("Update download", state.detail + "\n\n" + state.progressText());
+            }
+        } catch (Exception unavailable) {
+            downloadListener.changed(new UpdateDownloadState(null, "failed", null, 0, 0,
+                    "Saved download state is unavailable. Tap Update to check again."));
+            dismissDownloadProgress();
+            wantsDownloadDialog = false;
+        }
+    }
+
+    private void showDownloadProgress(UpdateDownloadState state) {
+        if (downloadProgress == null) {
+            downloadProgress = new ProgressDialog(activity);
+            downloadProgress.setTitle("GridLens " + state.versionName + " update");
+            downloadProgress.setProgressStyle(ProgressDialog.STYLE_HORIZONTAL);
+            downloadProgress.setMax(100);
+            downloadProgress.setProgressNumberFormat(null);
+            downloadProgress.setProgressPercentFormat(null);
+            downloadProgress.setCancelable(true);
+            downloadProgress.setCanceledOnTouchOutside(false);
+            downloadProgress.setOnCancelListener(dialog -> { wantsDownloadDialog = false; downloadProgress = null; });
+            downloadProgress.setButton(ProgressDialog.BUTTON_NEGATIVE, "Hide", (dialog, which) -> { wantsDownloadDialog = false; dismissDownloadProgress(); });
+            downloadProgress.setButton(ProgressDialog.BUTTON_POSITIVE, "Cancel download", (dialog, which) -> {
+                try { UpdateDownloadService.cancelExplicitly(activity, state.id); }
+                catch (Exception error) { showMessage("Could not cancel the download", "Open GridLens and try Cancel download again."); }
+                wantsDownloadDialog = false; dismissDownloadProgress(); refreshDownload();
+            });
+            downloadProgress.show();
+        }
+        downloadProgress.setIndeterminate("queued".equals(state.status));
+        downloadProgress.setProgress(state.percent);
+        downloadProgress.setMessage(installedDescription() + "\n\n" + state.progressText() + "\n" + state.detail);
+    }
+
+    private void dismissDownloadProgress() {
+        if (downloadProgress != null) { downloadProgress.dismiss(); downloadProgress = null; }
+    }
+
+    private void offerInstall(UpdateDownloadStore.Record record) {
+        if (!foreground || destroyed) return;
+        message = new AlertDialog.Builder(activity).setTitle("GridLens " + record.release.versionName + " is ready")
+                .setMessage(installedDescription() + "\n\n" + record.state.progressText()
+                        + "\nThe downloaded update has been verified. Android will ask you to confirm installation.")
+                .setPositiveButton("Install", (dialog, which) -> { pendingInstall = record.release; requestInstall(); })
+                .setNeutralButton("Check latest", (dialog, which) -> requestManifestCheck())
+                .setNegativeButton("Later", null).show();
     }
 
     private void requestInstall() {
-        if (pendingInstall == null || destroyed) return;
+        if (pendingInstall == null || destroyed || !foreground) return;
         if (!activity.getPackageManager().canRequestPackageInstalls()) {
             message = new AlertDialog.Builder(activity)
                     .setTitle("Allow GridLens updates")
@@ -258,6 +320,7 @@ public final class UpdateController {
                 verifyArchive(apk, release);
                 post(operation, () -> {
                     finishProgress();
+                    if (!foreground) return;
                     Uri uri = updateUri();
                     Intent installer = new Intent(Intent.ACTION_INSTALL_PACKAGE)
                             .setDataAndType(uri, "application/vnd.android.package-archive")
@@ -279,6 +342,7 @@ public final class UpdateController {
 
     public void onResume() {
         foreground = true;
+        refreshDownload();
         if (awaitingInstallPermission && !destroyed) {
             awaitingInstallPermission = false;
             if (activity.getPackageManager().canRequestPackageInstalls()) requestInstall();
@@ -292,6 +356,8 @@ public final class UpdateController {
     public void onPause() {
         foreground = false;
         handler.removeCallbacks(automaticCheck);
+        handler.removeCallbacks(downloadPoll);
+        dismissDownloadProgress();
         // Availability requests belong to a visible app. An explicitly requested download keeps
         // its existing lifetime and Android's mandatory confirmation flow.
         if (checkingManifest) cancel();
@@ -318,6 +384,8 @@ public final class UpdateController {
         destroyed = true;
         foreground = false;
         handler.removeCallbacks(automaticCheck);
+        handler.removeCallbacks(downloadPoll);
+        dismissDownloadProgress();
         cancel();
         worker.shutdownNow();
         if (message != null) message.dismiss();
@@ -413,14 +481,7 @@ public final class UpdateController {
 
     // Package visibility also lets on-device instrumentation exercise real Android APK parsing.
     void verifyArchive(File apk, UpdatePolicy.Release release) throws Exception {
-        PackageManager manager = activity.getPackageManager();
-        int flags = Build.VERSION.SDK_INT >= 28 ? PackageManager.GET_SIGNING_CERTIFICATES : PackageManager.GET_SIGNATURES;
-        PackageInfo candidate = manager.getPackageArchiveInfo(apk.getAbsolutePath(), flags);
-        if (candidate == null || candidate.applicationInfo == null) throw new UpdateFailure("Android could not verify the downloaded APK.");
-        PackageInfo installed = installedPackage();
-        UpdatePolicy.verifyPackage(release, installed.packageName, versionCode(installed), signers(installed),
-                candidate.packageName, versionCode(candidate), candidate.versionName,
-                candidate.applicationInfo.minSdkVersion, signers(candidate), Build.VERSION.SDK_INT);
+        UpdateArchiveVerifier.verify(activity, apk, release);
     }
 
     private PackageInfo installedPackage() throws PackageManager.NameNotFoundException {

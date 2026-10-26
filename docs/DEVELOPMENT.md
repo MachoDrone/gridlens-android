@@ -143,7 +143,8 @@ Node starts once per Android process. Rotation and background/foreground changes
 keep its providers and caches. APK replacement or Android process death restarts
 the runtime; its in-memory readings/limits are not durable across process death,
 matching the desktop preview's current design. Do not use restarts to bypass limits.
-The app is foreground monitoring, not a background collection or notification service.
+PC and public-data monitoring remain foreground-only. A separately approved APK
+download can continue in the bounded foreground service described below.
 
 Host imports validate a bounded complete public-address array and atomically save
 only app-private files. They replace that roster in the running provider composition
@@ -206,3 +207,36 @@ not forecasts of recovery. Rotation/cancellation cannot discard or shorten a
 received deadline. APK download, size/hash/package/version/certificate checks and
 Android's final installation confirmation retain their existing boundaries.
 This policy is for app updates; PC and Nosana polling intervals are unchanged.
+
+## Screen-independent update downloads in 0.2.5
+
+After native Download confirmation, a private Android `dataSync` foreground
+service owns the transfer. The Activity only observes persisted progress; hiding,
+pausing or destroying it cannot cancel the service. The native status line,
+progress dialog and download notification show downloaded MB / total MB and
+percentage. Notification permission is requested optionally after a download
+starts and denial does not cancel it. Notification taps open GridLens without
+launching Android's installer. Installation still requires a foreground user
+action and a fresh package/signature verification.
+
+The service preserves the fixed GitHub allowlist at every redirect, size limits,
+streaming SHA-256 check, package/version/signing-certificate checks and durable
+provider retry deadlines. Each explicit job has its own partial file and UUID;
+file promotion and READY publication share a current-job lock, and a stale worker
+cannot overwrite a replacement job. Release metadata and progress are atomic,
+app-private and excluded from backup. No APK or fixture identity is added to the
+embedded runtime or WebView bridge.
+
+The transfer is bounded to ten minutes, with a twelve-minute service/wake-lock
+ceiling covering verification and cleanup. Explicit cancellation stops the
+transfer. There is no boot receiver, automatic APK download, automatic install,
+silent restart or range-resume promise. Process death, force-stop and network or
+storage failures remain possible and surface as an interrupted/failed transfer
+that can be retried. Background manifest checks and PC collection remain paused.
+
+`UpdateDownloadEngineTest` exercises bounded transfer and rejection paths with
+injected transport. Debug-only instrumentation can supply a slow, valid synthetic
+APK to the actual service while retaining its integrity and archive checks. It
+uses a disposable emulator and never installs the fixture APK. Production builds
+cannot enable that transport. See the dated verification entry for observed
+lifecycle results rather than assuming physical-device compatibility.

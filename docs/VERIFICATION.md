@@ -299,3 +299,68 @@ eligibility bounds, not promises of recovery. No PC/Nosana polling, credentials,
 wallet access or collection behavior changed. No physical phone or operator PC
 was accessed during these checks; actual installed phone version cannot be inferred
 from the public release manifest or an unhighlighted button.
+
+## Android 0.2.5 — reward contrast and update download lifetime, October 26, 2026
+
+Version code 8 uses #166534 for current Rewards to claim, darker than NOS #15803d.
+Rounded display, exact sorting, retained-value gray and source timestamps remain
+unchanged. NAT public-IP lookup already originates inside a verified node; this
+release documents that behavior without changing the reader or its cache policy.
+No cause for a particular phone's earlier download failure is inferred from the
+fact that switching screens preceded it.
+
+An explicitly approved APK download now belongs to a private Android dataSync
+foreground service. Downloaded MB, total MB and percent remain available in the
+native UI and notification. Activity destruction detaches the screen; only an
+explicit Install action can open Android's installer. Per-job partial files,
+atomic promotion and service ownership guards prevent stale cancellation,
+cleanup or notification actions from replacing a newer transfer.
+
+Verification on the final implementation:
+
+- `npm run check` passes: 104 app/runtime/helper/browser tests, 27 Python recorder
+  tests, 816 inherited Node tests and all 332 inherited browser tests (11.0 minutes).
+  The focused Android browser test verifies the darker reward color independently
+  of unchanged NOS and retained-value colors.
+- All 124 Android unit tests pass in each debug and release variant. Clean builds,
+  release lint and debug/instrumentation/release APK assembly pass. Transfer tests
+  cover redirects, size limits, truncated/tampered bodies, cancellation, timeouts,
+  byte display, stale ownership and failed replacement-start cleanup.
+- The signed APK remains com.gridlens.android with the pinned release certificate.
+  APK signature and 16 KiB alignment verify. All 47 runtime files and four helper
+  assets match their reviewed sources; no synthetic APK fixture is packaged.
+- The complete adaptation patch reproduces all 196 vendored files from the 192
+  independently verified originals. No desktop files or operator PCs were changed.
+- The actual dataSync service passed an isolated Android API 36 background-transfer
+  check in 22.9 seconds with notification permission denied. Bytes advanced after
+  Activity destruction and Home; reopening attached to the same job and displayed
+  downloaded/total MB and percentage. The real hash/package/signing checks reached
+  READY, the native UI showed completion, and the installer monitor recorded zero
+  launches. The synthetic APK was never installed. Passive screenshots confirm
+  readable version and progress; no discovery/SSH connection was started.
+- Full Android smoke passed in 7.8 seconds, covering Node/WebView, version and
+  progress presentation, the exact 390dp toolbar checks, update-store recovery,
+  APK rejection/provider checks and the native vault/monitoring suites. Its first
+  run timed out at the unchanged five-second WebView JavaScript probe during
+  initial emulator startup; the unchanged retry passed after the fixture settled.
+  Initial WebView/cache warnings and host memory pressure were observed, with no
+  confirmed app/System UI ANR. A single cause is not established. Both runs are
+  retained in local evidence. The owned emulator was stopped after verification.
+
+The initial background fixture stalled before any transfer because its
+installer-blocking monitor also matched an explicit Activity launch with no
+action. The fixture now uses ACTION_MAIN; the installer guard and test timeouts
+remain unchanged. This instrumentation-only correction did not change the signed
+production APK. A local results parser was corrected to recognize the explicit
+background-only PASS label while retaining the original raw success log; this
+reporting correction did not rerun or change the test.
+
+The service is not a guarantee against process death, force-stop, reboot or
+network/storage failures. It does not silently restart or install; interrupted
+transfers can be retried. Monitoring and manifest-check background policies are
+unchanged. Physical-device and GrapheneOS acceptance remain separate from fixture
+testing. Keep older GridLens versions open for the download that installs 0.2.5;
+the changed lifetime applies after this version is installed.
+
+Verified APK size: 197317360 bytes. SHA-256:
+`059cf4b46a238e86f19203675eeb73d5e38b2a377661a6445fadc162864dca62`.
