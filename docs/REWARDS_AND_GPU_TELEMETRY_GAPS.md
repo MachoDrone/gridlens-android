@@ -51,7 +51,9 @@ access for that node. Transient failures can retry under the original permission
 Provider cooldowns and denials persist before further reads or result delivery.
 
 Failed/expired reads retain the last actual amount with its original timestamp
-and muted styling. Unknown is not zero. App development and isolated testing used
+and read status. In 0.2.8 all known amounts stay dark green without clock icons;
+timestamps say **last read by GridLens**, not when Nosana updated rewards.
+Unknown is not zero. App development and isolated testing used
 generated memory-only identities; no developer-side existing-key test is required
 or performed for this Android workflow.
 
@@ -194,3 +196,27 @@ The external/public and internal/private IPs remain separate observations. Each
 verified PC may report the same external NAT address; neither the cache nor the
 table requires unique public IPs or hides duplicates. Regression fixtures cover
 two independently observed PCs sharing one public address.
+
+## Android 0.2.8 — independent delivery before slower sources
+
+The native connection verifies host bindings and delivers their PC network
+observations before collecting rewards or GPU history. Network, rewards and GPU
+use separate requests to the existing observation API, so a blocked GPU read or
+malformed GPU response cannot withhold or reject successful IP and reward data.
+The cache format and saved approvals are unchanged; GPU cursors still require
+successful GPU delivery. The app continues to enforce genuine credential denial,
+changed identity, revoked permission and provider-requested waits.
+
+External/public egress is measured whether NAT is present or absent, even when
+the PC has no private interface. Without a known private address the full display
+is **public IP / −**. Every verified applicable host may show the same public IP;
+that value does not merge PCs or hosts. The saved hidden/full/public-suffix/
+private-suffix cycle and complete IPv6 display remain available. Successful public
+lookups still use the 30-minute cache, failures the one-minute retry eligibility,
+and longer provider waits remain in force. Independent failures preserve the
+last known public/private address with its original time.
+
+Reward clocks and their help text are removed. Known current and retained amounts
+keep #0f5c2b at the same regular weight as NOS. Exact amounts and existing read
+status remain available, with timestamps labeled **last read by GridLens**.
+Reopening the app does not refresh an observation or make a failed read current.

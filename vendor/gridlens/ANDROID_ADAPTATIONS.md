@@ -68,3 +68,11 @@ mobile-scenarios.ts apply the reference IP display cycle without changing the
 inherited non-Android formatter. pc-observations.ts adds optional validated,
 independently dated public/private network readings; old snapshots remain valid.
 The phone never supplies its own public IP as a host measurement.
+
+Android 0.2.8 removes reward clock elements, their CSS and related help from
+marker-gated main.ts/styles.css. Current and retained known amounts remain
+regular-weight #0f5c2b links. Exact amounts and status remain in descriptions;
+timestamps say “Last read by GridLens” and do not claim Nosana update times.
+mobile-scenarios.ts preserves both IP slots, using − for missing addresses;
+IPv6 remains complete in compact modes. IP help covers public-only connections
+and shared NAT without changing discovery, collection or observation times.

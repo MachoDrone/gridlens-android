@@ -11,6 +11,7 @@ import type { JobHistoryRecord } from "../vendor/gridlens/src/fleet/job-history.
 import { NOS_MINT } from "../vendor/gridlens/src/fleet/nos.ts";
 
 const first = "1".repeat(32), second = "1".repeat(31) + "2", third = "1".repeat(31) + "3";
+const publicOnly = "1".repeat(31) + "B", ipv6Host = "1".repeat(31) + "C";
 const gpuUuid = "GPU-00000000-1111-2222-3333-444444444444";
 const binding = { pcId: "a".repeat(64), runtime: "docker" as const, wrapperId: null, nodeContainerId: "b".repeat(64) };
 const secondBinding = { ...binding, pcId: "d".repeat(64), nodeContainerId: "c".repeat(64) };
@@ -51,9 +52,11 @@ test("phone Fleet reads exact rewards and retained failures from the native cach
     ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : {}) });
   try {
     const created = await fetch(origin + "/mobile/fleets", { method: "POST", headers: native,
-      body: JSON.stringify({ op: "create", name: "Synthetic monitored fleet", addresses: [first, second, third],
+      body: JSON.stringify({ op: "create", name: "Synthetic monitored fleet", addresses: [first, second, third, publicOnly, ipv6Host],
         pcMetadata: [{ address: first, pcId: binding.pcId, pcName: "fixture-pc", ipAddresses: ["192.168.9.42"], observedAtMs: Date.now() - 5000 },
-          { address: second, pcId: secondBinding.pcId, pcName: "fixture-pc-2", ipAddresses: ["192.168.9.43"], observedAtMs: Date.now() - 5000 }] }) });
+          { address: second, pcId: secondBinding.pcId, pcName: "fixture-pc-2", ipAddresses: ["192.168.9.43"], observedAtMs: Date.now() - 5000 },
+          { address: publicOnly, pcId: "e".repeat(64), pcName: "public-only-pc", ipAddresses: ["1.1.1.1"], observedAtMs: Date.now() - 5000 },
+          { address: ipv6Host, pcId: "f".repeat(64), pcName: "ipv6-pc", ipAddresses: ["fd12:3456::1"], observedAtMs: Date.now() - 5000 }] }) });
     assert.equal(created.status, 200);
     const { fleetId } = await created.json() as { fleetId: string };
     const at = Math.floor(Date.now() / 1000) * 1000 - 5000;
@@ -77,6 +80,12 @@ test("phone Fleet reads exact rewards and retained failures from the native cach
           publicIp: "8.8.4.4", publicObservedAtMs: at, privateIp: "192.168.9.43", privateObservedAtMs: at },
         rewards: { schema: 1, address: second, observedAtMs: at, status: "ok", amount: "0.000000" },
         monitoring: { status: "active", checkedAtMs: at } },
+      { address: publicOnly, binding: { ...binding, pcId: "e".repeat(64) },
+        network: { schema: 1, source: "node-egress-ipify", status: "ok", observedAtMs: at,
+          publicIp: "1.1.1.1", publicObservedAtMs: at, privateIp: null, privateObservedAtMs: null } },
+      { address: ipv6Host, binding: { ...binding, pcId: "f".repeat(64) },
+        network: { schema: 1, source: "node-egress-ipify", status: "ok", observedAtMs: at,
+          publicIp: "2606:4700:4700::1111", publicObservedAtMs: at, privateIp: "fd12:3456::1", privateObservedAtMs: at } },
     ]);
     const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
     const forbidden: string[] = [], errors: string[] = [], historyRequests: string[] = [];
@@ -105,6 +114,9 @@ test("phone Fleet reads exact rewards and retained failures from the native cach
     const rewardLink = amount.locator("a");
     const freshRewardColor = await rewardLink.evaluate(link => getComputedStyle(link).color);
     assert.equal(await amount.locator('.mobile-rewards-age').count(), 0);
+    assert.equal(freshRewardColor, "rgb(15, 92, 43)");
+    assert.match(await rewardLink.getAttribute("aria-label") ?? "", /Last read by GridLens:/);
+    assert.doesNotMatch(await rewardLink.getAttribute("aria-label") ?? "", /Observed|Nosana updated/);
     assert.equal(await rewardLink.getAttribute("href"), `https://host.nosana.com/${first}`);
     assert.equal(await rewardLink.getAttribute("target"), "_blank");
     assert.equal(await rewardLink.getAttribute("rel"), "noopener noreferrer");
@@ -122,6 +134,7 @@ test("phone Fleet reads exact rewards and retained failures from the native cach
         relativeBrightness: luminance(reward.color) / luminance(nos.color) };
     });
     assert.equal(contrast.rewardSize, contrast.nosSize);
+    assert.equal(contrast.rewardWeight, "400");
     assert.equal(contrast.rewardWeight, contrast.nosWeight, "bold rewards must not offset the darker green");
     assert.equal(contrast.nosColor, "rgb(21, 128, 61)", "NOS keeps its existing current-reading color");
     assert.equal(contrast.decoration, "none");
@@ -144,16 +157,24 @@ test("phone Fleet reads exact rewards and retained failures from the native cach
     await page.locator("#close-info").click();
     const ip = row(page, first).locator('td[data-col="ip"]');
     await exactText(ip, "•");
+    await exactText(row(page, publicOnly).locator('td[data-col="ip"]'), "•");
+    await exactText(row(page, ipv6Host).locator('td[data-col="ip"]'), "•");
     await page.locator('#ip-display-toggle').click();
     await exactText(ip, "8.8.4.4 / 192.168.9.42");
     await exactText(row(page, second).locator('td[data-col="ip"]'), "8.8.4.4 / 192.168.9.43");
+    await exactText(row(page, publicOnly).locator('td[data-col="ip"]'), "1.1.1.1 / −");
+    await exactText(row(page, ipv6Host).locator('td[data-col="ip"]'), "2606:4700:4700::1111 / fd12:3456::1");
     assert.deepEqual(await ip.locator("button").evaluate(element => {
       const style = getComputedStyle(element);
       return [style.fontSize, style.fontWeight, style.color, style.textDecorationLine];
     }), ["11px", "400", "rgb(136, 136, 136)", "none"]);
     await page.locator('#ip-display-toggle').click(); await exactText(ip, "4");
     await exactText(row(page, second).locator('td[data-col="ip"]'), "4");
+    await exactText(row(page, publicOnly).locator('td[data-col="ip"]'), "1");
+    await exactText(row(page, ipv6Host).locator('td[data-col="ip"]'), "2606:4700:4700::1111");
     await page.locator('#ip-display-toggle').click(); await exactText(ip, "42");
+    await exactText(row(page, publicOnly).locator('td[data-col="ip"]'), "−");
+    await exactText(row(page, ipv6Host).locator('td[data-col="ip"]'), "fd12:3456::1");
     await page.locator('#ip-display-toggle').click(); await exactText(ip, "•");
 
 
@@ -165,7 +186,9 @@ test("phone Fleet reads exact rewards and retained failures from the native cach
     await page.locator("#preview-tools > summary").click();
     await page.locator("#column-info").click();
     assert.match(await page.locator("#info-dialog").innerText(), /authorized node reader/);
-    assert.doesNotMatch(await page.locator("#info-dialog").innerText(), /source is not connected yet/);
+    await page.locator("#info-dialog details > summary").click();
+    assert.doesNotMatch(await page.locator("#info-dialog").innerText(), /source is not connected yet|clock \(◷\)|clock marks/);
+    assert.match(await page.locator("#info-dialog").innerText(), /last read by GridLens/);
     await page.locator("#close-info").click();
     await page.locator("#preview-tools > summary").click();
     await row(page, first).locator(".jobs-expand").click();
@@ -207,8 +230,10 @@ test("phone Fleet reads exact rewards and retained failures from the native cach
     await exactText(amount.locator("a"), "123"); await exactText(zero.locator("a"), "0");
     assert.equal(await amount.locator("a").evaluate(link => getComputedStyle(link).color), freshRewardColor,
       "retained known amounts stay dark green rather than being forced to grey");
-    await exactText(amount.locator('.mobile-rewards-age'), "◷");
-    assert.match(await amount.locator('.mobile-rewards-age').getAttribute('title') ?? '', /current amount unconfirmed/);
+    await exactText(amount, "123"); await exactText(zero, "0");
+    assert.equal(await page.locator('.mobile-rewards-age').count(), 0, "retained readings never add reward clocks");
+    assert.equal(await rewardLink.evaluate(link => getComputedStyle(link).fontWeight), "400");
+    assert.match(await amount.getAttribute("aria-label") ?? "", /Last read by GridLens:/);
     assert.match(await amount.getAttribute("aria-label") ?? "", /Retained 123\.456789 NOS/);
     assert.match(await amount.getAttribute("aria-label") ?? "", /authentication-failed/);
     assert.ok((await amount.getAttribute("aria-label"))!.includes(new Date(at).toISOString()), "failed attempts do not replace original success time");
@@ -225,7 +250,13 @@ test("phone Fleet reads exact rewards and retained failures from the native cach
     await page.reload();
     await exactText(row(page, first).locator('td[data-col="ip"]'), "8.8.4.4 / 192.168.9.42");
     await exactText(row(page, first).locator('td[data-col="rewards"] a'), "123");
-    await exactText(row(page, first).locator('td[data-col="rewards"] .mobile-rewards-age'), "◷");
+    await exactText(row(page, first).locator('td[data-col="rewards"]'), "123");
+    assert.equal(await page.locator('.mobile-rewards-age').count(), 0, "reopening retains amounts without reward clocks");
+    assert.equal(await rewardLink.evaluate(link => getComputedStyle(link).color), freshRewardColor);
+    assert.equal(await rewardLink.evaluate(link => getComputedStyle(link).fontWeight), "400");
+    assert.match(await rewardLink.getAttribute("aria-label") ?? "", /Retained 123\.456789 NOS.*Last read by GridLens:.*authentication-failed/);
+    await exactText(row(page, publicOnly).locator('td[data-col="ip"]'), "1.1.1.1 / −");
+    await exactText(row(page, ipv6Host).locator('td[data-col="ip"]'), "2606:4700:4700::1111 / fd12:3456::1");
     assert.equal(await row(page, first).locator('td[data-col="rewards"]').evaluate(cell => cell.classList.contains("metadata-retained")), true);
     await page.locator("#preview-tools > summary").click();
     await post([{ address: first, binding, monitoring: { status: "credentials-required", checkedAtMs: at + 1500 } }]);
@@ -261,6 +292,13 @@ test("phone Fleet reads exact rewards and retained failures from the native cach
     await page.waitForFunction(address => document.querySelector<HTMLTableRowElement>('#fleet-rows > tr[data-host]')?.dataset.host === address, second);
     await page.locator('#column-headings th[data-col="rewards"]').click();
     await page.waitForFunction(address => document.querySelector<HTMLTableRowElement>('#fleet-rows > tr[data-host]')?.dataset.host === address, first);
+    await page.reload();
+    await exactText(row(page, first).locator('td[data-col="rewards"]'), "1");
+    assert.equal(await amount.evaluate(cell => cell.classList.contains("metadata-retained")), false);
+    assert.equal(await rewardLink.evaluate(link => getComputedStyle(link).color), freshRewardColor);
+    assert.equal(await rewardLink.evaluate(link => getComputedStyle(link).fontWeight), "400");
+    assert.equal(await page.locator('.mobile-rewards-age').count(), 0);
+    assert.doesNotMatch((await page.locator('td[data-col="rewards"]').allTextContents()).join(" "), /◷/);
     assert.deepEqual(forbidden, [], "browser cannot initiate native actions or public requests during cache refresh");
     assert.ok(historyRequests.includes(first) && historyRequests.includes(second));
     assert.deepEqual(errors, []);

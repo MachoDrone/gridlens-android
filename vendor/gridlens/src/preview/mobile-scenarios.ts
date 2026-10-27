@@ -16,8 +16,9 @@ export function mobilePcAddresses(pc: MobilePc | undefined): { internal: string 
 export function formatMobileIPDisplay(addresses: IPAddresses, mode: IPDisplayMode): { text: string; description: string } {
   if (mode === "dot") return { text: "•", description: "IP addresses hidden." };
   const base = formatIPDisplay(addresses, mode);
-  if (mode === "full") return { text: `${addresses.global ?? "-"} / ${addresses.internal ?? "-"}`, description: base.description };
-  return { text: base.text === "—" ? "-" : base.text.replace(/^\.(?=\d+$)/, ""), description: base.description };
+  const description = `External/public: ${addresses.global ?? "not reported"}. Internal/private: ${addresses.internal ?? "not reported"}.`;
+  if (mode === "full") return { text: `${addresses.global ?? "−"} / ${addresses.internal ?? "−"}`, description };
+  return { text: base.text === "—" ? "−" : base.text.replace(/^\.(?=\d+$)/, ""), description };
 }
 
 export interface MobileScenarios {

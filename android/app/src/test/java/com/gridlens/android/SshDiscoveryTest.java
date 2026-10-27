@@ -329,7 +329,7 @@ public final class SshDiscoveryTest {
             AtomicBoolean sawPause = new AtomicBoolean();
             List<SshDiscovery.MonitoringResult> result = SshDiscovery.monitor(fixture, fixture.candidate(), SshDiscovery.inspectIdentity(fixture, fixture.candidate()), credential,
                     null, List.of(first, second), "fixture-reward", null, false, true, false, Map.of(), null,
-                    current -> { if (current.retryAfterSeconds > 0) { assertFalse(fixture.commands.contains(DiscoveryPolicy.bindingInspectionCommand(second, false))); sawPause.set(true); } }, () -> true);
+                    current -> { if (current.retryAfterSeconds > 0) { assertFalse(fixture.commands.contains(RewardsReader.readCommand("fixture-reward", next, false))); sawPause.set(true); } }, () -> true);
             assertTrue(sawPause.get()); assertEquals(300, result.get(0).retryAfterSeconds);
             assertNull(result.get(1).rewardsJson);
             assertFalse(fixture.commands.contains(RewardsReader.readCommand("fixture-reward", next, false)));
@@ -470,4 +470,29 @@ public final class SshDiscoveryTest {
             }
         }
     }
+    @Test(timeout = 25000) public void allVerifiedIpsAreDeliveredBeforeAStalledFirstGpuOrAnyRewardRead() throws Exception {
+        NodeBinding first = new NodeBinding("docker", null, "a".repeat(64), ADDRESS);
+        NodeBinding second = new NodeBinding("docker", null, "b".repeat(64), "1".repeat(31) + "2");
+        try (Fixture fixture = new Fixture(); SshDiscovery.Credential credential = new SshDiscovery.Credential("operator", bytes("fixture-password"), null, null)) {
+            RewardsReader.Binding one = monitoringRewardFixture(fixture, first, "ok");
+            RewardsReader.Binding two = monitoringRewardFixture(fixture, second, "ok");
+            fixture.stalled.add(DiscoveryPolicy.bindingGpuCommand(first, false));
+            List<String> delivered = new ArrayList<>();
+            String network = new PublicIpReader.Observation(1000, "8.8.8.8", 1000L, null, null).json();
+            List<SshDiscovery.MonitoringResult> results = SshDiscovery.monitor(fixture, fixture.candidate(), SshDiscovery.inspectIdentity(fixture, fixture.candidate()), credential,
+                    null, List.of(first, second), "fixture-reward", "fixture-gpu", false, true, true, Map.of(), null,
+                    result -> {
+                        if (result.networkJson != null) {
+                            assertFalse(fixture.commands.contains(DiscoveryPolicy.bindingGpuCommand(first, false)));
+                            assertFalse(fixture.commands.contains(RewardsReader.readCommand("fixture-reward", one, false)));
+                            assertFalse(fixture.commands.contains(RewardsReader.readCommand("fixture-reward", two, false)));
+                            assertNull(result.gpuJson); assertNull(result.rewardsJson); delivered.add(result.binding.address);
+                        }
+                        if (result.rewardsJson != null || result.gpuJson != null) assertEquals(List.of(first.address, second.address), delivered);
+                    }, () -> true, (node, runner) -> PublicIpReader.parse(network));
+            assertEquals(List.of(first.address, second.address), delivered);
+            assertEquals(2, results.size());
+        }
+    }
+
 }

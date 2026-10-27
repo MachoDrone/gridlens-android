@@ -171,7 +171,7 @@ public final class SshDiscovery {
         PinnedRepository repository = new PinnedRepository(trusted);
         List<MonitoringResult> results = new ArrayList<>();
         String networkJson = null;
-        Set<String> verifiedBindings = new HashSet<>();
+        Map<NodeBinding, String[]> verifiedBindings = new java.util.LinkedHashMap<>();
         try {
             session = session(jsch, network, candidate, credential.username, repository);
             if (credential.privateKey != null && credential.privateKey.length > 0) {
@@ -199,7 +199,7 @@ public final class SshDiscovery {
                 if (nodeMode == null) { MonitoringResult failed = bindingFailure(binding, readGpu); emitMonitoring(onResult, failed); results.add(failed); continue; }
                 CommandResult identity = execute(active, network, DiscoveryPolicy.bindingAddressCommand(binding, sudoPassword != null), sudoPassword, deadline, 256);
                 if (identity.exit != 0 || !identity.output.trim().equals(binding.address)) { MonitoringResult failed = bindingFailure(binding, readGpu); emitMonitoring(onResult, failed); results.add(failed); continue; }
-                verifiedBindings.add(binding.key() + ":" + binding.address);
+                verifiedBindings.put(binding, new String[]{wrapperMode, nodeMode});
                 if (!networkChecked && networkLookup != null) {
                     networkChecked = true;
                     try {
@@ -211,6 +211,14 @@ public final class SshDiscovery {
                         if (observed != null) networkJson = observed.json();
                     } catch (Exception unavailable) { /* Optional network data cannot discard other verified readings. */ }
                 }
+                // Complete every binding's verification and publish its IP before optional
+                // financial/GPU work can consume the session deadline.
+                if (networkJson != null) emitMonitoring(onResult, new MonitoringResult(binding, null, null, "active", false, 0, networkJson));
+            }
+            for (Map.Entry<NodeBinding, String[]> verified : verifiedBindings.entrySet()) {
+                network.ensureActive();
+                NodeBinding binding = verified.getKey();
+                String wrapperMode = verified.getValue()[0], nodeMode = verified.getValue()[1];
                 String rewards = null, gpu = null, status = "active"; boolean suspended = false; long retry = 0;
                 boolean rewardRead = false;
                 if (readRewards && !rewardPaused && (rewardAddresses == null || rewardAddresses.contains(binding.address)) && rewardsAllowed.getAsBoolean()) {
@@ -253,7 +261,7 @@ public final class SshDiscovery {
                     }
                 }
                 MonitoringResult completed = new MonitoringResult(binding, rewards, gpu, status, suspended, retry);
-                if (readGpu || !rewardRead) emitMonitoring(onResult, completed);
+                if (readGpu || !rewardRead) emitMonitoring(onResult, new MonitoringResult(binding, null, gpu, status, suspended, retry));
                 results.add(completed);
             }
         } catch (MonitoringCallbackFailure error) { throw error;
@@ -268,7 +276,7 @@ public final class SshDiscovery {
         } finally { if (timeout != null) timeout.cancel(false); if (session != null) session.disconnect(); try { jsch.removeAllIdentity(); } catch (JSchException ignored) { } }
         if (networkJson != null) for (int i = 0; i < results.size(); i++) {
             MonitoringResult result = results.get(i);
-            if (!verifiedBindings.contains(result.binding.key() + ":" + result.binding.address)) continue;
+            if (!verifiedBindings.containsKey(result.binding)) continue;
             results.set(i, new MonitoringResult(result.binding, result.rewardsJson, result.gpuJson, result.status, result.suspendRewards, result.retryAfterSeconds, networkJson));
         }
         return results;

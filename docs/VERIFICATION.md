@@ -473,3 +473,61 @@ restrictions are not automatically cleared by installing the update.
 
 Verified APK size: 197334532 bytes. SHA-256:
 `f8c88d321c1c5fa1aba0e3ecae29eabd2f9885ac1e3e2d3a5c3a53b95fd68a9f`.
+
+## Android 0.2.8 — reward clocks removed and progressive IP delivery, October 27, 2026
+
+Version code 11 removes reward clock elements, their styles and clock help. Every
+known current/retained reward remains #0f5c2b at weight 400, matching NOS typography.
+Exact amounts, sorting and read status remain intact. Timestamps say **Last read
+by GridLens**, not when Nosana changed an amount.
+
+The native connection verifies bindings and emits network observations before
+rewards/GPU work. Network, rewards and GPU cross the existing observation API
+separately. Source JSON must be one nested object; malformed GPU data cannot
+inject sibling reward fields or reject successful IP/reward requests. Delivery
+rechecks saved authorization, binding, trust and credentials before each source.
+No schema migration, additional credential or lookup-interval change is required.
+
+Completed application, native and artifact verification:
+
+- `npm run check` passes: 110 app/runtime/helper/browser tests, 27 Python recorder
+  tests, 816 inherited Node tests and all 332 inherited browser tests (12.1 minutes).
+  The expanded persistence assertion was then checked again with newly generated
+  native observations, with strict typechecking.
+- The actual Java public-IP reader and delivery serializer generate seven isolated
+  cases: multiple hosts on one NAT PC, another PC sharing that public IP,
+  public-only connectivity, IPv6, failed public lookup and failed private lookup.
+  Their separate observations pass through the actual API and storage into the
+  rendered column, including a full runtime restart. Malformed GPU submissions
+  are rejected independently. Current and retained rewards remain green without
+  clocks after reopening. Separate browser tests exercise all IP toggle modes.
+- All 144 Android tests pass in both debug and release variants. An isolated SSH
+  fixture stalls the first GPU command and verifies every successful host IP was
+  delivered before that command or any rewards read. Existing denial, identity,
+  cancellation, retry and provider-wait tests remain passing. Release lint and
+  debug, instrumentation and signed release APK assembly pass.
+- The package is `com.gridlens.android`, 0.2.8/code 11. APK signatures, the pinned
+  certificate and continuity with the previous public APK verify. ZIP and native
+  ELF alignment support 16 KiB pages. All 47 runtime files and four helper assets
+  match reviewed sources; native test fixtures and private inputs are absent.
+  Packaged clock code/style is absent and the delivery implementation is present.
+- The complete adaptation patch reproduces all 196 vendored files and recorded
+  hashes. The desktop application was not modified. No operator PC or physical
+  phone was accessed; the app owns verification of its saved PC connections.
+
+Verified signed APK size: 197334488 bytes. SHA-256:
+`42bb1e746d9f0fb9aac35ccabbb9211c323c63853d22e4920be68cfb8a66161f`.
+
+Fresh Android API 36 emulator checks also pass: native-only Keystore/monitoring
+checks in 12.110 seconds and the complete embedded Node/WebView smoke in 30.770
+seconds. The added native cases reject malformed GPU payloads and sibling-field
+injection, and prevent delivery across reapproval, revocation and forgotten
+credentials. Both app-test runs passed without retry or relaxed assertions.
+
+Two earlier fixture launches stopped before Android boot because the emulator's
+userdata allocation estimate exceeded available temporary storage. Preparing a
+fresh sparse ext4 image with the SDK tool resolved that fixture issue, with the
+same system image and normal Android protections. The owned AVD was stopped and
+removed afterward. The final passive screenshot attempt found the emulator
+offline, so no new emulator screenshot is claimed. These isolated checks do not
+establish physical-phone or GrapheneOS acceptance.

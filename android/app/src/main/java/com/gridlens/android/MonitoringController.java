@@ -340,6 +340,7 @@ final class MonitoringController {
                         if (cursor > 0) cursors.put(binding.address, cursor);
                     }
                     Set<String> receivedRestrictions = new HashSet<>();
+                    Set<String> deliveredRewards = new HashSet<>(), deliveredGpu = new HashSet<>();
                     List<SshDiscovery.MonitoringResult> results = SshDiscovery.monitor(network,
                             new DiscoveryPolicy.Candidate(target.getString("address"), target.getInt("port"), ""),
                             new SshDiscovery.Identity(target.getString("keyBase64"), target.getString("algorithm")), selected, sudo,
@@ -347,21 +348,33 @@ final class MonitoringController {
                             result -> {
                                 try {
                                     boolean rateLimited = result.rewardsJson != null && "rate-limited".equals(new JSONObject(result.rewardsJson).optString("status"));
-                                    if (!rateLimited && !result.suspendRewards && result.retryAfterSeconds == 0 && !MonitoringPolicy.pausesTarget(result.status)) return;
                                     String receipt = result.binding.address + "|" + (result.rewardsJson == null ? result.status : result.rewardsJson);
-                                    if (!receivedRestrictions.add(receipt)) return;
-                                    long seconds = MonitoringPolicy.providerDelaySeconds(rateLimited, result.retryAfterSeconds);
-                                    long deadline = seconds > 0 ? MonitoringPolicy.retryAt(System.currentTimeMillis(), seconds) : 0;
-                                    noteProviderRetry(deadline);
-                                    boolean stop = MonitoringPolicy.pausesTarget(result.status) && !(result.suspendRewards && "authorization-required".equals(result.status));
-                                    if (MonitoringPolicy.suspendsCredentialProfile(result.status)) blockCredentialProfile(target);
-                                    store.restrictMonitoring(target, result.binding.address, result.suspendRewards, stop, result.status, deadline);
-                                    if (result.suspendRewards) { suspendedRewards.add(result.binding.address); verifiedRewards.remove(result.binding.address); }
-                                    target.put("rewardsSuspended", new JSONArray(suspendedRewards)).put("rewardsVerified", new JSONArray(verifiedRewards));
-                                    target.put("rewardsAuthorized", suspendedRewards.size() < bindings.size());
-                                    if (stop) target.put("paused", true).put("status", result.status);
-                                    if (deadline > 0) target.put("rewardsRetryAtMs", Math.max(target.optLong("rewardsRetryAtMs"), deadline));
+                                    if ((rateLimited || result.suspendRewards || result.retryAfterSeconds > 0 || MonitoringPolicy.pausesTarget(result.status))
+                                            && receivedRestrictions.add(receipt)) {
+                                        long seconds = MonitoringPolicy.providerDelaySeconds(rateLimited, result.retryAfterSeconds);
+                                        long deadline = seconds > 0 ? MonitoringPolicy.retryAt(System.currentTimeMillis(), seconds) : 0;
+                                        noteProviderRetry(deadline);
+                                        boolean stop = MonitoringPolicy.pausesTarget(result.status) && !(result.suspendRewards && "authorization-required".equals(result.status));
+                                        if (MonitoringPolicy.suspendsCredentialProfile(result.status)) blockCredentialProfile(target);
+                                        store.restrictMonitoring(target, result.binding.address, result.suspendRewards, stop, result.status, deadline);
+                                        if (result.suspendRewards) { suspendedRewards.add(result.binding.address); verifiedRewards.remove(result.binding.address); }
+                                        target.put("rewardsSuspended", new JSONArray(suspendedRewards)).put("rewardsVerified", new JSONArray(verifiedRewards));
+                                        target.put("rewardsAuthorized", suspendedRewards.size() < bindings.size());
+                                        if (stop) target.put("paused", true).put("status", result.status);
+                                        if (deadline > 0) target.put("rewardsRetryAtMs", Math.max(target.optLong("rewardsRetryAtMs"), deadline));
+                                    }
                                 } catch (Exception failure) { storageBlocked = true; throw new IllegalStateException("Monitoring restrictions could not be saved"); }
+                                // Restriction persistence precedes delivery. Recheck ownership for
+                                // every source, including after a slow local HTTP response.
+                                Set<String> accepted = MonitoringDelivery.deliver(target.optString("pcId"), System.currentTimeMillis(), result,
+                                        () -> canDeliver(run, target, result),
+                                        (kind, metadata, payload) -> {
+                                            JSONObject update = sourceUpdate(metadata, kind, payload);
+                                            if (!canDeliver(run, target, result)) throw new IllegalStateException("Monitoring delivery cancelled");
+                                            postObservation(target.getString("fleetId"), update);
+                                        });
+                                if (accepted.contains("rewards")) deliveredRewards.add(result.binding.address);
+                                if (accepted.contains("gpu")) deliveredGpu.add(result.binding.address);
                             }, () -> activeTarget(run, target) && !storageBlocked && Math.max(observedProviderRetryAt, store.rewardsRetryAtMs()) <= System.currentTimeMillis(),
                             (binding, runner) -> networkCache.getOrRead(target.getString("pcId"), () -> {
                                 if (!activeTarget(run, target)) throw new IllegalStateException("Monitoring cancelled");
@@ -385,14 +398,9 @@ final class MonitoringController {
                         if (result.retryAfterSeconds > 0) target.put("rewardsRetryAtMs", Math.max(target.optLong("rewardsRetryAtMs"),
                                 MonitoringPolicy.retryAt(System.currentTimeMillis(), result.retryAfterSeconds)));
                         commit(target, run);
-                        JSONObject update = observation(target, result.binding, result.status);
-                        JSONObject rewardReading = result.rewardsJson == null ? null : new JSONObject(result.rewardsJson);
-                        JSONObject gpuReading = result.gpuJson == null ? null : new JSONObject(result.gpuJson);
+                        JSONObject rewardReading = deliveredRewards.contains(result.binding.address) ? deliveredObject(result.rewardsJson) : null;
+                        JSONObject gpuReading = deliveredGpu.contains(result.binding.address) ? deliveredObject(result.gpuJson) : null;
                         if (enable && (gpuReading == null || java.util.Arrays.asList("unavailable", "setup-failed", "not-enabled").contains(gpuReading.optString("status")))) setupComplete = false;
-                        if (rewardReading != null) update.put("rewards", rewardReading);
-                        if (gpuReading != null) update.put("gpu", gpuReading);
-                        if (result.networkJson != null) update.put("network", new JSONObject(result.networkJson));
-                        postObservation(target.getString("fleetId"), update);
                         if (rewardReading != null && "ok".equals(rewardReading.optString("status"))) verifiedRewards.add(result.binding.address);
                         if (gpuReading != null) {
                             JSONArray samples = gpuReading.optJSONArray("samples"); long cursor = 0;
@@ -492,10 +500,47 @@ final class MonitoringController {
             if (roster.contains(binding.address)) postObservation(target.getString("fleetId"), observation(target, binding, status));
         }
     }
+    static JSONObject sourceUpdate(String metadata, String kind, String payload) throws Exception {
+        JSONObject update = new JSONObject(metadata);
+        if (payload != null) {
+            if (!java.util.Arrays.asList("network", "rewards", "gpu").contains(kind)) throw new IllegalArgumentException("Invalid source");
+            org.json.JSONTokener source = new org.json.JSONTokener(payload);
+            Object value = source.nextValue();
+            if (!(value instanceof JSONObject) || source.nextClean() != 0) throw new IllegalArgumentException("Invalid source object");
+            update.put(kind, value);
+        }
+        return update;
+    }
+    private boolean canDeliver(long run, JSONObject expected, SshDiscovery.MonitoringResult result) {
+        return activeTarget(run, expected) && !storageBlocked && permittedObservation(store, expected, result) && activeTarget(run, expected);
+    }
+    static boolean permittedObservation(DiscoveryStore store, JSONObject expected, SshDiscovery.MonitoringResult result) {
+        try {
+            JSONArray targets = store.monitoringTargets();
+            for (int i = 0; i < targets.length(); i++) {
+                JSONObject current = targets.getJSONObject(i);
+                if (!current.getString("id").equals(expected.getString("id"))) continue;
+                if (!current.optBoolean("approved") || current.optBoolean("aliasReplaced")
+                        || !current.optString("authorizationId").equals(expected.optString("authorizationId"))
+                        || !current.getString("credentialId").equals(expected.getString("credentialId"))
+                        || !current.getString("keyBase64").equals(expected.getString("keyBase64"))
+                        || store.credential(current.getString("credentialId")) == null) return false;
+                boolean restriction = MonitoringPolicy.pausesTarget(result.status);
+                if (current.optBoolean("paused") && !restriction) return false;
+                String endpoint = new DiscoveryPolicy.Candidate(current.getString("address"), current.getInt("port"), "").endpointKey();
+                if (!current.getString("keyBase64").equals(store.trustedKey(current.getString("profileId"), endpoint))) return false;
+                for (NodeBinding saved : recoveryBindings(current, Collections.singleton(result.binding.address)))
+                    if (saved.key().equals(result.binding.key())) return true;
+                return false;
+            }
+        } catch (Exception unavailable) { return false; }
+        return false;
+    }
+    private static JSONObject deliveredObject(String value) {
+        try { return value == null ? null : new JSONObject(value); } catch (Exception invalid) { return null; }
+    }
     private JSONObject observation(JSONObject target, NodeBinding binding, String status) throws Exception {
-        JSONObject identity = bindingJson(binding); identity.remove("address"); identity.put("pcId", target.getString("pcId"));
-        return new JSONObject().put("address", binding.address).put("binding", identity)
-                .put("monitoring", new JSONObject().put("status", status).put("checkedAtMs", System.currentTimeMillis()));
+        return new JSONObject(MonitoringDelivery.update(target.getString("pcId"), System.currentTimeMillis(), binding, status));
     }
     private void postObservation(String fleetId, JSONObject update) throws Exception {
         request("/mobile/observations", new JSONObject().put("schema", 1).put("fleetId", fleetId).put("updates", new JSONArray().put(update)), 64 * 1024);

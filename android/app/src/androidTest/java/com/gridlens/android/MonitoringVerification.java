@@ -32,6 +32,11 @@ final class MonitoringVerification {
                     .put("bindings", new JSONArray().put(new JSONObject().put("runtime", "docker").put("wrapperId", JSONObject.NULL)
                             .put("nodeContainerId", "a".repeat(64)).put("address", address)));
             store.saveMonitoringTarget(target);
+            NodeBinding node = new NodeBinding("docker", null, "a".repeat(64), address);
+            SshDiscovery.MonitoringResult publicRead = new SshDiscovery.MonitoringResult(node, null, null, "active", false, 0,
+                    new PublicIpReader.Observation(1000, "8.8.8.8", 1000L, null, null).json());
+            require(MonitoringController.permittedObservation(store, target, publicRead), "Approved native delivery was blocked");
+            verifySourceIsolation(target.getString("pcId"), node);
             JSONObject sibling = new JSONObject(target.toString()).put("id", UUID.randomUUID().toString()).put("fleetId", UUID.randomUUID().toString())
                     .put("address", "192.0.2.13");
             store.saveMonitoringTarget(sibling);
@@ -59,11 +64,14 @@ final class MonitoringVerification {
             require(reopened.rewardsRetryAtMs() == retry, "Provider delay was not persisted");
             JSONObject approvedAgain = new JSONObject(target.toString()).put("authorizationId", UUID.randomUUID().toString());
             reopened.saveMonitoringTarget(approvedAgain);
+            require(!MonitoringController.permittedObservation(reopened, target, publicRead), "Late source delivered across replacement authorization");
+            require(MonitoringController.permittedObservation(reopened, approvedAgain, publicRead), "Replacement authorization blocked its own source");
             require(!reopened.suspendCredentialProfile(target), "An old approval suspended the newly approved shared credential target");
             reopened.restrictMonitoring(target, address, true, true, "identity-changed", retry);
             require(!reopened.monitoringTargets().getJSONObject(0).getBoolean("paused"), "Late prior-authorization receipt revoked the replacement authorization");
             JSONObject paused = new JSONObject(approvedAgain.toString()).put("approved", false).put("paused", true);
             reopened.saveMonitoringTarget(paused);
+            require(!MonitoringController.permittedObservation(reopened, approvedAgain, publicRead), "Revoked permission delivered a successful source");
             reopened.restrictMonitoring(approvedAgain, address, true, false, "authorization-required", retry);
             require(!reopened.monitoringTargets().getJSONObject(0).getBoolean("approved"), "A late receipt re-enabled a paused target");
             JSONObject live = new JSONObject(approvedAgain.toString()).put("authorizationId", UUID.randomUUID().toString())
@@ -89,6 +97,7 @@ final class MonitoringVerification {
             JSONObject recoveryBeforeForget = verifyConnectionRecovery(reopened, target, address, retry);
             long preservedRetry = reopened.rewardsRetryAtMs();
             reopened.forgetCredentials();
+            require(!MonitoringController.permittedObservation(reopened, approvedAgain, publicRead), "Forgotten credentials delivered a late source");
             require(reopened.resumeVerifiedConnections(new JSONArray().put(recoveryBeforeForget), () -> true).length() == 0,
                     "Recovery recreated a forgotten credential/permission");
             require(!reopened.suspendCredentialProfile(approvedAgain), "A forgotten target accepted an old credential failure");
@@ -103,6 +112,22 @@ final class MonitoringVerification {
             if (files != null) for (File file : files) require(file.delete(), "Monitoring fixture cleanup failed");
             require(directory.delete(), "Monitoring fixture directory cleanup failed");
         }
+    }
+    private static void verifySourceIsolation(String pcId, NodeBinding node) throws Exception {
+        String metadata = MonitoringDelivery.update(pcId, 1000, node, "active");
+        String injected = "{},\"rewards\":{\"amount\":\"999.000000\"}";
+        for (String payload : new String[]{injected, "{malformed", "[]", "{} {}"}) {
+            boolean rejected = false;
+            try { MonitoringController.sourceUpdate(metadata, "gpu", payload); } catch (Exception expected) { rejected = true; }
+            require(rejected, "Malformed GPU source crossed the native observation boundary");
+        }
+        JSONObject nested = MonitoringController.sourceUpdate(metadata, "gpu", "{\"rewards\":{\"amount\":\"999.000000\"}}");
+        require(!nested.has("rewards") && nested.getJSONObject("gpu").has("rewards"), "GPU source escaped its nested object");
+        java.util.List<String> accepted = new java.util.ArrayList<>();
+        MonitoringDelivery.deliver(pcId, 1000, new SshDiscovery.MonitoringResult(node, "{\"status\":\"ok\"}", injected, "active", false, 0,
+                        new PublicIpReader.Observation(1000, "8.8.8.8", 1000L, null, null).json()), () -> true,
+                (kind, envelope, payload) -> { MonitoringController.sourceUpdate(envelope, kind, payload); accepted.add(kind); });
+        require(accepted.equals(java.util.Arrays.asList("network", "rewards")), "Malformed GPU report discarded another source");
     }
     private static JSONObject verifyConnectionRecovery(DiscoveryStore store, JSONObject template, String address, long retry) throws Exception {
         String other = "1".repeat(31) + "2";

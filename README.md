@@ -8,9 +8,11 @@ continues independently.
 
 **[Download the signed Android APK](https://github.com/MachoDrone/gridlens-android-releases/releases/latest/download/gridlens-android.apk)**
 
-**Version 0.2.7** keeps all known Rewards to claim amounts dark green, including
-retained readings. A small clock (◷) marks an older reading; its original time and
-status remain in the amount's description. Unknown amounts remain a dash.
+**Version 0.2.8** removes reward clocks. All known Rewards to claim amounts stay
+dark green with the same regular text weight as NOS, including retained readings.
+Exact amounts and read status remain in their descriptions; timestamps mean
+**last read by GridLens**, not when Nosana updated rewards. Unknown amounts remain
+a dash.
 
 A GPU recorder permission problem no longer pauses saved SSH logins or discards
 successful rewards and IP readings. Cancelled connection attempts are also kept
@@ -19,8 +21,11 @@ connections, choose **Check saved connections** in the fleet. The app checks its
 saved trusted endpoints and resumes previously approved monitoring only after
 verification. This does not rescan the network or reauthorize denied wallet reads.
 
-The IP column shows external/public and internal/private addresses. PCs behind
-the same NAT router can all display the same public address. Public-IP checks
+The IP column shows external/public and internal/private addresses. Verified IP
+readings arrive before slower rewards/GPU work, and each source is delivered
+separately so a malformed GPU report cannot reject valid IPs or rewards. PCs behind
+the same NAT router can all display the same public address. Public-only PCs are
+also checked and display **public IP / −** without a private address. Public-IP checks
 prefer external IPv4, with IPv6 fallback; failed lookups normally retry after one
 minute while honoring longer provider-requested waits.
 

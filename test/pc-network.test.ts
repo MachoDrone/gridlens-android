@@ -164,11 +164,12 @@ test("Android IP mode cycle matches public/private reference while preserving fu
     assert.equal(formatMobileIPDisplay(addresses, mode).text, expected); mode = nextIPMode(mode);
   }
   assert.equal(formatIPDisplay(addresses, "ext").text, ".8", "the inherited non-mobile formatter retains its original suffix convention");
-  assert.equal(formatMobileIPDisplay({ global: null, internal: null }, "full").text, "- / -");
+  assert.equal(formatMobileIPDisplay({ global: null, internal: null }, "full").text, "− / −");
   assert.equal(formatMobileIPDisplay({ global: null, internal: null }, "dot").text, "•");
-  assert.equal(formatMobileIPDisplay({ global: null, internal: "10.0.0.102" }, "full").text, "- / 10.0.0.102");
-  assert.equal(formatMobileIPDisplay({ global: null, internal: "10.0.0.102" }, "ext").text, "-");
-  assert.equal(formatMobileIPDisplay({ global: "8.8.8.8", internal: null }, "int").text, "-");
+  assert.equal(formatMobileIPDisplay({ global: null, internal: "10.0.0.102" }, "full").text, "− / 10.0.0.102");
+  assert.equal(formatMobileIPDisplay({ global: null, internal: "10.0.0.102" }, "ext").text, "−");
+  assert.equal(formatMobileIPDisplay({ global: "8.8.8.8", internal: null }, "int").text, "−");
+  assert.equal(formatMobileIPDisplay({ global: "8.8.8.8", internal: null }, "full").text, "8.8.8.8 / −");
   const ipv6 = { global: "2606:4700:4700::1111", internal: "fd12:3456::1" };
   assert.equal(formatMobileIPDisplay(ipv6, "ext").text, ipv6.global);
   assert.equal(formatMobileIPDisplay(ipv6, "int").text, ipv6.internal);

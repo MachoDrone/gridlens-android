@@ -96,7 +96,7 @@ const COLUMNS = [
   ["stakedNos", "Staked NOS", "Toggle between a dull-green checkmark / red lowercase x and the actual / required NOS amounts. A current checkmark means exact vault NOS meets the current market’s displayed NOS target, including verified 0 / 0; x means it is below that target. Amount view rounds to whole NOS and uses bright green or red for the actual amount. Exact amounts drive sorting and comparison. This does not establish full market eligibility. Amounts still releasing during unstaking remain included; details distinguish duration-weighted xNOS. Shared public RPC checks every 30 minutes; readings expire after 35 minutes. Failed or expired comparisons stay gray; an unknown comparison is a dash."],
   ["status", "Status", "Reported Nosana classification. ONBOARDED is displayed as COMMUNITY (yellow C); REJECTED as red R; PREMIUM as green P. Details preserve the raw response. This does not establish container health or current job activity."],
   ["pc", "PC", mobileScenarios.enabled ? "PC Name reported through verified SSH discovery. Tap for saved computer details. Rescan refreshes this dated inventory; public Nosana refresh does not." : "The sample PC that owns this host. Select a PC cell for the row’s observation details."],
-  ["ip", "IP", mobileScenarios.enabled ? "IP Addresses reported through verified SSH discovery. Cycle hidden, full public/private, public last octet and private last octet, matching the reference display without leading dots. IPv6 stays complete. Full addresses drive sorting. Enabled monitoring checks the external IPv4 address used by a NAT connection, with IPv6 fallback. Details show the original address/check times and any failed lookup. A PC-side VPN can change the outward address; the phone’s own IP is never substituted." : "Toggle between hidden (•), full global / internal addresses, global last octet and internal last octet. Compact IPv4 values include the leading dot, such as .102. IPv6 stays complete. Sorting always uses the full internal address. These are documentation-only sample addresses, not links or reachable PCs."],
+  ["ip", "IP", mobileScenarios.enabled ? "External/public IP / internal/private IP from verified PC monitoring. Cycle hidden, both full addresses, external last octet and internal last octet without leading dots. IPv6 stays complete; a missing address is −. Full addresses drive sorting. Enabled monitoring checks external IPv4, with IPv6 fallback, whether or not the PC uses NAT. Shared public addresses can appear on every applicable host. Details show the original address/check times and any failed lookup. A PC-side VPN can change the outward address; the phone’s own IP is never substituted." : "Toggle between hidden (•), full global / internal addresses, global last octet and internal last octet. Compact IPv4 values include the leading dot, such as .102. IPv6 stays complete. Sorting always uses the full internal address. These are documentation-only sample addresses, not links or reachable PCs."],
   ["hostAddress", "Host Address", "A supplied public Nosana host address. Toggle between the first five characters (default) and the full address. Both views link to the same full address in Nosana Explorer, and sorting always uses the full address. Supplied addresses do not establish current host status or any measurements."],
   ["sol", "SOL", "Confirmed SOL balance from public mainnet RPC, checked best effort every 30 seconds while visible. Three decimals are rounded down for display; exact lamports and provenance are in details and drive sorting. Failed or 60-second-old readings remain gray. Missing accounts remain unknown; verified zero remains zero."],
   ["api", "API", "Last confirmed API result from Node Info, separate from State. Online stays green and Offline stays red. Bold means within its checking window; regular weight means stale or unconfirmed. Online uses a 30-second window. Offline stays bold until its recorded retry is overdue, including an eight-second request allowance. Details preserve original check times and the retry deadline. Amber Populating.. means no confirmed result is available yet. State OTHER can still be API Online. Timeouts and inconclusive checks do not overwrite the last confirmed result. This does not establish whether the PC or workload is running."],
@@ -111,7 +111,7 @@ const COLUMNS = [
   ["dl", "DL", "Reported download Mbps from Node Info info.network.download_mbps. This is saved network data, not a speed test triggered by this page. An all-zero default triplet is unknown."],
   ["ul", "UL", "Reported upload Mbps from Node Info info.network.upload_mbps. The specific test provider and measurement time are not supplied. No FAST/Libre/Ookla fallback is applied."],
   ["ping", "Ping", "Reported ping milliseconds from Node Info info.network.ping_ms. Display is rounded; sorting preserves the reported value. An all-zero default triplet is unknown."],
-  ["rewards", "Rewards to claim", mobileScenarios.enabled ? "Claimable host-uptime NOS, rounded to the nearest whole NOS for display. Known amounts stay dark green and link to the host’s Nosana page. A clock (◷) marks a retained reading whose current amount is unconfirmed. Exact six-decimal values drive sorting and remain in the amount’s description with its original observation time. Enable monitoring once in Fleets. Saved SSH reads refresh while the app is open. Keys remain in the node; authorization is sent only to Nosana. No claims or transactions are made." : "The exact claimable host-uptime amount. No rewards source or wallet is connected; no estimate or other balance is substituted."],
+  ["rewards", "Rewards to claim", mobileScenarios.enabled ? "Claimable host-uptime NOS, rounded to the nearest whole NOS for display. Known amounts stay dark green and link to the host’s Nosana page. Exact six-decimal values drive sorting and remain in the amount’s description with read status and the time last read by GridLens. This is not the time Nosana updated rewards. Enable monitoring once in Fleets. Saved SSH reads refresh while the app is open. Keys remain in the node; authorization is sent only to Nosana. No claims or transactions are made." : "The exact claimable host-uptime amount. No rewards source or wallet is connected; no estimate or other balance is substituted."],
   ["nos", "NOS", "Confirmed NOS in each host’s standard associated token account, checked best effort every two minutes while visible. Display rounds to whole NOS; exact six-decimal amounts drive sorting. Additional wallet token accounts, staking and claimable rewards are excluded. A freshly verified absent standard account means zero there; failures remain unknown or retain gray values. Readings expire after three minutes."],
   ["market", "Market", "Toggle between the full reported market label and its first two characters. Sorting uses the full label. Supplied hosts resolve their market address through Nosana’s market lookup, preferring its slug. Missing labels stay unknown. This association does not identify the physical GPU or establish current activity; recommendations are separate."],
   ["gpuID", "GPU ID", mobileScenarios.enabled ? "A physical PC GPU index is not inferred from a container index. Enabled monitoring verifies GPU UUID allocation and shows observed conditions in Jobs." : "The current physical GPU index, resolved from measured UUID identity. No hardware observations are connected."],
@@ -2540,7 +2540,7 @@ function renderMobilePc(cell: HTMLTableCellElement, key: "pc" | "ip", address: s
       "A failed lookup normally becomes eligible to retry after one minute. Provider-requested waits are honored. Enabled monitoring retries while this fleet is open; an offline PC or paused monitoring can delay it."] : [])].join(" ");
   const discoveryFact = pc ? `${checkedFact(pc.observedAtMs, "Discovered")} Discovered addresses: ${pc.ipAddresses.join(", ")}.`
     : "No saved PC discovery details are available.";
-  const method = "A NAT network can report its external public IP. Enabled monitoring checks from this PC while its fleet is open, preferring IPv4 with IPv6 fallback. A PC-side VPN can change the outward address.";
+  const method = "Enabled monitoring checks this PC’s external/public IP with or without NAT, preferring IPv4 with IPv6 fallback. Shared public addresses are valid for multiple PCs and hosts. A PC-side VPN can change the outward address.";
   rememberInfo(cell, {
     summary: [ink(key === "ip" ? "Public and private IP observations." : pc ? `PC: ${pc.pcName ?? "name unavailable"}.` : "PC name unavailable.", pc || key === "ip" ? "plain" : "warning")],
     // The shared dialog shows four facts. Keep current IPs and failure/retry status
@@ -2666,7 +2666,7 @@ function renderSupplied(): void {
         const exact = atoms === null ? null : view.amount;
         cell.classList.toggle("metadata-retained", exact !== null && !view.current);
         const description = exact === null ? `Rewards unavailable (${view.status}). Enable or repair monitoring in Fleets.`
-          : `${view.current ? "" : "Retained "}${exact} NOS claimable for host uptime. Display rounded to the nearest whole NOS. Observed ${timestamp(view.observedAtMs)}. Latest status: ${view.status}.`;
+          : `${view.current ? "" : "Retained "}${exact} NOS claimable for host uptime. Display rounded to the nearest whole NOS. Last read by GridLens: ${timestamp(view.observedAtMs)}. Latest status: ${view.status}.`;
         if (exact === null || atoms === null) {
           setText(cell, "—");
         } else {
@@ -2682,16 +2682,6 @@ function renderSupplied(): void {
           link.setAttribute("aria-label", `${description} Open this host’s Nosana page (new tab).`);
           link.title = description;
           if (!link.parentElement) cell.replaceChildren(link);
-          const previousAge = cell.querySelector<HTMLElement>(".mobile-rewards-age");
-          if (view.current) previousAge?.remove();
-          else {
-            const age = previousAge ?? document.createElement("span");
-            age.className = "mobile-rewards-age";
-            age.textContent = "◷";
-            age.setAttribute("aria-hidden", "true");
-            age.title = `Retained reading; current amount unconfirmed. Observed ${timestamp(view.observedAtMs)}.`;
-            if (!age.parentElement) cell.append(age);
-          }
         }
         cell.setAttribute("aria-label", description); cell.title = description;
       } else if (key === "sol") {
