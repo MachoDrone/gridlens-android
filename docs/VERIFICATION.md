@@ -364,3 +364,54 @@ the changed lifetime applies after this version is installed.
 
 Verified APK size: 197317360 bytes. SHA-256:
 `059cf4b46a238e86f19203675eeb73d5e38b2a377661a6445fadc162864dca62`.
+
+## Android 0.2.6 — clearer reward contrast and NAT lookup recovery, October 27, 2026
+
+Version code 9 makes current Rewards to claim regular-weight #0f5c2b, against
+unchanged regular-weight NOS #15803d. The earlier color-only adjustment kept bold
+rewards text, which reduced the visual distinction. Both values are now supplied
+by an isolated phone-browser fixture and compared together; reward color relative
+luminance is below 55% of NOS, with equal font size/weight. A 390px screenshot was
+visually reviewed. Retained rewards remain gray, and numeric precision is unchanged.
+
+A reproducible recovery defect kept one failed public-IP lookup cached for
+30 minutes. Failures now normally become eligible after 60 seconds, including old
+0.2.5 records; success stays cached per PC for 30 minutes. Longer provider waits
+are persisted and honored. The fixed helper explicitly tries IPv4 first and may
+run one IPv6 fallback after a network failure/timeout. HTTP refusals and native
+cancellation do not trigger a fallback. The phone's public IP is never substituted.
+
+Completed verification on the final implementation:
+
+- `npm run check` passes: 107 app/runtime/helper/phone-browser tests, 27 Python
+  recorder tests, 816 inherited Node tests and all 332 inherited browser tests
+  (11.6 minutes), without reruns or relaxed timeouts.
+- All 131 Android unit tests pass in each debug and release variant. A clean
+  build, release lint and debug/instrumentation/release APK assembly pass.
+  The 17 reader/cache fixtures cover failure recovery, older cached failures,
+  source times, clock regression, cancellation, concurrency and provider waits.
+- Five isolated helper tests execute the fixed script, including actual Node -e
+  argument handling with an injected HTTPS transport. Family, destination,
+  redirects, malformed/oversized responses and HTTP refusal behavior are bounded.
+  No live operator network or wallet is used by these tests.
+- Phone-browser tests compare actual current Rewards and NOS, exercise all four
+  IP modes and retention, and distinguish missing results from failed attempts.
+  IP details fit public/private values, original times and retry/status information
+  into the shared dialog's four visible facts. Full discovery inventory remains
+  behind Source details.
+- APK identity is com.gridlens.android, 0.2.6/code 9, with the pinned release
+  certificate. Signature and 16 KiB alignment verify. All 47 runtime files and
+  four helper assets match their sources. The APK contains the updated reward
+  style and native IPv4/cache implementation markers.
+- The adaptation patch reproduces all 196 vendored files from 192 independently
+  verified originals. No desktop project, operator PC or physical phone was
+  accessed. No new emulator run is claimed for this revision; phone UI evidence
+  is browser-based and native reader/cache evidence uses isolated fixtures.
+
+The particular cause of the operator's missing IP was not observed directly.
+These checks establish the corrected retry and address-family behavior, not that
+all remote networks will answer. Original observations stay unknown or retained
+when a lookup fails, and the app now shows that distinction and retry information.
+
+Verified APK size: 197317720 bytes. SHA-256:
+`d1617feaa329e72ea78373b75147c593fa18fd39d2398f93bfdb0df232b3e19a`.

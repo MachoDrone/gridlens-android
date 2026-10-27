@@ -8,6 +8,7 @@ import type { Locator, Page } from "../vendor/gridlens/node_modules/playwright/i
 import { startAndroidRuntime, SESSION_COOKIE } from "../runtime/server.ts";
 import type { GpuSample, PcUpdate } from "../vendor/gridlens/src/fleet/pc-observations.ts";
 import type { JobHistoryRecord } from "../vendor/gridlens/src/fleet/job-history.ts";
+import { NOS_MINT } from "../vendor/gridlens/src/fleet/nos.ts";
 
 const first = "1".repeat(32), second = "1".repeat(31) + "2", third = "1".repeat(31) + "3";
 const gpuUuid = "GPU-00000000-1111-2222-3333-444444444444";
@@ -35,7 +36,14 @@ test("phone Fleet reads exact rewards and retained failures from the native cach
   const empty = async () => ({ hosts: [], nextRefreshAtMs: Date.now() + 60000 });
   const runtime = await startAndroidRuntime({ dataDirectory, directory: resolve("dist/runtime/web"), preferredPort: 0,
     providers: { metadataProvider: empty, nodeInfoProvider: empty, jobProvider: empty, queueProvider: empty,
-      solProvider: empty, nosProvider: empty, stakingProvider: empty } });
+      solProvider: empty, nosProvider: async addresses => {
+        const now = Date.now();
+        return { hosts: addresses.map(address => ({ address, tokenAccount: third, mint: NOS_MINT,
+          amount: "123456789", decimals: 6 as const, accountState: "initialized" as const,
+          provider: "Injected public RPC", endpoint: "https://rpc.example.invalid", contextSlot: 456,
+          blockTimeMs: now - 1000, checkedAtMs: now, validUntilMs: now + 180_000,
+          retained: false, error: null, retryAtMs: null })), nextRefreshAtMs: now + 120_000 };
+      }, stakingProvider: empty } });
   const origin = `http://127.0.0.1:${runtime.port}`;
   const native = { "X-GridLens-Token": runtime.token, "Content-Type": "application/json" };
   const browser = await playwright.chromium.launch({ headless: true,
@@ -95,10 +103,23 @@ test("phone Fleet reads exact rewards and retained failures from the native cach
     assert.equal(await rewardLink.getAttribute("target"), "_blank");
     assert.equal(await rewardLink.getAttribute("rel"), "noopener noreferrer");
     assert.match(await rewardLink.getAttribute("aria-label") ?? "", /123\.456789 NOS/);
-    assert.deepEqual(await rewardLink.evaluate(link => {
-      const style = getComputedStyle(link);
-      return { size: style.fontSize, weight: style.fontWeight, color: style.color, decoration: style.textDecorationLine };
-    }), { size: "11px", weight: "600", color: "rgb(22, 101, 52)", decoration: "none" });
+    const nosValue = row(page, first).locator('.nos-value');
+    await exactText(nosValue, "123");
+    const contrast = await rewardLink.evaluate(link => {
+      const reward = getComputedStyle(link);
+      const nos = getComputedStyle(link.closest('tr')!.querySelector('.nos-value')!);
+      const luminance = (color: string): number => color.match(/[\d.]+/g)!.slice(0, 3).map(Number)
+        .map(value => value / 255).map(value => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4)
+        .reduce((total, value, index) => total + value * [0.2126, 0.7152, 0.0722][index]!, 0);
+      return { rewardSize: reward.fontSize, nosSize: nos.fontSize, rewardWeight: reward.fontWeight,
+        nosWeight: nos.fontWeight, decoration: reward.textDecorationLine, nosColor: nos.color,
+        relativeBrightness: luminance(reward.color) / luminance(nos.color) };
+    });
+    assert.equal(contrast.rewardSize, contrast.nosSize);
+    assert.equal(contrast.rewardWeight, contrast.nosWeight, "bold rewards must not offset the darker green");
+    assert.equal(contrast.nosColor, "rgb(21, 128, 61)", "NOS keeps its existing current-reading color");
+    assert.equal(contrast.decoration, "none");
+    assert.ok(contrast.relativeBrightness <= 0.55, "current rewards must be visibly darker than a current NOS balance");
     assert.deepEqual(await row(page, first).locator('td[data-col="pc"] button').evaluate(button => {
       const style = getComputedStyle(button), cell = getComputedStyle(button.parentElement!);
       return { size: style.fontSize, cellSize: cell.fontSize, weight: style.fontWeight, colorMatchesCell: style.color === cell.color };
@@ -109,6 +130,11 @@ test("phone Fleet reads exact rewards and retained failures from the native cach
     assert.equal(await page.locator("#mobile-enable-monitoring").getAttribute("href"), `/mobile/monitoring?fleet=${fleetId}`);
     assert.equal(await page.locator("#mobile-enable-monitoring").innerText(), "Enable / repair monitoring");
     assert.equal(await page.evaluate(() => document.cookie), "", "native token remains HttpOnly");
+    await row(page, third).locator('td[data-col="ip"] button').click();
+    assert.match(await page.locator("#info-dialog").innerText(), /No public IP check result is available yet/);
+    assert.doesNotMatch(await page.locator("#info-dialog").innerText(), /lookup did not succeed|Public IP attempt/,
+      "no observation must not be presented as a failed attempt or an authorization denial");
+    await page.locator("#close-info").click();
     const ip = row(page, first).locator('td[data-col="ip"]');
     await exactText(ip, "•");
     await page.locator('#ip-display-toggle').click();
@@ -179,6 +205,10 @@ test("phone Fleet reads exact rewards and retained failures from the native cach
     await exactText(ip, "8.8.4.4 / 192.168.9.42");
     await ip.locator("button").click();
     assert.match(await page.locator("#info-dialog").innerText(), /Retained public IP: 8\.8\.4\.4/);
+    assert.match(await page.locator("#info-dialog").innerText(), /public IP lookup did not succeed/);
+    assert.match(await page.locator("#info-dialog").innerText(), /Public IP attempt/);
+    assert.match(await page.locator("#info-dialog").innerText(), /eligible to retry after one minute/);
+    assert.match(await page.locator("#info-dialog").innerText(), /PC monitoring: authorization required/);
     await page.locator("#close-info").click();
     await page.reload();
     await exactText(row(page, first).locator('td[data-col="ip"]'), "8.8.4.4 / 192.168.9.42");

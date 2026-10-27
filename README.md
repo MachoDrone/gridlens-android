@@ -8,18 +8,26 @@ continues independently.
 
 **[Download the signed Android APK](https://github.com/MachoDrone/gridlens-android-releases/releases/latest/download/gridlens-android.apk)**
 
-**Version 0.2.5** makes Rewards to claim a darker green than NOS and moves an
-approved APK download into a bounded Android foreground service. Downloads can
-continue while you switch screens; progress shows downloaded MB / total MB and
-percentage. Returning to the app restores the transfer state, and installation
-still needs your action. Installed version and update-check status stay visible.
+**Version 0.2.6** makes Rewards to claim clearly darker than NOS using the same
+regular text weight. Public-IP checks prefer the external IPv4 address used by
+NAT networks, with IPv6 fallback. Failed lookups normally retry after one minute
+instead of staying cached for 30 minutes, while honoring provider-requested waits.
+IP details show received readings, failed
+attempts and monitoring status separately.
+
+The background-download improvements from 0.2.5 remain included: approved downloads
+can continue across screen changes and show downloaded MB / total MB and percent.
+Installation still needs your action. Installed version stays visible.
 
 The Fleet columns match the reference Fleet column presentation: PC uses the
 normal table text size; IP cycles hidden → public/private → public suffix → private
 suffix; Rewards to claim uses rounded whole NOS links to the host’s Nosana page.
 Exact amounts still drive sorting and remain in details. Enabled PC monitoring
 now checks public egress from a verified node using ipify and reads the PC’s
-private interface address, with one shared lookup per PC every 30 minutes.
+private interface address. Successful public-IP readings are shared per PC for
+30 minutes; failed attempts normally become eligible to retry after one minute while the
+saved fleet is open and its monitoring is enabled.
+Longer provider-requested waits are honored.
 The phone’s IP is never substituted, and old readings keep their source times.
 
 Open a saved fleet and choose **Enable / repair monitoring** once if it is not

@@ -96,7 +96,7 @@ const COLUMNS = [
   ["stakedNos", "Staked NOS", "Toggle between a dull-green checkmark / red lowercase x and the actual / required NOS amounts. A current checkmark means exact vault NOS meets the current market’s displayed NOS target, including verified 0 / 0; x means it is below that target. Amount view rounds to whole NOS and uses bright green or red for the actual amount. Exact amounts drive sorting and comparison. This does not establish full market eligibility. Amounts still releasing during unstaking remain included; details distinguish duration-weighted xNOS. Shared public RPC checks every 30 minutes; readings expire after 35 minutes. Failed or expired comparisons stay gray; an unknown comparison is a dash."],
   ["status", "Status", "Reported Nosana classification. ONBOARDED is displayed as COMMUNITY (yellow C); REJECTED as red R; PREMIUM as green P. Details preserve the raw response. This does not establish container health or current job activity."],
   ["pc", "PC", mobileScenarios.enabled ? "PC Name reported through verified SSH discovery. Tap for saved computer details. Rescan refreshes this dated inventory; public Nosana refresh does not." : "The sample PC that owns this host. Select a PC cell for the row’s observation details."],
-  ["ip", "IP", mobileScenarios.enabled ? "IP Addresses reported through verified SSH discovery. Cycle hidden, full public/private, public last octet and private last octet, matching the reference display without leading dots. IPv6 stays complete. Full addresses drive sorting. Details list every reported interface address; Enabled monitoring adds a dated public egress IP and reported private interface IP. NAT or a PC-side VPN can affect the public address; the phone’s own IP is never substituted." : "Toggle between hidden (•), full global / internal addresses, global last octet and internal last octet. Compact IPv4 values include the leading dot, such as .102. IPv6 stays complete. Sorting always uses the full internal address. These are documentation-only sample addresses, not links or reachable PCs."],
+  ["ip", "IP", mobileScenarios.enabled ? "IP Addresses reported through verified SSH discovery. Cycle hidden, full public/private, public last octet and private last octet, matching the reference display without leading dots. IPv6 stays complete. Full addresses drive sorting. Enabled monitoring checks the external IPv4 address used by a NAT connection, with IPv6 fallback. Details show the original address/check times and any failed lookup. A PC-side VPN can change the outward address; the phone’s own IP is never substituted." : "Toggle between hidden (•), full global / internal addresses, global last octet and internal last octet. Compact IPv4 values include the leading dot, such as .102. IPv6 stays complete. Sorting always uses the full internal address. These are documentation-only sample addresses, not links or reachable PCs."],
   ["hostAddress", "Host Address", "A supplied public Nosana host address. Toggle between the first five characters (default) and the full address. Both views link to the same full address in Nosana Explorer, and sorting always uses the full address. Supplied addresses do not establish current host status or any measurements."],
   ["sol", "SOL", "Confirmed SOL balance from public mainnet RPC, checked best effort every 30 seconds while visible. Three decimals are rounded down for display; exact lamports and provenance are in details and drive sorting. Failed or 60-second-old readings remain gray. Missing accounts remain unknown; verified zero remains zero."],
   ["api", "API", "Last confirmed API result from Node Info, separate from State. Online stays green and Offline stays red. Bold means within its checking window; regular weight means stale or unconfirmed. Online uses a 30-second window. Offline stays bold until its recorded retry is overdue, including an eight-second request allowance. Details preserve original check times and the retry deadline. Amber Populating.. means no confirmed result is available yet. State OTHER can still be API Online. Timeouts and inconclusive checks do not overwrite the last confirmed result. This does not establish whether the PC or workload is running."],
@@ -2514,23 +2514,36 @@ function mobileAddresses(address: string): IPAddresses {
 
 function renderMobilePc(cell: HTMLTableCellElement, key: "pc" | "ip", address: string): void {
   const pc = savedFleet?.pcs[address];
+  const record = mobileMonitoring?.index.get(address);
   const value = rowValue(cell, "host-details");
   value.classList.add("host-details");
   const label = key === "pc" ? "PC Name" : "IP Addresses";
-  const observed = networkView(mobileMonitoring?.index.get(address), liveNow());
+  const observed = networkView(record, liveNow());
   const display = formatMobileIPDisplay(mobileAddresses(address), ipMode);
   setText(value, key === "pc" ? pc?.pcName ?? "—" : display.text);
   cell.dataset.pcObservedAt = String(pc?.observedAtMs ?? "");
   value.setAttribute("aria-label", `${label}: ${key === "pc" ? pc?.pcName ?? "unknown" : display.description}. Open saved discovery details.`);
+  const publicFact = observed.publicIp
+    ? `${observed.publicRetained ? "Retained public" : "Public"} IP: ${observed.publicIp}. ${checkedFact(observed.publicObservedAtMs, "Public IP checked")}`
+    : record?.network ? "Public IP is currently unavailable." : "No public IP check result is available yet.";
+  const privateFact = observed.privateIp
+    ? `${observed.privateRetained ? "Retained private" : "Private"} IP: ${observed.privateIp}. ${checkedFact(observed.privateObservedAtMs, "Private IP checked")}`
+    : mobilePcAddresses(pc).internal ? `Saved private IP: ${mobilePcAddresses(pc).internal}. ${checkedFact(pc?.observedAtMs, "Discovered")}`
+      : "No private IP reading is available.";
+  const monitoringFact = [record?.monitoring ? `PC monitoring: ${record.monitoring.status.replaceAll("-", " ")}.` : "No PC monitoring status is available yet.",
+    ...(record?.network?.status === "unavailable" ? ["The public IP lookup did not succeed.", checkedFact(record.network.observedAtMs, "Public IP attempt"),
+      "A failed lookup normally becomes eligible to retry after one minute. Provider-requested waits are honored. Enabled monitoring retries while this fleet is open; an offline PC or paused monitoring can delay it."] : [])].join(" ");
+  const discoveryFact = pc ? `${checkedFact(pc.observedAtMs, "Discovered")} Discovered addresses: ${pc.ipAddresses.join(", ")}.`
+    : "No saved PC discovery details are available.";
+  const method = "A NAT network can report its external public IP. Enabled monitoring checks from this PC while its fleet is open, preferring IPv4 with IPv6 fallback. A PC-side VPN can change the outward address.";
   rememberInfo(cell, {
     summary: [ink(key === "ip" ? "Public and private IP observations." : pc ? `PC: ${pc.pcName ?? "name unavailable"}.` : "PC name unavailable.", pc || key === "ip" ? "plain" : "warning")],
-    facts: [...(pc ? [checkedFact(pc.observedAtMs, "Discovered"), `Discovered addresses: ${pc.ipAddresses.join(", ")}.`] : []),
-      ...(observed.publicIp ? [`${observed.publicRetained ? "Retained public" : "Public"} IP: ${observed.publicIp}.`, checkedFact(observed.publicObservedAtMs, "Public IP checked")] : ["Public egress IP has not been returned by enabled PC monitoring."]),
-      ...(observed.privateIp ? [`${observed.privateRetained ? "Retained private" : "Private"} IP: ${observed.privateIp}.`, checkedFact(observed.privateObservedAtMs, "Private IP checked")] : []),
-      "Saved SSH discovery, not current reachability. Rescan refreshes PC inventory.",
-      ...(pc?.gpuTelemetry ? [`GPU recorder: ${pc.gpuTelemetry.collector.status}. Expand GPU conditions below Scenario for recorded signals.`] : []),
-      "Public egress is checked from a verified node on this PC using ipify; NAT or a PC-side VPN can affect it. The phone’s own IP is never used. Private IP comes from the PC’s reported interfaces; until that read succeeds, a dated discovery address may be shown."],
-    source: pc ? `Verified SSH identity digest: ${pc.pcId}\nObserved: ${new Date(pc.observedAtMs).toISOString()}` : "No saved machine-name observation is connected for this host.",
+    // The shared dialog shows four facts. Keep current IPs and failure/retry status
+    // in those visible slots; full discovery inventory remains in source details.
+    facts: key === "ip" ? [publicFact, privateFact, monitoringFact, method] : [discoveryFact, publicFact, privateFact, monitoringFact],
+    source: [discoveryFact, "PC name and discovered addresses keep their original discovery time. Enabled monitoring refreshes IP checks separately while this fleet is open.", method,
+      pc ? `Verified SSH identity digest: ${pc.pcId}\nObserved: ${new Date(pc.observedAtMs).toISOString()}` : "No saved machine-name observation is connected for this host.",
+      ...(pc?.gpuTelemetry ? [`GPU recorder: ${pc.gpuTelemetry.collector.status}. Expand GPU conditions below Scenario for recorded signals.`] : [])].join("\n"),
   }, value);
   value.onclick = () => openCellInfo(cell, label);
   if (!value.parentElement) cell.replaceChildren(value);

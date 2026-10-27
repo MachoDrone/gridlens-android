@@ -222,7 +222,7 @@
     {
       "path": "src/preview/main.ts",
       "sourceSha256": "14277fed44c31c870188eba752bb334cdd3420bea2500a1168c98ca51a557af0",
-      "sha256": "3c210c55b4972e5ac40975120610423ea038ad7d8d07ef3d7ae12ec4f663d0ea"
+      "sha256": "7fe55b19f64ff195eb8edec855e4d2c893aa1867c23eb420dea8a8494d67fd63"
     },
     {
       "path": "src/preview/online-roster.ts",
@@ -247,7 +247,7 @@
     {
       "path": "src/preview/styles.css",
       "sourceSha256": "4a72083cc6ac6185d98b1f71bcb59c87a13cff9e73f15ba6c8be0b311298000a",
-      "sha256": "4b1911ed05076f4cde82b22cff004a850b823a3c639a27cd8b0a90a2fb15f12c"
+      "sha256": "2845f9a5feb72db2fd4a67c3d383196fd4f0e00d749c541dc5f6c41e0b58d3e3"
     },
     {
       "path": "src/preview/table-scroll.ts",

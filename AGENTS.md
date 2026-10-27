@@ -55,10 +55,14 @@ secrets. Do not force-push. Keep the application ID and signing identity stable.
 
 Android PC text matches the normal table style: 11px, regular weight. IP cycles
 hidden, full public/private, public suffix and private suffix without leading
-dots; IPv6 stays complete. Rewards use rounded whole-NOS links in #166534, darker than NOS #15803d.
+dots; IPv6 stays complete. Rewards use rounded whole-NOS links in #0f5c2b with
+the same regular text weight as NOS #15803d, making the darker color visible.
 Exact reward amounts and source times remain unchanged for sorting and details;
 unknown is not zero. Public IP comes from the fixed native ipify read inside one
-verified node per PC, shared and cached for 30 minutes. Private addresses come
+verified node per PC, preferring external IPv4 with an IPv6 fallback. Successful
+public readings are shared for 30 minutes; failed attempts become eligible to
+retry after one minute while approved monitoring is active, subject to longer
+provider-requested waits. Private addresses come
 from PC interfaces. Never substitute the phone's IP or SSH ingress for measured
 public egress; preserve independent retained timestamps on failure.
 

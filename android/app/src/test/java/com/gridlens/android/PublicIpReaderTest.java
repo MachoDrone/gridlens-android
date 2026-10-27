@@ -59,4 +59,41 @@ public final class PublicIpReaderTest {
         assertNull(PublicIpReader.parse(json.replace("8.8.8.8", "127.0.0.1")));
         assertNull(PublicIpReader.parse(json.replace("node-egress-ipify", "phone-ip")));
     }
+    @Test public void unavailableIpv4UsesOneNativeControlledIpv6Fallback() {
+        List<String> commands = new ArrayList<>();
+        PublicIpReader.Observation result = PublicIpReader.read(BINDING, "10.0.0.1", false, (command, maxBytes, timeout) -> {
+            commands.add(command);
+            if (command.equals(PcMetadata.ADDRESSES_COMMAND)) return new PublicIpReader.Response(0, "10.0.0.1");
+            if (command.equals(PublicIpReader.command(BINDING, false, 4))) return new PublicIpReader.Response(PublicIpReader.NETWORK_FAILURE, "");
+            assertEquals(PublicIpReader.command(BINDING, false, 6), command);
+            return new PublicIpReader.Response(0, "2606:4700::1111\n");
+        }, () -> 1000);
+        assertEquals(3, commands.size()); assertNotNull(result.publicIp);
+        assertTrue(result.publicIp.contains(":")); assertEquals("10.0.0.1", result.privateIp);
+    }
+    @Test public void cancellationAndHttpRefusalNeverInitiateFamilyFallback() {
+        for (boolean cancelled : new boolean[]{false, true}) {
+            List<String> commands = new ArrayList<>();
+            PublicIpReader.Observation result = PublicIpReader.read(BINDING, "10.0.0.1", false, (command, maxBytes, timeout) -> {
+                commands.add(command);
+                if (command.equals(PcMetadata.ADDRESSES_COMMAND)) return new PublicIpReader.Response(0, "10.0.0.1");
+                if (cancelled) throw new java.io.IOException("Captured network cancelled");
+                return new PublicIpReader.Response(PublicIpReader.HTTP_FAILURE, "retry-seconds:3600\n");
+            }, () -> 1000);
+            assertEquals(2, commands.size()); assertNull(result.publicIp); assertEquals("10.0.0.1", result.privateIp);
+            assertEquals(cancelled ? 0 : 3_601_000, result.retryAtMs);
+            assertFalse(result.json().contains("retry")); // Native policy metadata never changes the server contract.
+        }
+    }
+    @Test public void capturedNetworkRevocationAfterIpv4FailurePreventsFallbackDispatch() {
+        java.util.concurrent.atomic.AtomicBoolean owned = new java.util.concurrent.atomic.AtomicBoolean(true);
+        java.util.concurrent.atomic.AtomicInteger externalRequests = new java.util.concurrent.atomic.AtomicInteger();
+        PublicIpReader.Observation result = PublicIpReader.read(BINDING, "10.0.0.1", false, (command, maxBytes, timeout) -> {
+            if (!owned.get()) throw new java.io.IOException("Captured network no longer owned");
+            if (command.equals(PcMetadata.ADDRESSES_COMMAND)) return new PublicIpReader.Response(0, "10.0.0.1");
+            externalRequests.incrementAndGet(); owned.set(false);
+            return new PublicIpReader.Response(PublicIpReader.NETWORK_FAILURE, "");
+        }, () -> 1000);
+        assertEquals(1, externalRequests.get()); assertNull(result.publicIp); assertEquals("10.0.0.1", result.privateIp);
+    }
 }

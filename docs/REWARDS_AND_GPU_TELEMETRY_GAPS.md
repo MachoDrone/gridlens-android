@@ -122,7 +122,7 @@ route. The private address comes from reported PC interfaces. No wallet key,
 authorization header or private address is sent to ipify. The phone's connection
 is not used for this measurement.
 
-Each PC shares a persisted 30-minute lookup cache, including failures, across its
+In 0.2.3–0.2.5, each PC shared a persisted 30-minute lookup cache, including failures, across its
 hosts. Public and private parts retain separate timestamps; a failed or older
 part cannot renew or overwrite newer evidence. Saved values remain available as
 retained observations. Browser toggles and ordinary cache reads start no lookup.
@@ -139,15 +139,26 @@ NAT does not prevent an external public-IP lookup. The request runs inside a
 verified node on the PC, so the external service sees its translated outward
 address. Several PCs behind the same router can share that public address; a
 PC-side VPN or carrier NAT can affect which outward address is observed. The
-private interface address remains a separate value. The dual-stack ipify endpoint
-can also return a public IPv6 address.
+private interface address remains a separate value. From 0.2.6, the fixed lookup
+prefers external IPv4, with a bounded IPv6 fallback when IPv4 is unavailable.
 
 A missing public value is not evidence that NAT hides it from GridLens. Monitoring
 must be enabled and the lookup must succeed; failed or pending observations remain
-unknown, or retain the last value and original timestamp. Current lookup results,
-including failures, use the existing per-PC 30-minute cache. No developer-side
+unknown, or retain the last value and original timestamp. In 0.2.6 successful
+public readings keep the per-PC 30-minute cache, while failures normally become
+eligible to retry after one minute. Longer provider-requested waits are honored.
+This also applies to failed cache entries left by 0.2.5. No developer-side
 connection to operator PCs is needed or performed to determine those values.
 
-From 0.2.5, current Rewards to claim uses darker green #166534, distinct from NOS
-#15803d. Retained amounts keep the existing gray, and numeric precision, sorting,
-links and unknown-versus-zero behavior are unchanged.
+Version 0.2.5 used #166534 for current rewards but kept them at bold 600 weight
+against regular 400 NOS text. Version 0.2.6 uses #0f5c2b and the same regular weight
+as NOS #15803d. A phone-browser test compares both current values side by side;
+rewards have less than 55% of the NOS color's relative luminance. Retained amounts
+keep the existing gray, and numeric precision, sorting, links and unknown-versus-zero
+behavior are unchanged.
+
+IP details now distinguish a missing result from an actual failed attempt and show
+the original attempt time and reported monitoring status. Public/private readings
+and retry information occupy the dialog's four visible facts; the full saved
+discovery inventory remains in Source details. A native permission or connection
+failure is not inferred merely because the public value is unknown.

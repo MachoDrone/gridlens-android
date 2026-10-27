@@ -240,3 +240,23 @@ APK to the actual service while retaining its integrity and archive checks. It
 uses a disposable emulator and never installs the fixture APK. Production builds
 cannot enable that transport. See the dated verification entry for observed
 lifecycle results rather than assuming physical-device compatibility.
+
+## Reward contrast and NAT public-IP recovery in 0.2.6
+
+Current rewards use regular 400 weight, matching NOS, and #0f5c2b against NOS
+#15803d. The phone-browser fixture supplies both current values and compares their
+computed brightness and typography side by side. Retained rewards remain gray.
+
+The fixed PC-side public lookup prefers IPv4 and retains a bounded IPv6 fallback.
+It uses the already verified node and existing monitoring approval. Successful
+public readings keep their 30-minute per-PC cache; failures become eligible after
+60 seconds, including a failed record written by 0.2.5, unless the provider requested
+a longer wait. Viewing, retries and private
+address success cannot renew an older public-IP timestamp. Collection still stops
+when its native connection is cancelled and never substitutes the phone's IP.
+
+The shared information dialog displays four facts. IP details place public/private
+readings with their original times, actual failed-attempt information and reported
+monitoring status in those four visible slots. Full saved discovery inventory stays
+in Source details. Absence of a result does not imply a failed check or missing
+authorization, and retry eligibility is not a promise of network recovery.
