@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { PcObservations } from "../runtime/pc-observations.ts";
 import { startAndroidRuntime, SESSION_COOKIE } from "../runtime/server.ts";
-import { jobGpuConditions, MAX_GPU_SAMPLES, parseBinding, parseNodeGpu, parsePcUpdate, parseReward,
+import { jobGpuConditions, MAX_GPU_SAMPLES, networkView, parseBinding, parseNodeGpu, parsePcUpdate, parseReward,
   rewardAtoms, rewardView, REWARD_FRESH_MS } from "../vendor/gridlens/src/fleet/pc-observations.ts";
 import type { GpuSample, NodeBinding, NodeGpuObservation, PcObservation, PcUpdate, RewardObservation } from "../vendor/gridlens/src/fleet/pc-observations.ts";
 
@@ -247,6 +247,75 @@ test("an unsupported GPU path does not invalidate an independently successful re
   assert.equal(rewardView({ ...value, monitoring: { status: "paused", checkedAtMs: AT } }, AT).current, false);
 });
 
+test("GPU access requirements preserve valid reward evidence without weakening genuine denials or expiry", () => {
+  const update = parsePcUpdate({ ...rewardUpdate("0.000000"), monitoring: { status: "gpu-access-required", checkedAtMs: AT + 1000 } });
+  const value: PcObservation = { ...update, receivedAtMs: AT + 1000 };
+  assert.equal(value.monitoring?.status, "gpu-access-required");
+  assert.deepEqual(rewardView(value, AT + 1000), { amount: "0.000000", observedAtMs: AT, current: true, status: "ok" });
+  assert.equal(rewardView(value, AT - 1).current, false, "a future reward timestamp is never current");
+  assert.equal(rewardView(value, AT + REWARD_FRESH_MS).current, false, "GPU checks cannot extend reward freshness");
+  for (const status of ["credentials-required", "identity-changed", "authorization-required", "binding-changed", "paused", "unreachable", "network-unavailable"]) {
+    const blocked: PcObservation = { ...value, monitoring: { status, checkedAtMs: AT + 1000 } };
+    assert.equal(rewardView(blocked, AT + 1000).current, false, status);
+    assert.equal(rewardView(blocked, AT + 1000).observedAtMs, AT);
+  }
+  for (const status of ["authentication-failed", "identity-mismatch", "rate-limited", "unavailable"] as const) {
+    const failed: PcObservation = { ...value, rewards: { schema: 1, address: first, observedAtMs: AT + 1000, status }, lastGoodRewards: reward() };
+    assert.equal(rewardView(failed, AT + 1000).current, false, status);
+    assert.equal(rewardView(failed, AT + 1000).amount, "0.000000");
+    assert.equal(rewardView(failed, AT + 1000).observedAtMs, AT);
+  }
+});
+
+test("shared NAT addresses remain independent per host through GPU-only failures, IP failures and restart", async () => {
+  const value = await storeFixture();
+  const secondBinding: NodeBinding = { ...binding, pcId: "d".repeat(64), nodeContainerId: "c".repeat(64) };
+  try {
+    await value.store.update(fleet, [first, second], [
+      { ...rewardUpdate("0.000000"), monitoring: { status: "active", checkedAtMs: AT },
+        network: { schema: 1, source: "node-egress-ipify", status: "ok", observedAtMs: AT,
+          publicIp: "8.8.8.8", publicObservedAtMs: AT, privateIp: "192.168.1.20", privateObservedAtMs: AT } },
+      { ...rewardUpdate("3.125000", AT - 10_000, second), binding: secondBinding,
+        monitoring: { status: "active", checkedAtMs: AT },
+        network: { schema: 1, source: "node-egress-ipify", status: "ok", observedAtMs: AT - 10_000,
+          publicIp: "8.8.8.8", publicObservedAtMs: AT - 10_000, privateIp: "192.168.1.21", privateObservedAtMs: AT - 10_000 } },
+    ]);
+    value.advance(AT + 30_000);
+    await value.store.update(fleet, [first, second], [
+      { address: first, binding, monitoring: { status: "gpu-access-required", checkedAtMs: AT + 30_000 },
+        gpu: { ...gpu([], AT + 30_000, []), status: "unavailable", clockTrusted: false } },
+      { address: second, binding: secondBinding, monitoring: { status: "active", checkedAtMs: AT + 30_000 },
+        gpu: { ...gpu([sample(AT + 30_000)], AT + 30_000), address: second } },
+    ]);
+    const firstRecord = value.store.get(fleet, first)!;
+    const secondRecord = value.store.get(fleet, second)!;
+    assert.equal(rewardView(firstRecord, AT + 30_000).current, true);
+    assert.equal(firstRecord.rewards?.observedAtMs, AT);
+    assert.equal(secondRecord.rewards?.observedAtMs, AT - 10_000);
+    const listed = value.store.list(fleet, [first, second]);
+    assert.equal(listed.length, 2);
+    assert.deepEqual(listed.map(record => networkView(record, AT + 30_000).publicIp), ["8.8.8.8", "8.8.8.8"]);
+    assert.deepEqual(listed.map(record => networkView(record, AT + 30_000).privateIp), ["192.168.1.20", "192.168.1.21"]);
+    assert.deepEqual(listed.map(record => networkView(record, AT + 30_000).publicObservedAtMs), [AT, AT - 10_000]);
+
+    value.advance(AT + 60_000);
+    await value.store.update(fleet, [first, second], [{ address: first, binding,
+      monitoring: { status: "gpu-access-required", checkedAtMs: AT + 60_000 },
+      network: { schema: 1, source: "node-egress-ipify", status: "unavailable", observedAtMs: AT + 60_000,
+        publicIp: null, publicObservedAtMs: null, privateIp: "192.168.1.20", privateObservedAtMs: AT + 60_000 } }]);
+    const retained = networkView(value.store.get(fleet, first), AT + 60_000);
+    assert.equal(retained.publicIp, "8.8.8.8"); assert.equal(retained.publicObservedAtMs, AT);
+    assert.equal(retained.publicRetained, true); assert.equal(retained.privateObservedAtMs, AT + 60_000);
+    assert.deepEqual(value.store.get(fleet, second), secondRecord, "one host's failed lookup cannot alter another host behind the same NAT");
+    assert.equal(rewardView(value.store.get(fleet, first), AT + 60_000).current, true);
+    assert.equal(rewardView(value.store.get(fleet, first), AT + REWARD_FRESH_MS).current, false);
+    const reopened = await value.reload();
+    assert.deepEqual(reopened.get(fleet, first), value.store.get(fleet, first));
+    assert.deepEqual(reopened.get(fleet, second), secondRecord);
+    assert.equal(reopened.get(fleet, first)?.monitoring?.status, "gpu-access-required");
+  } finally { await value.close(); }
+});
+
 test("unended historical running jobs cannot acquire new GPU events without a current assignment", () => {
   const observation = recorded(gpu([sample(AT - 15_000, 0, 1), sample(AT)]));
   const running = { ...job, state: "RUNNING", timeEnd: null };
@@ -271,13 +340,16 @@ test("observation API permits native writes and scoped browser reads without inv
   try {
     const created = await (await mutate({ op: "create", name: "Observed", addresses: [first] })).json();
     const other = await (await mutate({ op: "create", name: "Separate", addresses: [second, third] })).json();
-    const payload = { schema: 1, fleetId: created.fleetId, updates: [{ ...rewardUpdate("4.000000"), gpu: gpu([sample(AT)]) }] };
+    const payload = { schema: 1, fleetId: created.fleetId, updates: [{ ...rewardUpdate("4.000000"), gpu: gpu([sample(AT)]),
+      monitoring: { status: "gpu-access-required", checkedAtMs: AT } }] };
     assert.equal((await fetch(origin + "/mobile/observations", { method: "POST", headers: browser, body: JSON.stringify(payload) })).status, 403);
     assert.equal((await fetch(origin + "/mobile/observations", { method: "POST", headers: { ...native, Origin: "https://untrusted.example" }, body: JSON.stringify(payload) })).status, 403);
     assert.equal((await fetch(origin + "/mobile/observations", { method: "POST", headers: native, body: JSON.stringify(payload) })).status, 200);
     assert.equal((await fetch(origin + `/mobile/observations?fleet=${created.fleetId}`)).status, 403);
     const index = await (await fetch(origin + `/mobile/observations?fleet=${created.fleetId}`, { headers: browser })).json();
     assert.equal(index.hosts[0].rewards.amount, "4.000000"); assert.equal(index.hosts[0].gpu.sampleCount, 1);
+    assert.equal(index.hosts[0].monitoring.status, "gpu-access-required");
+    assert.equal(rewardView(index.hosts[0], AT).current, true);
     assert.equal("samples" in index.hosts[0].gpu, false);
     const detail = await (await fetch(origin + `/mobile/observations?fleet=${created.fleetId}&address=${first}`, { headers: browser })).json();
     assert.equal(detail.host.gpu.samples.length, 1);

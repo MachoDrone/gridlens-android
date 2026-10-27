@@ -31,6 +31,7 @@ public final class SshDiscoveryTest {
         final List<String> commands = Collections.synchronizedList(new ArrayList<>());
         final Map<String, String> outputs = new HashMap<>();
         final Map<String, Integer> exits = new HashMap<>();
+        final Set<String> stalled = new HashSet<>();
         final AtomicBoolean cancelled = new AtomicBoolean();
         Fixture() throws Exception {
             server = SshServer.setUpDefaultServer(); server.setHost("127.0.0.1"); server.setPort(0);
@@ -46,6 +47,7 @@ public final class SshDiscoveryTest {
                 public void setExitCallback(ExitCallback callback) { exit = callback; }
                 public void start(ChannelSession channel, Environment environment) throws IOException {
                     commands.add(command);
+                    if (stalled.contains(command)) return;
                     out.write(bytes(outputs.getOrDefault(command, ""))); out.flush();
                     exit.onExit(exits.getOrDefault(command, outputs.containsKey(command) ? 0 : 127));
                 }
@@ -386,6 +388,86 @@ public final class SshDiscoveryTest {
             result = SshDiscovery.monitor(fixture, fixture.candidate(), identity, credential, null, List.of(binding), null, null,
                     false, false, false, Map.of(), null, current -> {}, () -> true, denied);
             assertEquals("binding-changed", result.get(0).status); assertNull(result.get(0).networkJson);
+        }
+    }
+    @Test public void gpuDockerAccessFailurePreservesRewardsAndSharedPublicIpWithoutRejectingSshProfile() throws Exception {
+        NodeBinding first = new NodeBinding("docker", null, "a".repeat(64), ADDRESS);
+        NodeBinding second = new NodeBinding("docker", null, "b".repeat(64), "1".repeat(31) + "2");
+        String gpu = "GPU-00000000-1111-2222-3333-444444444444";
+        try (Fixture fixture = new Fixture(); SshDiscovery.Credential credential = new SshDiscovery.Credential("operator", bytes("fixture-password"), null, null)) {
+            RewardsReader.Binding one = monitoringRewardFixture(fixture, first, "ok");
+            RewardsReader.Binding two = monitoringRewardFixture(fixture, second, "ok");
+            for (NodeBinding binding : List.of(first, second)) {
+                fixture.outputs.put(DiscoveryPolicy.bindingGpuCommand(binding, false), gpu + "\n");
+                fixture.outputs.put(DiscoveryPolicy.bindingGpuInfoCommand(binding, false), gpu + "\n");
+                NodeGpuCollector collector = new NodeGpuCollector(binding, binding.nodeContainerId, List.of(gpu), null);
+                fixture.outputs.put(collector.listContainer(false), "");
+                fixture.exits.put(collector.listContainer(false), 1); // Docker recorder access, after successful SSH/node reads.
+            }
+            AtomicBoolean blocked = new AtomicBoolean();
+            String network = new PublicIpReader.Observation(1000, "8.8.8.8", 1000L, "10.0.0.12", 1000L).json();
+            List<SshDiscovery.MonitoringResult> results = SshDiscovery.monitor(fixture, fixture.candidate(), SshDiscovery.inspectIdentity(fixture, fixture.candidate()), credential,
+                    null, List.of(first, second), "fixture-reward", "fixture-gpu", false, true, true, Map.of(), null,
+                    result -> { if (MonitoringPolicy.suspendsCredentialProfile(result.status)) { blocked.set(true); fixture.cancelled.set(true); } },
+                    () -> !blocked.get(), (binding, runner) -> PublicIpReader.parse(network));
+            assertFalse("Recorder access must not cancel every PC sharing this SSH credential", blocked.get());
+            assertEquals(2, results.size()); assertEquals(1, fixture.passwords.get());
+            assertEquals(fixture.outputs.get(RewardsReader.readCommand("fixture-reward", one, false)), results.get(0).rewardsJson);
+            assertEquals(fixture.outputs.get(RewardsReader.readCommand("fixture-reward", two, false)), results.get(1).rewardsJson);
+            for (SshDiscovery.MonitoringResult result : results) {
+                assertEquals("gpu-access-required", result.status); assertFalse(result.suspendRewards);
+                assertEquals(network, result.networkJson); assertTrue(result.gpuJson.contains("unavailable"));
+            }
+        }
+    }
+    @Test(timeout = 25000) public void gpuCommandTimeoutCannotDiscardEarlierSuccessfulRewardsOrNetworkReading() throws Exception {
+        NodeBinding binding = new NodeBinding("docker", null, "a".repeat(64), ADDRESS);
+        try (Fixture fixture = new Fixture(); SshDiscovery.Credential credential = new SshDiscovery.Credential("operator", bytes("fixture-password"), null, null)) {
+            RewardsReader.Binding reward = monitoringRewardFixture(fixture, binding, "ok");
+            fixture.stalled.add(DiscoveryPolicy.bindingGpuCommand(binding, false));
+            String expected = fixture.outputs.get(RewardsReader.readCommand("fixture-reward", reward, false));
+            String network = new PublicIpReader.Observation(1000, "8.8.8.8", 1000L, "10.0.0.12", 1000L).json();
+            SshDiscovery.MonitoringResult result = SshDiscovery.monitor(fixture, fixture.candidate(), SshDiscovery.inspectIdentity(fixture, fixture.candidate()), credential,
+                    null, List.of(binding), "fixture-reward", "fixture-gpu", false, true, true, Map.of(), null, ignored -> {}, () -> true,
+                    (node, runner) -> PublicIpReader.parse(network)).get(0);
+            assertEquals(expected, result.rewardsJson); assertEquals(network, result.networkJson);
+            assertEquals("active", result.status); assertFalse(result.suspendRewards); assertTrue(result.gpuJson.contains("unavailable"));
+        }
+    }
+    @Test public void cancelledAuthenticationCannotPersistARejectedSharedCredential() throws Exception {
+        NodeBinding binding = new NodeBinding("docker", null, "a".repeat(64), ADDRESS);
+        try (Fixture fixture = new Fixture(); SshDiscovery.Credential credential = new SshDiscovery.Credential("operator", bytes("fixture-password"), null, null)) {
+            SshDiscovery.Identity identity = SshDiscovery.inspectIdentity(fixture, fixture.candidate());
+            fixture.server.setPasswordAuthenticator((user, password, session) -> {
+                fixture.passwords.incrementAndGet(); fixture.cancelled.set(true); return false;
+            });
+            AtomicInteger rejectedProfile = new AtomicInteger();
+            SshDiscovery.MonitoringResult result = SshDiscovery.monitor(fixture, fixture.candidate(), identity, credential, null, List.of(binding),
+                    null, null, false, false, false, Map.of(), null,
+                    event -> { if (MonitoringPolicy.suspendsCredentialProfile(event.status)) rejectedProfile.incrementAndGet(); }, () -> true).get(0);
+            assertEquals("unreachable", result.status); assertEquals(0, rejectedProfile.get()); assertTrue(fixture.commands.isEmpty());
+        }
+    }
+    @Test public void sharedNetworkReadingIsAttachedOnlyToCurrentlyVerifiedNodeBindings() throws Exception {
+        NodeBinding changed = new NodeBinding("docker", null, "a".repeat(64), ADDRESS);
+        NodeBinding verified = new NodeBinding("docker", null, "b".repeat(64), "1".repeat(31) + "2");
+        for (List<NodeBinding> order : List.of(List.of(changed, verified), List.of(verified, changed))) {
+            try (Fixture fixture = new Fixture(); SshDiscovery.Credential credential = new SshDiscovery.Credential("operator", bytes("fixture-password"), null, null)) {
+                for (NodeBinding binding : order) {
+                    fixture.outputs.put(DiscoveryPolicy.bindingInspectionCommand(binding, false), binding.nodeContainerId + "\ttrue\tnosana/nosana-node:latest\tbridge\n");
+                    fixture.outputs.put(DiscoveryPolicy.bindingAddressCommand(binding, false), verified.address + "\n");
+                }
+                AtomicInteger lookups = new AtomicInteger();
+                String network = new PublicIpReader.Observation(1000, "8.8.8.8", 1000L, "10.0.0.12", 1000L).json();
+                List<SshDiscovery.MonitoringResult> results = SshDiscovery.monitor(fixture, fixture.candidate(), SshDiscovery.inspectIdentity(fixture, fixture.candidate()), credential,
+                        null, order, null, null, false, false, false, Map.of(), null, ignored -> {}, () -> true,
+                        (binding, runner) -> { assertSame(verified, binding); lookups.incrementAndGet(); return PublicIpReader.parse(network); });
+                assertEquals(1, lookups.get());
+                for (SshDiscovery.MonitoringResult result : results) {
+                    if (result.binding == verified) assertEquals(network, result.networkJson);
+                    else { assertEquals("binding-changed", result.status); assertNull("A changed node cannot acquire this PC's current IP timestamp", result.networkJson); }
+                }
+            }
         }
     }
 }

@@ -155,6 +155,100 @@ final class MonitoringController {
             } catch (Exception ignored) { } });
         }
     }
+    interface RecoveryProgress { void changed(int completed, int total, int verified, int skipped); }
+    static final class RecoveryReport {
+        final int eligible, checked, verified, resumed, skipped;
+        final boolean cancelled;
+        final String failures;
+        RecoveryReport(int eligible, int checked, int verified, int resumed, int skipped, boolean cancelled, String failures) {
+            this.eligible = eligible; this.checked = checked; this.verified = verified; this.resumed = resumed; this.skipped = skipped; this.cancelled = cancelled;
+            this.failures = failures;
+        }
+    }
+    /** Explicit user retry only. Verifies existing SSH/node bindings without any source/helper read. */
+    RecoveryReport checkSavedConnections(String fleetId, DiscoveryNetwork network, java.util.function.BooleanSupplier permitted,
+            RecoveryProgress progress) throws Exception {
+        if (storageBlocked) throw new IllegalStateException("Monitoring permission storage needs recovery");
+        Set<String> roster = currentRoster(fleetId);
+        List<JSONObject> targets = new ArrayList<>();
+        JSONArray all = store.monitoringTargets();
+        for (int i = 0; i < all.length(); i++) {
+            JSONObject target = all.getJSONObject(i);
+            if (!fleetId.equals(target.getString("fleetId")) || !MonitoringRecovery.eligible(target.optBoolean("approved"), target.optBoolean("paused"),
+                    target.optString("status"), target.optBoolean("aliasReplaced"))) continue;
+            validateTarget(target);
+            if (!recoveryBindings(target, roster).isEmpty()) targets.add(target);
+        }
+        java.util.concurrent.atomic.AtomicInteger completed = new java.util.concurrent.atomic.AtomicInteger(), verified = new java.util.concurrent.atomic.AtomicInteger(), skipped = new java.util.concurrent.atomic.AtomicInteger();
+        Object progressLock = new Object();
+        progress.changed(0, targets.size(), 0, 0);
+        List<MonitoringRecovery.Result<JSONObject>> results = MonitoringRecovery.check(targets, target -> target.optString("credentialId"), target -> {
+            if (!permitted.getAsBoolean() || network.isCancelled()) return "unreachable";
+            JSONObject credential;
+            try { credential = store.credential(target.getString("credentialId")); }
+            catch (Exception unavailable) { return "credentials-required"; }
+            if (credential == null) return "credentials-required";
+            DiscoveryPolicy.Candidate candidate = new DiscoveryPolicy.Candidate(target.getString("address"), target.getInt("port"), "");
+            if (!target.getString("keyBase64").equals(store.trustedKey(target.getString("profileId"), candidate.endpointKey()))) return "identity-changed";
+            List<NodeBinding> bindings = recoveryBindings(target, roster);
+            byte[] sudo = target.optBoolean("sudoApproved") ? target.optString("sudoPassword", "").getBytes(StandardCharsets.UTF_8) : null;
+            try (SshDiscovery.Credential login = DiscoveryController.decodeCredential(credential)) {
+                List<SshDiscovery.MonitoringResult> readings = SshDiscovery.monitor(network, candidate,
+                        new SshDiscovery.Identity(target.getString("keyBase64"), target.getString("algorithm")), login, sudo,
+                        bindings, null, null, false, false, false, Collections.emptyMap());
+                String outcome = "active";
+                if (readings.size() != bindings.size()) return "binding-changed";
+                Set<String> checked = new HashSet<>();
+                for (SshDiscovery.MonitoringResult reading : readings) {
+                    if (reading.rewardsJson != null || reading.gpuJson != null || reading.networkJson != null) return "unsupported";
+                    boolean known = false;
+                    for (NodeBinding expected : bindings) if (expected.address.equals(reading.binding.address) && expected.key().equals(reading.binding.key())) known = true;
+                    if (!known || !checked.add(reading.binding.address)) return "binding-changed";
+                    if ("credentials-required".equals(reading.status)) return "credentials-required";
+                    if (!"active".equals(reading.status)) outcome = reading.status;
+                }
+                return outcome;
+            } finally { if (sudo != null) Arrays.fill(sudo, (byte) 0); }
+        }, () -> !permitted.getAsBoolean() || network.isCancelled(), result -> {
+            try {
+                if (result.attempted && "credentials-required".equals(result.status)) blockCredentialProfile(result.target);
+                if (result.attempted && !"active".equals(result.status)) store.recordConnectionCheckFailure(result.target, result.status, System.currentTimeMillis());
+                if (result.attempted && ("identity-changed".equals(result.status) || "binding-changed".equals(result.status)))
+                    for (NodeBinding binding : recoveryBindings(result.target, roster)) {
+                        try { postObservation(fleetId, observation(result.target, binding, result.status)); }
+                        catch (Exception unavailable) { /* The native status still records the verified failure. */ }
+                    }
+                synchronized (progressLock) {
+                    if (result.attempted && "active".equals(result.status)) verified.incrementAndGet();
+                    if (!result.attempted) skipped.incrementAndGet();
+                    progress.changed(completed.incrementAndGet(), targets.size(), verified.get(), skipped.get());
+                }
+            } catch (Exception failure) { storageBlocked = true; throw new IllegalStateException("The connection check could not save its result"); }
+        }, network::cancel);
+        int checked = 0;
+        for (MonitoringRecovery.Result<JSONObject> result : results) if (result.attempted) checked++;
+        java.util.Map<String, Integer> failures = new java.util.LinkedHashMap<>();
+        for (MonitoringRecovery.Result<JSONObject> result : results) if (result.attempted && !"active".equals(result.status)) failures.merge(result.status, 1, Integer::sum);
+        StringBuilder summary = new StringBuilder();
+        for (java.util.Map.Entry<String, Integer> failure : failures.entrySet()) summary.append(" ").append(failure.getValue()).append(" ").append(failure.getKey().replace('-', ' ')).append(".");
+        if (!permitted.getAsBoolean() || network.isCancelled()) return new RecoveryReport(targets.size(), checked, verified.get(), 0, skipped.get(), true, summary.toString());
+        JSONArray expected = new JSONArray(MonitoringRecovery.verified(results, target -> target.optString("credentialId")));
+        JSONArray resumed = store.resumeVerifiedConnections(expected, () -> permitted.getAsBoolean() && !network.isCancelled());
+        for (int i = 0; i < resumed.length(); i++) {
+            JSONObject target = resumed.getJSONObject(i);
+            blockedCredentialProfiles.remove(target.getString("credentialId"));
+            for (NodeBinding binding : recoveryBindings(target, roster)) {
+                try { postObservation(fleetId, observation(target, binding, "active")); }
+                catch (Exception unavailable) { /* Next approved read will refresh the local display; source timestamps are untouched. */ }
+            }
+        }
+        return new RecoveryReport(targets.size(), checked, verified.get(), resumed.length(), skipped.get(), false, summary.toString());
+    }
+    private static List<NodeBinding> recoveryBindings(JSONObject target, Set<String> roster) throws Exception {
+        List<NodeBinding> bindings = new ArrayList<>(); JSONArray saved = target.getJSONArray("bindings");
+        for (int i = 0; i < saved.length(); i++) { NodeBinding value = binding(saved.getJSONObject(i)); if (roster.contains(value.address)) bindings.add(value); }
+        return bindings;
+    }
     void selectedScenario(String scenario) {
         String next = scenario != null && scenario.matches("fleet:[a-f0-9-]{36}") ? scenario.substring(6) : null;
         if (!java.util.Objects.equals(next, selectedFleet)) { cancelActive(); selectedFleet = next; }

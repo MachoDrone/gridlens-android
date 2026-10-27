@@ -160,6 +160,55 @@ final class DiscoveryStore {
         JSONArray targets = credentials().optJSONArray("monitoringTargets");
         return targets == null ? new JSONArray() : new JSONArray(targets.toString());
     }
+    /** Resume only the unchanged approval that was explicitly checked; source policy fields survive. */
+    synchronized JSONArray resumeVerifiedConnections(JSONArray expected, java.util.function.BooleanSupplier stillAuthorized) throws Exception {
+        JSONArray resumed = new JSONArray();
+        if (!stillAuthorized.getAsBoolean()) return resumed;
+        JSONObject candidate = new JSONObject(credentials().toString());
+        JSONArray targets = candidate.optJSONArray("monitoringTargets");
+        if (targets == null) return resumed;
+        for (int i = 0; i < targets.length(); i++) {
+            JSONObject current = targets.getJSONObject(i);
+            if (!MonitoringRecovery.eligible(current.optBoolean("approved"), current.optBoolean("paused"), current.optString("status"), current.optBoolean("aliasReplaced"))) continue;
+            for (int j = 0; j < expected.length(); j++) {
+                JSONObject prior = expected.getJSONObject(j);
+                if (!sameRecoveryApproval(current, prior)) continue;
+                String endpoint = new DiscoveryPolicy.Candidate(current.getString("address"), current.getInt("port"), "").endpointKey();
+                if (!current.getString("keyBase64").equals(trustedKey(current.getString("profileId"), endpoint))
+                        || credential(current.getString("credentialId")) == null) continue;
+                // SSH recovery never renews source authorization: a late denial from that
+                // same source approval must still apply. Only the recovery receipt rotates.
+                current.put("paused", false).put("status", "active").put("recoveryGeneration", UUID.randomUUID().toString())
+                        .put("lastConnectionCheckStatus", "active").put("lastConnectionCheckAtMs", System.currentTimeMillis());
+                resumed.put(new JSONObject(current.toString())); break;
+            }
+        }
+        if (!stillAuthorized.getAsBoolean()) return new JSONArray();
+        if (resumed.length() > 0) saveCredentials(candidate);
+        return resumed;
+    }
+    private static boolean sameRecoveryApproval(JSONObject current, JSONObject expected) throws Exception {
+        for (String key : new String[]{"id", "fleetId", "pcId", "authorizationId", "credentialId", "profileId", "address", "keyBase64", "algorithm"})
+            if (!current.getString(key).equals(expected.getString(key))) return false;
+        return current.getInt("port") == expected.getInt("port")
+                && current.optString("recoveryGeneration").equals(expected.optString("recoveryGeneration"))
+                && current.getJSONArray("bindings").toString().equals(expected.getJSONArray("bindings").toString())
+                && current.optBoolean("sudoApproved") == expected.optBoolean("sudoApproved")
+                && current.optString("sudoPassword").equals(expected.optString("sudoPassword"));
+    }
+    synchronized void recordConnectionCheckFailure(JSONObject expected, String status, long checkedAtMs) throws Exception {
+        if (!java.util.Arrays.asList("credentials-required", "identity-changed", "binding-changed", "unreachable", "unsupported").contains(status)) return;
+        JSONObject candidate = new JSONObject(credentials().toString());
+        JSONArray targets = candidate.optJSONArray("monitoringTargets"); if (targets == null) return;
+        for (int i = 0; i < targets.length(); i++) {
+            JSONObject current = targets.getJSONObject(i);
+            if (!MonitoringRecovery.eligible(current.optBoolean("approved"), current.optBoolean("paused"), current.optString("status"), current.optBoolean("aliasReplaced"))
+                    || !sameRecoveryApproval(current, expected)) continue;
+            current.put("lastConnectionCheckStatus", status).put("lastConnectionCheckAtMs", checkedAtMs);
+            if ("identity-changed".equals(status) || "binding-changed".equals(status)) current.put("status", status);
+            saveCredentials(candidate); return;
+        }
+    }
     synchronized long rewardsRetryAtMs() { return state.optLong("rewardsRetryAtMs", 0); }
     synchronized void delayRewardsUntil(long until) throws Exception {
         if (until <= rewardsRetryAtMs()) return;

@@ -8,12 +8,21 @@ continues independently.
 
 **[Download the signed Android APK](https://github.com/MachoDrone/gridlens-android-releases/releases/latest/download/gridlens-android.apk)**
 
-**Version 0.2.6** makes Rewards to claim clearly darker than NOS using the same
-regular text weight. Public-IP checks prefer the external IPv4 address used by
-NAT networks, with IPv6 fallback. Failed lookups normally retry after one minute
-instead of staying cached for 30 minutes, while honoring provider-requested waits.
-IP details show received readings, failed
-attempts and monitoring status separately.
+**Version 0.2.7** keeps all known Rewards to claim amounts dark green, including
+retained readings. A small clock (◷) marks an older reading; its original time and
+status remain in the amount's description. Unknown amounts remain a dash.
+
+A GPU recorder permission problem no longer pauses saved SSH logins or discards
+successful rewards and IP readings. Cancelled connection attempts are also kept
+separate from rejected credentials. If an earlier version paused your saved
+connections, choose **Check saved connections** in the fleet. The app checks its
+saved trusted endpoints and resumes previously approved monitoring only after
+verification. This does not rescan the network or reauthorize denied wallet reads.
+
+The IP column shows external/public and internal/private addresses. PCs behind
+the same NAT router can all display the same public address. Public-IP checks
+prefer external IPv4, with IPv6 fallback; failed lookups normally retry after one
+minute while honoring longer provider-requested waits.
 
 The background-download improvements from 0.2.5 remain included: approved downloads
 can continue across screen changes and show downloaded MB / total MB and percent.

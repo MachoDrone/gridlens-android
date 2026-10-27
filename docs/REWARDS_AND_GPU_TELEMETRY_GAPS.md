@@ -130,7 +130,7 @@ retained observations. Browser toggles and ordinary cache reads start no lookup.
 Rewards are rounded to the nearest whole NOS using integer arithmetic, styled in
 reference green and linked to host.nosana.com. Exact six-decimal NOS remains in
 accessible details and controls sorting, including amounts that round to the
-same number. Retained amounts stay gray. Verified zero has a zero link; an
+same number. Through 0.2.6 retained amounts stayed gray. Verified zero has a zero link; an
 unknown amount stays a dash with no invented value.
 
 ## NAT and the public address
@@ -153,12 +153,44 @@ connection to operator PCs is needed or performed to determine those values.
 Version 0.2.5 used #166534 for current rewards but kept them at bold 600 weight
 against regular 400 NOS text. Version 0.2.6 uses #0f5c2b and the same regular weight
 as NOS #15803d. A phone-browser test compares both current values side by side;
-rewards have less than 55% of the NOS color's relative luminance. Retained amounts
-keep the existing gray, and numeric precision, sorting, links and unknown-versus-zero
-behavior are unchanged.
+rewards have less than 55% of the NOS color's relative luminance. Version 0.2.6
+still forced retained amounts to gray; the next section describes its replacement.
+Numeric precision, sorting, links and unknown-versus-zero behavior are unchanged.
 
 IP details now distinguish a missing result from an actual failed attempt and show
 the original attempt time and reported monitoring status. Public/private readings
 and retry information occupy the dialog's four visible facts; the full saved
 discovery inventory remains in Source details. A native permission or connection
 failure is not inferred merely because the public value is unknown.
+
+## Android 0.2.7 — readings survive GPU failures, with explicit pause recovery
+
+Two native failure paths could prevent otherwise successful data from reaching
+the Fleet. GPU recorder Docker-access failure was mislabeled as rejected SSH
+credentials, pausing every PC sharing that profile and cancelling delivery of
+already-read public IP and rewards. A later GPU command exception could also
+discard a successfully read reward. Cancelled authentication could independently
+be mistaken for a credential rejection when the SSH library reported Auth cancel.
+
+GPU access now has its own non-pausing status. Completed reward and public-IP
+observations survive a GPU failure with their original times; genuine SSH denial
+and changed identities keep their existing restrictions. Native cancellation is
+not treated as a credential rejection. This repairs concrete failure paths; no
+developer connection to an operator PC is used to infer the phone's exact state.
+
+Earlier credential-required pauses did not preserve their cause. The app therefore
+offers Check saved connections for affected fleets. One explicit phone action
+verifies saved trusted endpoints and node identities, then resumes only matching,
+previously approved targets. It preserves revoked/manual pauses, changed trust,
+replaced aliases, reward denials and provider delays. It does not require a network
+scan or developer-side PC authorization.
+
+All known reward amounts now use the same dark green. A small clock (◷) identifies
+a retained reading whose current amount is unconfirmed; its description keeps
+the original timestamp and status. Unknown remains a dash. A GPU-only access
+failure does not mark a newly verified reward as stale.
+
+The external/public and internal/private IPs remain separate observations. Each
+verified PC may report the same external NAT address; neither the cache nor the
+table requires unique public IPs or hides duplicates. Regression fixtures cover
+two independently observed PCs sharing one public address.

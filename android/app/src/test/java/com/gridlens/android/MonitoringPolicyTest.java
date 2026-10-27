@@ -36,6 +36,8 @@ public final class MonitoringPolicyTest {
                 MonitoringPolicy.suspendsCredentialProfile("authorization-required"));
         assertFalse(MonitoringPolicy.suspendsCredentialProfile("unreachable"));
         assertFalse(MonitoringPolicy.suspendsCredentialProfile("identity-changed"));
+        assertFalse("GPU recorder permissions must not disable PC/source monitoring", MonitoringPolicy.pausesTarget("gpu-access-required"));
+        assertFalse("GPU recorder permissions are not rejected SSH credentials", MonitoringPolicy.suspendsCredentialProfile("gpu-access-required"));
     }
     @Test public void twoHundredPcFleetCannotBeStarvedByEarlyTargetsBecomingDueAgain() {
         java.util.Map<String, Long> attempts = new java.util.LinkedHashMap<>();

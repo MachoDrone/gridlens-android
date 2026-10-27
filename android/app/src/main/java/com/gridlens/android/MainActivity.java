@@ -208,9 +208,13 @@ public final class MainActivity extends Activity {
             @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 if (local(request.getUrl())) {
                     Uri destination = request.getUrl();
-                    if ("/mobile/discovery".equals(destination.getPath()) || "/mobile/select".equals(destination.getPath()) || "/mobile/monitoring".equals(destination.getPath())) {
+                    if ("/mobile/discovery".equals(destination.getPath()) || "/mobile/select".equals(destination.getPath())
+                            || "/mobile/monitoring".equals(destination.getPath()) || "/mobile/monitoring-retry".equals(destination.getPath())) {
                         if (request.isForMainFrame() && request.hasGesture() && discovery != null) {
-                            if ("/mobile/monitoring".equals(destination.getPath())) {
+                            if ("/mobile/monitoring-retry".equals(destination.getPath())) {
+                                String fleet = destination.getQueryParameter("fleet");
+                                if (fleet != null && fleet.matches("[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}")) discovery.checkSavedConnections(fleet);
+                            } else if ("/mobile/monitoring".equals(destination.getPath())) {
                                 String fleet = destination.getQueryParameter("fleet");
                                 if (fleet != null && fleet.matches("[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}")) discovery.enableMonitoring(fleet);
                             } else if ("/mobile/discovery".equals(destination.getPath())) {

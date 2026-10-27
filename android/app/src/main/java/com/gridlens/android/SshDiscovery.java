@@ -171,6 +171,7 @@ public final class SshDiscovery {
         PinnedRepository repository = new PinnedRepository(trusted);
         List<MonitoringResult> results = new ArrayList<>();
         String networkJson = null;
+        Set<String> verifiedBindings = new HashSet<>();
         try {
             session = session(jsch, network, candidate, credential.username, repository);
             if (credential.privateKey != null && credential.privateKey.length > 0) {
@@ -198,6 +199,7 @@ public final class SshDiscovery {
                 if (nodeMode == null) { MonitoringResult failed = bindingFailure(binding, readGpu); emitMonitoring(onResult, failed); results.add(failed); continue; }
                 CommandResult identity = execute(active, network, DiscoveryPolicy.bindingAddressCommand(binding, sudoPassword != null), sudoPassword, deadline, 256);
                 if (identity.exit != 0 || !identity.output.trim().equals(binding.address)) { MonitoringResult failed = bindingFailure(binding, readGpu); emitMonitoring(onResult, failed); results.add(failed); continue; }
+                verifiedBindings.add(binding.key() + ":" + binding.address);
                 if (!networkChecked && networkLookup != null) {
                     networkChecked = true;
                     try {
@@ -237,9 +239,17 @@ public final class SshDiscovery {
                                         (command, maxBytes, timeMs) -> { CommandResult result = execute(active, network, command, sudoPassword, deadline, maxBytes, timeMs); return new NodeGpuCollector.Response(result.exit, result.output); },
                                         () -> bindingStillMatches(active, network, binding, sudoPassword, deadline, namespace, uuids));
                                 gpu = outcome.json;
-                                if (outcome.status == NodeGpuCollector.Status.ACCESS_REQUIRED && !suspended) status = "credentials-required";
+                                // SSH and the node binding already succeeded. A Docker recorder
+                                // permission failure is not an SSH credential rejection.
+                                if (outcome.status == NodeGpuCollector.Status.ACCESS_REQUIRED && !suspended) status = "gpu-access-required";
                             }
                         } catch (IllegalArgumentException unsupported) { gpu = NodeGpuCollector.unavailable(binding, "unsupported"); }
+                        catch (IOException | JSchException unavailable) {
+                            // Preserve readings completed before a slow/unavailable GPU command.
+                            // The next binding still checks captured-network ownership before use.
+                            gpu = NodeGpuCollector.unavailable(binding, "unavailable");
+                            if (repository.changed) status = "identity-changed";
+                        }
                     }
                 }
                 MonitoringResult completed = new MonitoringResult(binding, rewards, gpu, status, suspended, retry);
@@ -248,7 +258,8 @@ public final class SshDiscovery {
             }
         } catch (MonitoringCallbackFailure error) { throw error;
         } catch (Exception error) {
-            String status = repository.changed ? "identity-changed" : error instanceof JSchException && error.getMessage() != null
+            boolean cancelled = network.isCancelled() || Thread.currentThread().isInterrupted();
+            String status = repository.changed ? "identity-changed" : !cancelled && error instanceof JSchException && error.getMessage() != null
                     && (error.getMessage().startsWith("Auth fail") || error.getMessage().startsWith("Auth cancel")) ? "credentials-required" : "unreachable";
             for (NodeBinding binding : bindings) if (results.stream().noneMatch(result -> result.binding == binding)) {
                 MonitoringResult failed = new MonitoringResult(binding, null, readGpu ? NodeGpuCollector.unavailable(binding, "unavailable") : null, status, false, 0);
@@ -257,6 +268,7 @@ public final class SshDiscovery {
         } finally { if (timeout != null) timeout.cancel(false); if (session != null) session.disconnect(); try { jsch.removeAllIdentity(); } catch (JSchException ignored) { } }
         if (networkJson != null) for (int i = 0; i < results.size(); i++) {
             MonitoringResult result = results.get(i);
+            if (!verifiedBindings.contains(result.binding.key() + ":" + result.binding.address)) continue;
             results.set(i, new MonitoringResult(result.binding, result.rewardsJson, result.gpuJson, result.status, result.suspendRewards, result.retryAfterSeconds, networkJson));
         }
         return results;

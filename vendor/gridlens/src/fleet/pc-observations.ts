@@ -122,7 +122,7 @@ export function parsePcUpdate(value: unknown): PcUpdate {
   if (input.network !== undefined) output.network = parsePcNetwork(input.network);
   if (input.monitoring !== undefined) {
     const state = object(input.monitoring, ["status", "checkedAtMs"]);
-    if (!time(state.checkedAtMs) || !["active", "unreachable", "network-unavailable", "credentials-required", "identity-changed", "authorization-required", "binding-changed", "paused", "unsupported"].includes(String(state.status))) throw new Error("Invalid monitoring status.");
+    if (!time(state.checkedAtMs) || !["active", "unreachable", "network-unavailable", "credentials-required", "identity-changed", "authorization-required", "binding-changed", "paused", "unsupported", "gpu-access-required"].includes(String(state.status))) throw new Error("Invalid monitoring status.");
     output.monitoring = state as unknown as MonitoringState;
   }
   if (!output.rewards && !output.gpu && !output.monitoring && !output.network) throw new Error("Empty PC observation.");
@@ -142,8 +142,9 @@ export function parseSavedObservation(value: unknown): PcObservation {
 }
 export function rewardView(record: Pick<PcObservation, "rewards" | "lastGoodRewards" | "monitoring"> | undefined, now: number) {
   const success = record?.rewards?.status === "ok" ? record.rewards : record?.lastGoodRewards;
+  // GPU recorder permissions are independent of a successful authenticated reward read.
   const current = !!success && record?.rewards?.status === "ok" && now >= success.observedAtMs && now < success.observedAtMs + REWARD_FRESH_MS
-    && (!record.monitoring || record.monitoring.status === "active" || record.monitoring.status === "unsupported");
+    && (!record.monitoring || record.monitoring.status === "active" || record.monitoring.status === "unsupported" || record.monitoring.status === "gpu-access-required");
   return { amount: success?.amount ?? null, observedAtMs: success?.observedAtMs ?? null, current,
     status: record?.rewards?.status ?? record?.monitoring?.status ?? "not-enabled" };
 }

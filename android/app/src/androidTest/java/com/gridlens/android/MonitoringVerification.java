@@ -86,11 +86,15 @@ final class MonitoringVerification {
                     "Changing endpoint lost denied authorization or acknowledged GPU history");
             try { reopened.saveMonitoringTarget(live); throw new AssertionError("Late polling restored a replaced endpoint"); }
             catch (SecurityException expected) { }
+            JSONObject recoveryBeforeForget = verifyConnectionRecovery(reopened, target, address, retry);
+            long preservedRetry = reopened.rewardsRetryAtMs();
             reopened.forgetCredentials();
+            require(reopened.resumeVerifiedConnections(new JSONArray().put(recoveryBeforeForget), () -> true).length() == 0,
+                    "Recovery recreated a forgotten credential/permission");
             require(!reopened.suspendCredentialProfile(approvedAgain), "A forgotten target accepted an old credential failure");
             reopened.restrictMonitoring(approvedAgain, address, true, true, "identity-changed", retry);
             require(reopened.monitoringTargets().length() == 0 && reopened.credentialProfiles().length() == 0, "A late receipt recreated forgotten monitoring authority");
-            require(reopened.rewardsRetryAtMs() == retry, "Forgetting credentials bypassed the provider delay");
+            require(reopened.rewardsRetryAtMs() == preservedRetry, "Forgetting credentials bypassed the provider delay");
             try { reopened.saveMonitoringTarget(approvedAgain); throw new AssertionError("An approved target was saved without its credential"); }
             catch (java.security.GeneralSecurityException expected) { }
         } finally {
@@ -99,6 +103,63 @@ final class MonitoringVerification {
             if (files != null) for (File file : files) require(file.delete(), "Monitoring fixture cleanup failed");
             require(directory.delete(), "Monitoring fixture directory cleanup failed");
         }
+    }
+    private static JSONObject verifyConnectionRecovery(DiscoveryStore store, JSONObject template, String address, long retry) throws Exception {
+        String other = "1".repeat(31) + "2";
+        JSONObject paused = new JSONObject(template.toString()).put("id", UUID.randomUUID().toString()).put("fleetId", UUID.randomUUID().toString())
+                .put("authorizationId", UUID.randomUUID().toString()).put("paused", true).put("status", "credentials-required")
+                .put("lastRewardsAttemptAtMs", 1234).put("lastGpuAttemptAtMs", 2345).put("lastSetupAttemptAtMs", 3456)
+                .put("rewardsRetryAtMs", retry).put("retryAtMs", retry).put("gpuCursors", new JSONObject().put(address, 9000))
+                .put("rewardsVerified", new JSONArray().put(address)).put("rewardsSuspended", new JSONArray().put(other));
+        paused.getJSONArray("bindings").put(new JSONObject().put("runtime", "docker").put("wrapperId", JSONObject.NULL)
+                .put("nodeContainerId", "b".repeat(64)).put("address", other));
+        store.saveMonitoringTarget(paused);
+        require(store.resumeVerifiedConnections(new JSONArray().put(paused), () -> false).length() == 0, "Cancelled recovery changed saved authority");
+        require(find(store, paused).getBoolean("paused"), "Cancelled recovery resumed monitoring");
+        java.util.concurrent.atomic.AtomicInteger checks = new java.util.concurrent.atomic.AtomicInteger();
+        require(store.resumeVerifiedConnections(new JSONArray().put(paused), () -> checks.incrementAndGet() == 1).length() == 0,
+                "Cancellation before commit was ignored");
+        JSONArray resumed = store.resumeVerifiedConnections(new JSONArray().put(paused), () -> true);
+        require(resumed.length() == 1, "Verified credential pause did not resume");
+        JSONObject current = resumed.getJSONObject(0);
+        require(!current.getBoolean("paused") && "active".equals(current.getString("status")), "Connection did not become active");
+        require(paused.getString("authorizationId").equals(current.getString("authorizationId")), "SSH recovery renewed source authorization");
+        require(!current.optString("recoveryGeneration").isEmpty(), "Recovery receipt was not recorded");
+        for (String key : new String[]{"approved", "rewardsAuthorized", "rewardsSuspended", "rewardsVerified", "rewardsRetryAtMs", "retryAtMs",
+                "lastRewardsAttemptAtMs", "lastGpuAttemptAtMs", "lastSetupAttemptAtMs", "gpuCursors", "setupPending", "bindings", "credentialId"})
+            require(paused.get(key).toString().equals(current.get(key).toString()), "SSH recovery changed source policy: " + key);
+        // An already observed Nosana denial from the original approval still applies after SSH succeeds.
+        store.restrictMonitoring(paused, address, true, false, "authorization-required", retry + 1000);
+        JSONObject denied = find(store, paused);
+        require(!denied.getBoolean("rewardsAuthorized") && denied.getJSONArray("rewardsSuspended").length() == 2,
+                "Late source denial was lost after connection recovery");
+        require(denied.getJSONArray("rewardsVerified").length() == 0 && denied.getLong("rewardsRetryAtMs") >= retry + 1000,
+                "Late denial lost its suspension or retry deadline");
+        denied.put("paused", true).put("status", "credentials-required"); store.saveMonitoringTarget(denied);
+        require(store.resumeVerifiedConnections(new JSONArray().put(paused), () -> true).length() == 0, "Old recovery proof was replayed after a later pause");
+        JSONObject replacement = new JSONObject(denied.toString()).put("authorizationId", UUID.randomUUID().toString());
+        store.saveMonitoringTarget(replacement);
+        require(store.resumeVerifiedConnections(new JSONArray().put(denied), () -> true).length() == 0, "Old proof replaced a newer explicit approval");
+        JSONObject revoked = new JSONObject(replacement.toString()).put("approved", false); store.saveMonitoringTarget(revoked);
+        require(store.resumeVerifiedConnections(new JSONArray().put(replacement), () -> true).length() == 0, "Explicit revocation was undone");
+        for (String status : new String[]{"paused", "identity-changed", "binding-changed", "authorization-required"}) {
+            JSONObject excluded = new JSONObject(replacement.toString()).put("status", status).put("authorizationId", UUID.randomUUID().toString());
+            store.saveMonitoringTarget(excluded);
+            require(store.resumeVerifiedConnections(new JSONArray().put(excluded), () -> true).length() == 0, "Unsupported pause was recovered: " + status);
+        }
+        JSONObject alias = new JSONObject(replacement.toString()).put("status", "credentials-required").put("approved", false).put("aliasReplaced", true);
+        store.saveMonitoringTarget(alias);
+        require(store.resumeVerifiedConnections(new JSONArray().put(alias), () -> true).length() == 0, "Replaced alias was revived");
+        // Forget is performed by the outer fixture after these checks; test a removed target receipt here.
+        store.removeMonitoringFleet(paused.getString("fleetId"));
+        require(store.resumeVerifiedConnections(new JSONArray().put(replacement), () -> true).length() == 0, "Deleted target was recreated by recovery");
+        store.saveMonitoringTarget(replacement);
+        return replacement;
+    }
+    private static JSONObject find(DiscoveryStore store, JSONObject expected) throws Exception {
+        JSONArray targets = store.monitoringTargets();
+        for (int i = 0; i < targets.length(); i++) if (targets.getJSONObject(i).getString("id").equals(expected.getString("id"))) return targets.getJSONObject(i);
+        throw new AssertionError("Fixture target missing");
     }
     private static void require(boolean value, String message) { if (!value) throw new AssertionError(message); }
     private MonitoringVerification() { }

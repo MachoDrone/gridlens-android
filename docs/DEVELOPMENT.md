@@ -245,7 +245,8 @@ lifecycle results rather than assuming physical-device compatibility.
 
 Current rewards use regular 400 weight, matching NOS, and #0f5c2b against NOS
 #15803d. The phone-browser fixture supplies both current values and compares their
-computed brightness and typography side by side. Retained rewards remain gray.
+computed brightness and typography side by side. Retained rewards remained gray
+in that version; 0.2.7 replaces that override with a separate clock marker.
 
 The fixed PC-side public lookup prefers IPv4 and retains a bounded IPv6 fallback.
 It uses the already verified node and existing monitoring approval. Successful
@@ -260,3 +261,25 @@ readings with their original times, actual failed-attempt information and report
 monitoring status in those four visible slots. Full saved discovery inventory stays
 in Source details. Absence of a result does not imply a failed check or missing
 authorization, and retry eligibility is not a promise of network recovery.
+
+## Independent PC readings and paused-connection recovery in 0.2.7
+
+`gpu-access-required` identifies Docker recorder permission separately from SSH
+authentication. It does not suspend a credential profile, and successful rewards
+and IP readings remain deliverable when GPU collection fails or times out. Native
+cancellation takes precedence over an SSH library's ambiguous authentication-cancel
+message. Genuine credential denials retain their existing shared-profile pause.
+
+Older stored `credentials-required` pauses do not record which subsystem failed,
+so they cannot safely be unpaused merely by installing an update. The explicit
+native Check saved connections action uses saved pinned endpoints and credentials,
+verifies saved identities and resumes only still-approved matching targets. It
+preserves manual pauses/revocations, changed trust, replaced aliases, reward
+suspensions and provider deadlines. The WebView supplies only the saved fleet UUID;
+the native controller owns eligibility, credentials, verification and cancellation.
+
+Known reward amounts stay dark green even when retained. A visible clock marker,
+existing Retained description and original timestamp communicate uncertainty;
+recoloring never renews an observation. Tests include retained/fresh presentation,
+GPU-only access failures and two PCs with the same public NAT address but distinct
+private addresses and independent source times.

@@ -57,6 +57,9 @@ Android PC text matches the normal table style: 11px, regular weight. IP cycles
 hidden, full public/private, public suffix and private suffix without leading
 dots; IPv6 stays complete. Rewards use rounded whole-NOS links in #0f5c2b with
 the same regular text weight as NOS #15803d, making the darker color visible.
+All known reward amounts keep that green, including retained amounts; a visible
+clock and the original timestamp/status distinguish retained readings. Never
+represent recoloring as a successful refresh. Unknown amounts remain unknown.
 Exact reward amounts and source times remain unchanged for sorting and details;
 unknown is not zero. Public IP comes from the fixed native ipify read inside one
 verified node per PC, preferring external IPv4 with an IPv6 fallback. Successful
@@ -65,6 +68,13 @@ retry after one minute while approved monitoring is active, subject to longer
 provider-requested waits. Private addresses come
 from PC interfaces. Never substitute the phone's IP or SSH ingress for measured
 public egress; preserve independent retained timestamps on failure.
+Shared NAT addresses are valid on every independently observed PC/host; never
+deduplicate rows by their public IP. GPU recorder access failures must not be
+treated as SSH credential rejection or discard successful IP/reward observations.
+Cancelled authentication is not proof of rejected credentials. Old ambiguous
+credential pauses require an explicit native saved-connection check before
+resuming existing approval; preserve real denials, revoked permissions, trust pins,
+wallet suspensions and provider deadlines.
 
 Keep the installed APK version visible in the native toolbar and update outcomes.
 Update color is not the only status: show last successful check/result separately

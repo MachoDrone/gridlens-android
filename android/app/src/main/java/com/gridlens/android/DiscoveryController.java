@@ -39,7 +39,7 @@ final class DiscoveryController {
     private final DiscoveryStore store;
     private final MonitoringController monitoring;
     private final ExecutorService io = Executors.newSingleThreadExecutor();
-    private DiscoveryNetwork network;
+    private volatile DiscoveryNetwork network;
     private AlertDialog progress;
     private TextView progressText;
     private JSONObject profile;
@@ -53,6 +53,7 @@ final class DiscoveryController {
     private final java.util.Map<String, byte[]> monitoringSudo = new java.util.HashMap<>();
     private List<SshDiscovery.BatchRequest> lastRequests = new ArrayList<>();
     private boolean enableMonitoringForBatch, monitoringIntent, foreground;
+    private volatile boolean recoveringConnections;
 
     DiscoveryController(Activity activity, String origin, String token, Navigation navigation) throws Exception {
         this.activity = activity; this.origin = origin; this.token = token; this.navigation = navigation;
@@ -520,14 +521,15 @@ final class DiscoveryController {
     private void fleetActions(JSONObject fleet) {
         String id = fleet.optString("id");
         new AlertDialog.Builder(activity).setTitle(fleet.optString("name"))
-            .setItems(new String[]{"Open fleet", "Enable / repair monitoring", "Monitoring status", "Rescan and merge", "Rename", "Remove selected hosts", "Delete fleet"}, (d, which) -> {
+            .setItems(new String[]{"Open fleet", "Check saved connections", "Enable / repair monitoring", "Monitoring status", "Rescan and merge", "Rename", "Remove selected hosts", "Delete fleet"}, (d, which) -> {
                 if (which == 0) mutate("select", null, "scenario", "fleet:" + id, true);
-                else if (which == 1) enableMonitoring(id);
-                else if (which == 2) monitoringStatus(id);
-                else if (which == 3) { fleetId = id; prepare(); }
-                else if (which == 4) { LinearLayout form = form(); EditText name = field(form, "Fleet name", fleet.optString("name"), false);
+                else if (which == 1) checkSavedConnections(id);
+                else if (which == 2) enableMonitoring(id);
+                else if (which == 3) monitoringStatus(id);
+                else if (which == 4) { fleetId = id; prepare(); }
+                else if (which == 5) { LinearLayout form = form(); EditText name = field(form, "Fleet name", fleet.optString("name"), false);
                     new AlertDialog.Builder(activity).setTitle("Rename fleet").setView(form).setPositiveButton("Save", (dd, w) -> mutate("rename", id, "name", name.getText().toString(), false)).setNegativeButton("Cancel", null).show();
-                } else if (which == 5) removeHosts(fleet);
+                } else if (which == 6) removeHosts(fleet);
                 else new AlertDialog.Builder(activity).setTitle("Delete saved fleet?").setMessage("This removes only this public-address fleet. Credentials and network profiles remain.")
                     .setPositiveButton("Delete", (dd, w) -> mutate("delete", id, null, null, true)).setNegativeButton("Cancel", null).show();
             }).setNegativeButton("Close", null).show();
@@ -543,6 +545,51 @@ final class DiscoveryController {
                 if (!known) throw new IllegalArgumentException("Unknown fleet");
                 ui(run, () -> { dismissProgress(); working = false; beginMonitoring(id); });
             } catch (Exception error) { ui(run, () -> { dismissProgress(); working = false; storageError(); }); }
+        });
+    }
+    void checkSavedConnections(String id) {
+        if (destroyed) return;
+        if (working) { if (progress != null) progress.show(); return; }
+        if (store == null || monitoring == null || id == null || !id.matches("[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}")) { storageError(); return; }
+        if (monitoring.storageNeedsRecovery()) {
+            message("Monitoring storage needs attention", "Local permission storage could not save a previous restriction. Check saved connections cannot clear that block. Restore available storage and use Enable / repair monitoring.");
+            return;
+        }
+        cancel(); monitoring.pause();
+        recoveringConnections = true; working = true;
+        int run = generation;
+        busy("Checking saved connections", "Verifying saved SSH identities and nodes. No network scan or rewards/GPU read is started by this check. Cancel leaves unchecked connections paused.");
+        io.execute(() -> {
+            DiscoveryNetwork captured = null;
+            try {
+                JSONArray fleets = api(null).getJSONArray("fleets"); boolean known = false;
+                for (int i = 0; i < fleets.length(); i++) if (id.equals(fleets.getJSONObject(i).getString("id"))) known = true;
+                if (!known) throw new IllegalArgumentException("Unknown saved fleet");
+                if (run != generation || destroyed) return;
+                captured = DiscoveryNetwork.capture(activity); network = captured;
+                if (run != generation || destroyed) { captured.cancel(); return; }
+                MonitoringController.RecoveryReport result = monitoring.checkSavedConnections(id, captured,
+                        () -> run == generation && !destroyed && recoveringConnections,
+                        (done, total, verified, skipped) -> ui(run, () -> progressText.setText("PC connections: " + done + " / " + total
+                                + " processed; " + verified + " verified; " + skipped + " skipped after a shared credential rejection.")));
+                ui(run, () -> {
+                    dismissProgress(); working = false; recoveringConnections = false; cancel();
+                    if (!result.cancelled && result.resumed > 0) selectScenario("fleet:" + id);
+                    String detail = result.eligible == 0 ? "No previously approved credential-paused connections need this check. Use Enable / repair monitoring for missing or changed connections."
+                            : result.checked + " PC connections checked; " + result.resumed + " verified connections resumed. "
+                                + (result.eligible - result.resumed) + " remain paused. Existing reward denials and provider retry times are preserved."
+                                + result.failures
+                                + (result.resumed < result.eligible ? " Use Enable / repair monitoring if saved credentials or node bindings need to change." : "")
+                                + (result.resumed > 0 ? " Resumed connections refresh when this saved fleet is open." : "");
+                    message(result.cancelled ? "Connection check stopped" : "Saved connections checked", detail);
+                });
+            } catch (Exception unavailable) { ui(run, () -> {
+                dismissProgress(); working = false; recoveringConnections = false; cancel();
+                message("Saved connections remain paused", monitoring.storageNeedsRecovery()
+                        ? "Local permission storage could not save a restriction. Restore available storage and use Enable / repair monitoring. This connection check cannot clear the block."
+                        : "The check could not finish. Check the Wi-Fi or VPN connection and saved credentials; use Enable / repair monitoring if saved permissions need attention. No new monitoring permissions were granted.");
+            }); }
+            finally { if (captured != null) { captured.close(); if (network == captured) network = null; } }
         });
     }
     private void beginMonitoring(String id) {
@@ -611,7 +658,8 @@ final class DiscoveryController {
                 if (!id.equals(target.getString("fleetId"))) continue;
                 text.append(target.getString("address")).append(":").append(target.getInt("port")).append(" — ")
                         .append(target.optString("status", "authorization-required").replace('-', ' '))
-                        .append(target.optBoolean("rewardsAuthorized") ? "" : "; rewards need verification").append("\n");
+                        .append(target.optBoolean("rewardsAuthorized") ? "" : "; rewards need verification")
+                        .append(target.has("lastConnectionCheckStatus") ? "; last connection check: " + target.optString("lastConnectionCheckStatus").replace('-', ' ') : "").append("\n");
             }
             if (text.length() == 0) text.append("Monitoring is not enabled for this fleet. Use your saved SSH connections to set it up once.");
             new AlertDialog.Builder(activity).setTitle("Monitoring status").setMessage(text.toString())
@@ -676,11 +724,11 @@ final class DiscoveryController {
     }
     void selectedScenario(String scenario) { if (monitoring != null) monitoring.selectedScenario(scenario); }
     void resumed() { foreground = true; if (monitoring != null && !working && network == null) monitoring.resume(); }
-    void paused() { foreground = false; if (monitoring != null) monitoring.pause(); }
+    void paused() { foreground = false; if (monitoring != null) monitoring.pause(); if (recoveringConnections) cancel(); }
     void stopped() { paused(); if (working) cancel(); if (store != null) store.lock(); }
     void destroy() { destroyed = true; if (monitoring != null) monitoring.destroy(); cancel(); if (keyForm != null) keyForm.clear(); io.shutdownNow(); if (store != null) store.lock(); }
     private void cancel() {
-        generation++; working = false; if (network != null) { network.cancel(); try { network.close(); } catch (Exception ignored) {} network = null; }
+        generation++; working = false; recoveringConnections = false; if (network != null) { network.cancel(); try { network.close(); } catch (Exception ignored) {} network = null; }
         dismissProgress(); for (SshDiscovery.Credential credential : openCredentials) credential.close(); openCredentials.clear(); if (store != null) store.lock();
         credentialIds.clear(); lastRequests = new ArrayList<>();
         for (byte[] password : monitoringSudo.values()) Arrays.fill(password, (byte) 0);

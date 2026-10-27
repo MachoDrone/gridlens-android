@@ -415,3 +415,61 @@ when a lookup fails, and the app now shows that distinction and retry informatio
 
 Verified APK size: 197317720 bytes. SHA-256:
 `d1617feaa329e72ea78373b75147c593fa18fd39d2398f93bfdb0df232b3e19a`.
+
+## Android 0.2.7 — retained reward colour and independent PC readings, October 27, 2026
+
+Version code 10 removes the separate rule that forced retained Rewards to claim
+amounts gray. All known amounts use #0f5c2b with regular weight; a visible clock
+marks a retained reading whose current amount is unconfirmed. Source times,
+exact amounts, sorting and unknown-versus-zero semantics are unchanged. Phone
+screenshots show retained rewards beside current NOS and two PCs with the same
+public NAT address alongside distinct private addresses.
+
+Three concrete native failures were reproduced against unmodified 0.2.6 source:
+GPU recorder Docker denial became a shared SSH credential rejection; a GPU command
+timeout discarded an already completed reward read; and cancelled authentication
+could create a persistent credential pause. All three old-code regression checks
+fail and pass with the fixes. A fourth SSH fixture verifies that new PC/IP data is
+attached only to node bindings actually verified in that connection, in both
+binding orderings. Valid hosts still share the one per-PC network observation.
+
+Older credential-paused records lack a reliable cause. The explicit Check saved
+connections action verifies saved pinned endpoints and node identities without a
+scan or source reads, then resumes only unchanged, previously approved targets.
+Checks are serialized within each credential profile and up to four profiles run
+concurrently. A rejection prevents further checks or resumption on that profile.
+Source authorizationId is preserved; a separate recoveryGeneration prevents old
+recovery proofs being replayed without losing late rewards denials.
+
+Completed verification on the final implementation:
+
+- `npm run check` passes: 109 app/runtime/phone-browser/helper tests, 27 Python
+  recorder tests, 816 inherited Node tests and all 332 inherited browser tests
+  (11.1 minutes). Tests cover retained-green clock markers, source timestamps,
+  repeated public NAT addresses, GPU-only failure and the explicit recovery link.
+- All 140 Android unit tests pass in each debug and release variant. A clean
+  build, release lint and debug/instrumentation/release APK assembly pass.
+- Native-only Android API 36 instrumentation passed in 12.542 seconds. Real
+  Keystore tests cover recovery cancellation, unchanged-approval checks, replay,
+  reapproval, revocation, aliases, deletion and forgotten credentials. Existing
+  wallet denials, provider delays, attempt times and GPU cursors survive recovery;
+  a late denial from the original source authorization remains effective.
+- Full Android smoke passed in 14.075 seconds on an unchanged retry after the
+  emulator settled. The initial run timed out at the existing five-second WebView
+  JavaScript probe. Both runs and their logs are preserved; no assertion or timeout
+  was relaxed. A specific cause of that initial emulator timeout is not established.
+- The signed package remains com.gridlens.android with the pinned certificate.
+  Signature and 16 KiB alignment verify; all 47 runtime files and four helper assets
+  match reviewed sources. The APK contains the new native recovery/status markers
+  and clock style, and the retained-reward gray override is absent.
+- The adaptation patch reproduces all 196 vendored files from 192 verified
+  originals. No operator PC or physical phone was accessed; physical acceptance
+  remains separate from the isolated SSH, browser and Android fixtures.
+
+The tests establish these corrected failure paths, not a diagnosis read from the
+operator's phone. The app owns verification and recovery of its saved PC access.
+Existing real credential denials, changed identities, revoked approvals and source
+restrictions are not automatically cleared by installing the update.
+
+Verified APK size: 197334532 bytes. SHA-256:
+`f8c88d321c1c5fa1aba0e3ecae29eabd2f9885ac1e3e2d3a5c3a53b95fd68a9f`.
