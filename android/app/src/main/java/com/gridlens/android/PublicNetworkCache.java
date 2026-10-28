@@ -62,6 +62,37 @@ final class PublicNetworkCache {
         PublicIpReader.Observation cached = peek(pcId);
         return cached != null && !cached.json().equals(store.read(deliveryKey(fleetId, pcId)));
     }
+    /** Reconcile an acknowledged receipt with a validated cache-only receiver response.
+     * A missing/older receiver record needs redelivery of the same saved observation,
+     * never a new source read. Unavailable/invalid receiver responses must not call this.
+     */
+    void reconcileDelivery(String fleetId, String pcId, PublicIpReader.Observation receiver) {
+        String key = deliveryKey(fleetId, pcId);
+        Object lock = locks.computeIfAbsent(pcId, ignored -> new Object());
+        synchronized (lock) {
+            if (storageBlocked) return;
+            PublicIpReader.Observation cached = peek(pcId);
+            long knownRetry = Math.max(cached == null ? 0 : cached.retryAtMs,
+                    Math.max(observedRetryAt.getOrDefault(pcId, 0L), savedDeadline(store.read(pcId + ":retryAtMs"))));
+            if (receiver != null && receiver.retryAtMs > knownRetry) preserveRetry(pcId, receiver.retryAtMs);
+            if (cached == null || !cached.json().equals(store.read(key))) return;
+            if (receiver != null && (receiver.observedAtMs > cached.observedAtMs
+                    || receiver.observedAtMs == cached.observedAtMs && sameMeasurement(cached, receiver))) return;
+            // The delivery retry deadline is retained; no source or provider clock is changed.
+            persist(key, "");
+        }
+    }
+    private static boolean sameMeasurement(PublicIpReader.Observation cached, PublicIpReader.Observation receiver) {
+        return java.util.Objects.equals(cached.publicIp, receiver.publicIp)
+                && java.util.Objects.equals(cached.privateIp, receiver.privateIp)
+                && java.util.Objects.equals(cached.publicObservedAtMs, receiver.publicObservedAtMs)
+                && java.util.Objects.equals(cached.privateObservedAtMs, receiver.privateObservedAtMs)
+                && java.util.Objects.equals(cached.source, receiver.source)
+                && java.util.Objects.equals(cached.publicFailure, receiver.publicFailure)
+                && java.util.Objects.equals(cached.privateFailure, receiver.privateFailure)
+                && java.util.Objects.equals(cached.httpStatus, receiver.httpStatus)
+                && receiver.retryAtMs >= cached.retryAtMs;
+    }
     long nextDeliveryAt(String fleetId, String pcId) { return savedDeadline(store.read(deliveryKey(fleetId, pcId) + ":retryAtMs")); }
     void deliveryAttempt(String fleetId, String pcId) { persist(deliveryKey(fleetId, pcId) + ":retryAtMs", Long.toString(clock.now() + FAILURE_RETRY_MS)); }
     void delivered(String fleetId, String pcId, PublicIpReader.Observation observation) {

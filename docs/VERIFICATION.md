@@ -589,3 +589,63 @@ release remain separate from emulator results.
 
 Verified signed APK size: 197337012 bytes. SHA-256:
 `45f5140292d8da1e859b9b74db57168bd8a2991e5e977d9db77979a812aadc34`.
+
+## Android 0.2.10 — saved PC IP recovery, October 28, 2026
+
+Version code 13 repairs remaining dependencies between PC IP collection and saved
+node state. Invalid node/sudo metadata or a malformed sibling record can no longer
+abort independently approved PC IP scheduling. Explicit native PC-only approval
+can survive unavailable node bindings, while node reads remain paused. Native
+receipts are reconciled against the actual receiver so a missing IP record can be
+redelivered from cache without a new lookup or timestamp. Longer provider waits
+learned from a validated receiver are preserved.
+
+These changes address reproducible app failure paths. The reported nn01 phone
+state was not available to the developer; its exact cause and recovery remain
+unconfirmed until operator feedback. A successful operator curl command proves
+that host-side command worked, not that the app's saved connection executed.
+
+Final verification:
+
+- `npm run check` passed: 115 Android runtime/helper/browser tests, 27 Python
+  recorder tests, 816 inherited Node tests and 332 browser tests (12.0 minutes).
+  The complete adaptation patch reproduces 196 vendored files from 192 verified
+  originals. The only browser behavior change is correction of the remaining
+  Column info IP summary; the six-mode control, sorting and source values remain.
+- All 159 Android tests passed in both debug and release variants after the final
+  source changes. Release lint and debug, instrumentation and signed release APK
+  builds passed. Tests cover cached receipt restoration, unchanged read counts and
+  timestamps, longer receiver provider waits and bounded explicit PC-only approval.
+- A fresh API 36 emulator passed native-only checks in 19.846 seconds, the complete
+  embedded runtime/WebView smoke in 127.068 seconds, and real production SSH
+  monitoring in 12.805 seconds. The saved-state test restores isolated malformed
+  encrypted records, verifies independent PC reads, removes/re-adds one PC's public
+  association, waits the real one-minute retry allowance and confirms restoration
+  of the exact original IP observation with no additional source read. Manual
+  pause, genuine shared credential rejection and wallet restrictions remain
+  durable through malformed sibling records; restrictions cannot grant rewards
+  permission. PC-only repair preserves prior node data and source policy.
+- The production SSH test uses the actual Android network capture, socket,
+  authentication, controller, native cache and embedded observation API. Its
+  generated loopback SSH fixture supplies three distinct node bindings with
+  unsupported GPU namespaces. Exactly one PC public-IP command and seven other
+  fixed commands were observed, and all three node results were delivered with
+  the independent PC network record. The fixture executes no supplied command and
+  contacts no public provider or operator PC. Earlier HTTPS fixtures separately
+  execute actual host curl against isolated TLS responses.
+- Package ID, version 0.2.10/code 13, unchanged pinned signing certificate and
+  continuity with the public 0.2.9 APK verify. ZIP/ELF 16 KiB alignment and all 47
+  runtime/four helper assets match reviewed sources. Packaged PC validation,
+  receipt reconciliation, PC-only approval and atomic pause code are present;
+  instrumentation classes and private inputs are absent.
+
+An initial standalone instrumentation registration was overridden by Android build
+configuration and failed before executing the app test. The corrected fixture uses
+the existing smoke runner. An intermediate build also compiled a new retry test
+against the earlier cache class; the frozen final rebuild passed both variants.
+No final emulator assertions or timeouts were relaxed. The owned emulator and
+synthetic data were removed. No desktop app, operator PC, existing VPN or wallet
+was changed; no new privileged host operation was added.
+
+Verified signed APK size: 197337024 bytes. SHA-256:
+`ceb4adafcbfae3f794e692d8fc55d4335eb0f0c5941c2aa751f07908df8d320e`.

@@ -94,3 +94,7 @@ recorded retry eligibility. Latest and retained source labels/timestamps remain
 separate; rendering never advances their evidence. pc-observations.ts validates
 the compatible schema-1 PC-network update/read contracts and bounded failure
 fields while retaining the existing reward/GPU/node contracts.
+
+Android 0.2.10 corrects the remaining Column info IP summary to describe all six
+modes and direct PC curl collection. Data meanings, saved preferences, sorting
+and provider requests are unchanged.

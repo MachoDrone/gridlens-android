@@ -378,7 +378,7 @@ element("column-info").addEventListener("click", () => {
   const column = COLUMNS.find(([key]) => key === activeSort.column);
   if (column) showInfo(column[1], {
     summary: mobileScenarios.enabled && column[0] === "pc" ? "The PC name from verified SSH discovery, displayed in the normal table style."
-      : mobileScenarios.enabled && column[0] === "ip" ? "Toggle hidden, full public/private, public suffix and private suffix. Public IP is checked from a node on the PC; saved source times remain available in details."
+      : mobileScenarios.enabled && column[0] === "ip" ? "Toggle hidden, both full addresses, external IP, external suffix, internal IP and internal suffix. Public IP is checked directly on the approved PC with installed curl; saved source times remain available in details."
       : mobileScenarios.enabled && column[0] === "rewards" ? "Exact claimable host-uptime NOS from the authorized node reader; unavailable readings stay unknown."
       : mobileScenarios.enabled && column[0] === "gpuID" ? "Physical GPU index is not inferred. Verified GPU UUID allocation and job conditions are available through enabled monitoring."
         : COLUMN_HELP[column[0]],

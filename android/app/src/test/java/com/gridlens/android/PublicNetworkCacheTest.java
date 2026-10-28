@@ -126,4 +126,74 @@ public final class PublicNetworkCacheTest {
         assertTrue(restarted.pendingDelivery("22222222-2222-4222-8222-222222222222", PC));
     }
 
+    @Test public void missingReceiverRecordRestoresAcknowledgedCacheWithoutRepeatingLookupOrResettingWaits() throws Exception {
+        Store store = new Store(); AtomicLong now = new AtomicLong(1000); AtomicInteger reads = new AtomicInteger();
+        PublicNetworkCache cache = new PublicNetworkCache(store, now::get);
+        String fleet = "11111111-1111-4111-8111-111111111111", otherFleet = "22222222-2222-4222-8222-222222222222";
+        PublicIpReader.Observation original = cache.getOrRead(PC, () -> {
+            reads.incrementAndGet();
+            return new PublicIpReader.Observation(now.get(), "8.8.8.8", now.get(), "192.168.1.20", now.get(), 7_201_000);
+        });
+        cache.deliveryAttempt(fleet, PC); cache.delivered(fleet, PC, original); cache.delivered(otherFleet, PC, original);
+        assertFalse(cache.pendingDelivery(fleet, PC));
+        long sourceDeadline = cache.nextReadAt(PC), deliveryDeadline = cache.nextDeliveryAt(fleet, PC);
+        // The public observation store was recovered/reassociated without this record,
+        // while native preferences still retain the earlier successful receipt.
+        now.set(2000); PublicNetworkCache reopened = new PublicNetworkCache(store, now::get);
+        reopened.reconcileDelivery(fleet, PC, null);
+        assertTrue(reopened.pendingDelivery(fleet, PC)); assertFalse(reopened.pendingDelivery(otherFleet, PC));
+        assertEquals(sourceDeadline, reopened.nextReadAt(PC)); assertEquals(deliveryDeadline, reopened.nextDeliveryAt(fleet, PC));
+        assertEquals(original.json(), reopened.peek(PC).json());
+        assertEquals(original.json(), reopened.getOrRead(PC, () -> { reads.incrementAndGet(); return reading(now.get()); }).json());
+        reopened.delivered(fleet, PC, reopened.peek(PC));
+        assertFalse(reopened.pendingDelivery(fleet, PC)); assertEquals(1, reads.get());
+        assertEquals(1000, reopened.peek(PC).publicObservedAtMs.longValue());
+    }
+    @Test public void receiverReconciliationPreservesMatchingAndNewerRecordsButRedeliversOlderOrMismatchedOnes() throws Exception {
+        Store store = new Store(); AtomicLong now = new AtomicLong(1000);
+        PublicNetworkCache cache = new PublicNetworkCache(store, now::get);
+        String fleet = "11111111-1111-4111-8111-111111111111";
+        PublicIpReader.Observation original = cache.getOrRead(PC, () -> reading(now.get()));
+        cache.delivered(fleet, PC, original);
+        int writes = store.writes;
+        cache.reconcileDelivery(fleet, PC, reading(1000));
+        cache.reconcileDelivery(fleet, PC, reading(1001));
+        assertEquals(writes, store.writes); assertFalse(cache.pendingDelivery(fleet, PC));
+        cache.reconcileDelivery(fleet, PC, reading(999)); assertTrue(cache.pendingDelivery(fleet, PC));
+        cache.delivered(fleet, PC, original);
+        cache.reconcileDelivery(fleet, PC, new PublicIpReader.Observation(1000, "9.9.9.9", 1000L, "192.168.1.20", 1000L));
+        assertTrue(cache.pendingDelivery(fleet, PC)); assertEquals(original.json(), cache.peek(PC).json());
+        writes = store.writes; cache.reconcileDelivery(fleet, PC, null); assertEquals(writes, store.writes);
+    }
+    @Test public void receiverReconciliationIgnoresUnknownNativeSourcesAndNormalizesEquivalentIpv6() throws Exception {
+        Store store = new Store(); AtomicLong now = new AtomicLong(1000);
+        PublicNetworkCache cache = new PublicNetworkCache(store, now::get);
+        String fleet = "11111111-1111-4111-8111-111111111111";
+        cache.reconcileDelivery(fleet, PC, null); assertEquals(0, store.writes);
+        PublicIpReader.Observation original = cache.getOrRead(PC, () -> new PublicIpReader.Observation(1000,
+                "2606:4700:0:0:0:0:0:1111", 1000L, "fd12:0:0:0:0:0:0:20", 1000L));
+        cache.delivered(fleet, PC, original); int writes = store.writes;
+        cache.reconcileDelivery(fleet, PC, new PublicIpReader.Observation(1000, "2606:4700::1111", 1000L, "fd12::20", 1000L));
+        assertEquals(writes, store.writes); assertFalse(cache.pendingDelivery(fleet, PC));
+    }
+    @Test public void longerReceiverWaitSurvivesReopeningWithoutRenewingSourceOrForcingDelivery() throws Exception {
+        Store store = new Store(); AtomicLong now = new AtomicLong(1000); AtomicInteger reads = new AtomicInteger();
+        PublicNetworkCache cache = new PublicNetworkCache(store, now::get);
+        String fleet = "11111111-1111-4111-8111-111111111111", otherPc = "b".repeat(64);
+        PublicIpReader.Observation original = cache.getOrRead(PC, () -> { reads.incrementAndGet(); return reading(now.get()); });
+        cache.delivered(fleet, PC, original);
+        PublicIpReader.Observation longerWait = new PublicIpReader.Observation(1000, "8.8.8.8", 1000L, "192.168.1.20", 1000L, 7_201_000);
+        cache.reconcileDelivery(fleet, PC, longerWait);
+        assertFalse(cache.pendingDelivery(fleet, PC)); assertEquals(7_201_000, cache.nextReadAt(PC));
+        assertEquals(original.json(), cache.peek(PC).json());
+        int writes = store.writes; cache.reconcileDelivery(fleet, PC, longerWait); cache.reconcileDelivery(fleet, PC, reading(1001));
+        assertEquals(writes, store.writes); assertEquals(7_201_000, cache.nextReadAt(PC));
+        cache.reconcileDelivery(fleet, otherPc, longerWait);
+        assertNull(cache.peek(otherPc)); assertEquals(7_201_000, cache.nextReadAt(otherPc));
+        now.set(PublicNetworkCache.CACHE_MS + 1000);
+        PublicNetworkCache reopened = new PublicNetworkCache(store, now::get);
+        assertEquals(original.json(), reopened.getOrRead(PC, () -> { reads.incrementAndGet(); return reading(now.get()); }).json());
+        assertNull(reopened.getOrRead(otherPc, () -> { reads.incrementAndGet(); return reading(now.get()); }));
+        assertEquals(1, reads.get()); assertEquals(7_201_000, reopened.nextReadAt(PC));
+    }
 }

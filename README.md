@@ -8,6 +8,15 @@ continues independently.
 
 **[Download the signed Android APK](https://github.com/MachoDrone/gridlens-android-releases/releases/latest/download/gridlens-android.apk)**
 
+**Version 0.2.10** repairs PC IP scheduling and cached delivery. Unsupported or
+malformed saved node information can no longer prevent an independently approved
+PC IP check. The app also restores a missing received IP observation from its
+native cache, preserving the original measurement time and provider waits.
+Explicit monitoring approval can retain PC IP access when node binding verification
+is unavailable. Existing SSH identity checks, credential rejection, manual pauses
+and revocation remain enforced. No container renaming or host installation is
+required.
+
 **Version 0.2.9** collects public IP directly from each approved PC using its
 installed `curl`, independently of Nosana containers and GPU collection. It uses
 the saved SSH connection and pinned PC identity without sudo or package installs.

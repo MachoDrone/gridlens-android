@@ -222,7 +222,7 @@
     {
       "path": "src/preview/main.ts",
       "sourceSha256": "14277fed44c31c870188eba752bb334cdd3420bea2500a1168c98ca51a557af0",
-      "sha256": "6f9f764d24e333094070af21f3662c3613e80a2f6807721a736ac9b347b24c4a"
+      "sha256": "51f2e2c7b3dcf08268d460828faf7a1b1d77bde314f564743d5b1efa13b53025"
     },
     {
       "path": "src/preview/online-roster.ts",

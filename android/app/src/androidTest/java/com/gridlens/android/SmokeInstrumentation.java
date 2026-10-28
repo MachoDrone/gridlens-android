@@ -21,15 +21,18 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class SmokeInstrumentation extends Instrumentation {
     private boolean nativeOnly;
     private boolean backgroundDownload;
+    private Bundle productionSsh;
     @Override public void onCreate(Bundle arguments) {
         super.onCreate(arguments);
         nativeOnly = arguments != null && "true".equals(arguments.getString("nativeOnly"));
         backgroundDownload = arguments != null && ("true".equals(arguments.getString("backgroundDownload"))
                 || "true".equals(arguments.getString("downloadOnly")));
+        productionSsh = arguments != null && "true".equals(arguments.getString("productionSsh")) ? arguments : null;
         start();
     }
 
     @Override public void onStart() {
+        if (productionSsh != null) { ProductionNetworkInstrumentation.verify(this, productionSsh); return; }
         Bundle result = new Bundle();
         MainActivity activity = null;
         try {
@@ -110,6 +113,7 @@ public final class SmokeInstrumentation extends Instrumentation {
             require(DiscoveryNetwork.startedSearchesForTesting() == 0 && DiscoveryNetwork.startedConnectionsForTesting() == 0,
                 "Launch or ordinary Fleet operations started network discovery/SSH");
             PcNetworkVerification.verify(this, current, origin, token);
+            SavedTargetIpVerification.verify(this, current, origin, token);
             runOnMainSync(() -> current.webViewForTesting().loadUrl(origin + "/?scenario=network-discovery"));
             long discoveryDeadline = android.os.SystemClock.elapsedRealtime() + 15000;
             boolean discoveryReady = false;

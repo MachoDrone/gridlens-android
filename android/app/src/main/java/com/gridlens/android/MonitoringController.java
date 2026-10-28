@@ -30,6 +30,9 @@ final class MonitoringController {
     private final ExecutorService workers = Executors.newFixedThreadPool(MonitoringPolicy.NODE_SLOTS);
     private final ExecutorService ipWorker = Executors.newSingleThreadExecutor();
     private final Set<String> ipInFlight = Collections.synchronizedSet(new HashSet<>());
+    private volatile boolean reconcilingNetworkDelivery;
+    private long reconciledNetworkGeneration = -1, lastNetworkReconciliationAt;
+
     private final PcNetworkReader fixtureNetworkReader;
     private final NodeOperation fixtureNodeOperation;
     interface PcNetworkReader { SshDiscovery.NetworkResult read(JSONObject target, SshDiscovery.Credential credential, java.util.function.BooleanSupplier permitted) throws Exception; }
@@ -62,6 +65,11 @@ final class MonitoringController {
         }, System::currentTimeMillis);
     }
     static void validateTarget(JSONObject target) throws Exception {
+        validatePcTarget(target);
+        validateNodeTarget(target);
+    }
+    /** PC IP authority is independent of node bindings and optional sudo state. */
+    static void validatePcTarget(JSONObject target) throws Exception {
         for (String key : new String[]{"id", "fleetId", "profileId"})
             if (!target.getString(key).matches("[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}")) throw new IllegalArgumentException("Invalid monitoring identity");
         new DiscoveryPolicy.Candidate(target.getString("address"), target.getInt("port"), "");
@@ -69,6 +77,8 @@ final class MonitoringController {
         String credential = target.getString("credentialId");
         if (!credential.isEmpty() && !credential.matches("[a-f0-9-]{36}")) throw new IllegalArgumentException("Invalid credential reference");
         if (!pcId(identity).equals(target.getString("pcId"))) throw new IllegalArgumentException("Invalid PC identity");
+    }
+    private static void validateNodeTarget(JSONObject target) throws Exception {
         JSONArray bindings = target.getJSONArray("bindings");
         if (bindings.length() > 64) throw new IllegalArgumentException("This PC exceeds 64 monitoring bindings; monitoring was not enabled for it");
         Set<String> addresses = new HashSet<>();
@@ -100,21 +110,25 @@ final class MonitoringController {
         List<JSONObject> setup = new ArrayList<>();
         for (SshDiscovery.BatchRequest request : requests) {
             SshDiscovery.Result result = results.get(request.candidate.endpointKey());
-            if (result == null || result.bindings.isEmpty() || result.status == SshDiscovery.Status.AUTH_FAILED) continue;
+            if (result == null || result.status == SshDiscovery.Status.AUTH_FAILED || result.status == SshDiscovery.Status.IDENTITY_CHANGED
+                    || result.status == SshDiscovery.Status.CANCELLED || result.status == SshDiscovery.Status.UNREACHABLE) continue;
+            boolean pcOnly = result.bindings.isEmpty();
+            String verifiedPcId = pcId(request.identity);
+            if (pcOnly && (!approve || result.pcMetadata == null || !verifiedPcId.equals(result.pcMetadata.pcId)
+                    || !currentFleetHasPc(fleetId, verifiedPcId))) continue;
             if (result.bindings.size() > 64) throw new IllegalArgumentException("This PC exceeds 64 monitoring bindings; monitoring was not enabled for it");
             JSONObject target = null;
-            String verifiedPcId = pcId(request.identity);
             for (int i = 0; i < saved.length(); i++) {
-                JSONObject old = saved.getJSONObject(i);
-                if (fleetId.equals(old.getString("fleetId")) && verifiedPcId.equals(old.getString("pcId"))) {
+                JSONObject old = saved.optJSONObject(i);
+                if (old != null && fleetId.equals(old.optString("fleetId")) && verifiedPcId.equals(old.optString("pcId"))) {
                     if (target == null || request.candidate.address.equals(old.getString("address")) && request.candidate.port == old.getInt("port")) target = old;
                 }
             }
             if (target != null && !approve && target.optBoolean("approved")) continue;
             boolean changedEndpoint = target != null && (!request.candidate.address.equals(target.getString("address")) || request.candidate.port != target.getInt("port"));
-            JSONArray preservedSuspensions = changedEndpoint && target.optJSONArray("rewardsSuspended") != null
+            JSONArray preservedSuspensions = target != null && (changedEndpoint || pcOnly) && target.optJSONArray("rewardsSuspended") != null
                     ? new JSONArray(target.getJSONArray("rewardsSuspended").toString()) : new JSONArray();
-            JSONArray preservedVerifications = changedEndpoint && target.optJSONArray("rewardsVerified") != null
+            JSONArray preservedVerifications = target != null && (changedEndpoint || pcOnly) && target.optJSONArray("rewardsVerified") != null
                     ? new JSONArray(target.getJSONArray("rewardsVerified").toString()) : new JSONArray();
             String credentialId = credentialIds.get(request.candidate.endpointKey());
             if (approve && credentialId == null) {
@@ -125,24 +139,30 @@ final class MonitoringController {
                         .put("passphrase", credential.passphrase == null ? "" : new String(credential.passphrase, StandardCharsets.UTF_8));
                 credentialId = store.saveCredential(nativeCredential, request.identity.keyBase64);
             }
+            boolean previousRewardsAuthorized = target != null && target.optBoolean("rewardsAuthorized");
+            String authorization = pcOnly && target != null ? target.optString("authorizationId", java.util.UUID.randomUUID().toString()) : java.util.UUID.randomUUID().toString();
             if (target == null) target = new JSONObject().put("id", java.util.UUID.randomUUID().toString());
-            JSONArray bindings = new JSONArray();
-            for (NodeBinding binding : result.bindings) bindings.put(bindingJson(binding));
-            Set<String> boundAddresses = new HashSet<>();
-            for (NodeBinding binding : result.bindings) boundAddresses.add(binding.address);
-            for (JSONArray retained : new JSONArray[]{preservedSuspensions, preservedVerifications})
-                for (int i = retained.length() - 1; i >= 0; i--) if (!boundAddresses.contains(retained.getString(i))) retained.remove(i);
-            if (!bindings.toString().equals(String.valueOf(target.optJSONArray("bindings")))) target.remove("gpuCursors");
+            JSONArray bindings = pcOnly && target.optJSONArray("bindings") != null
+                    ? new JSONArray(target.getJSONArray("bindings").toString()) : new JSONArray();
+            if (!pcOnly) for (NodeBinding binding : result.bindings) bindings.put(bindingJson(binding));
+            if (!pcOnly) {
+                Set<String> boundAddresses = new HashSet<>();
+                for (int i = 0; i < bindings.length(); i++) boundAddresses.add(binding(bindings.getJSONObject(i)).address);
+                for (JSONArray retained : new JSONArray[]{preservedSuspensions, preservedVerifications})
+                    for (int i = retained.length() - 1; i >= 0; i--) if (!boundAddresses.contains(retained.getString(i))) retained.remove(i);
+                if (!bindings.toString().equals(String.valueOf(target.optJSONArray("bindings")))) target.remove("gpuCursors");
+            }
             target.put("fleetId", fleetId).put("profileId", profileId).put("address", request.candidate.address).put("port", request.candidate.port)
                     .put("keyBase64", request.identity.keyBase64).put("algorithm", request.identity.algorithm).put("pcId", verifiedPcId)
                     .put("credentialId", credentialId == null ? "" : credentialId).put("bindings", bindings)
-                    .put("approved", approve).put("paused", false).put("rewardsAuthorized", approve && preservedSuspensions.length() < bindings.length()).put("rewardsVerified", preservedVerifications)
-                    .put("rewardsSuspended", preservedSuspensions).put("authorizationId", java.util.UUID.randomUUID().toString())
-                    .put("setupPending", approve).put("lastSetupAttemptAtMs", 0).put("status", "authorization-required");
+                    .put("approved", approve).put("paused", false).put("rewardsAuthorized", pcOnly ? previousRewardsAuthorized : approve && preservedSuspensions.length() < bindings.length()).put("rewardsVerified", preservedVerifications)
+                    .put("rewardsSuspended", preservedSuspensions).put("authorizationId", authorization)
+                    .put("setupPending", !pcOnly && approve).put("lastSetupAttemptAtMs", 0).put("status", pcOnly ? "binding-changed" : "authorization-required");
+            if (pcOnly) target.put("paused", true);
             if (sudoPasswords.containsKey(request.candidate.endpointKey())) {
                 target.put("sudoApproved", true).put("sudoPassword", new String(sudoPasswords.get(request.candidate.endpointKey()), StandardCharsets.UTF_8));
             } else if (!target.has("sudoApproved")) target.put("sudoApproved", false);
-            store.saveMonitoringTarget(target);
+            if (pcOnly) store.savePcMonitoringTarget(target); else store.saveMonitoringTarget(target);
             if (approve) setup.add(new JSONObject(target.toString()));
         }
         return setup;
@@ -155,17 +175,22 @@ final class MonitoringController {
     }
     void pauseFleet(String fleetId) throws Exception {
         cancelActive();
-        JSONArray targets = store.monitoringTargets();
+        JSONArray targets;
+        try { targets = store.pauseMonitoringFleet(fleetId); }
+        catch (Exception unavailable) { storageBlocked = true; cancelActive(); throw unavailable; }
         for (int i = 0; i < targets.length(); i++) {
             JSONObject target = targets.getJSONObject(i);
-            if (!fleetId.equals(target.getString("fleetId"))) continue;
-            target.put("approved", false).put("paused", true).put("status", "paused"); store.saveMonitoringTarget(target);
             workers.execute(() -> { try {
                 Set<String> roster = currentRoster(fleetId);
-                JSONArray bindings = target.getJSONArray("bindings");
-                for (int j = 0; j < bindings.length(); j++) { NodeBinding binding = binding(bindings.getJSONObject(j));
-                    if (roster.contains(binding.address)) postObservation(fleetId, observation(target, binding, "paused")); }
-            } catch (Exception ignored) { } });
+                JSONArray bindings = target.optJSONArray("bindings");
+                if (bindings == null) return;
+                for (int j = 0; j < bindings.length(); j++) {
+                    try {
+                        NodeBinding binding = binding(bindings.getJSONObject(j));
+                        if (roster.contains(binding.address)) postObservation(fleetId, observation(target, binding, "paused"));
+                    } catch (Exception invalidBinding) { /* Native revocation was already persisted atomically. */ }
+                }
+            } catch (Exception ignored) { /* Cached UI status cannot restore revoked native authority. */ } });
         }
     }
     interface RecoveryProgress { void changed(int completed, int total, int verified, int skipped); }
@@ -279,41 +304,56 @@ final class MonitoringController {
         try {
             long now = System.currentTimeMillis();
             JSONArray targets = store.monitoringTargets();
+            if (!reconcilingNetworkDelivery && ipInFlight.isEmpty()
+                    && (reconciledNetworkGeneration != generation || now - lastNetworkReconciliationAt >= 60_000)) {
+                reconcileNetworkDelivery(targets, now);
+            }
             Map<String, JSONObject> eligible = new java.util.LinkedHashMap<>();
             Map<String, Long> oldest = new java.util.LinkedHashMap<>();
             Map<String, boolean[]> operations = new java.util.HashMap<>();
             Map<String, JSONObject> ipEligible = new java.util.LinkedHashMap<>();
             Map<String, Long> ipOldest = new java.util.LinkedHashMap<>();
             for (int i = 0; i < targets.length(); i++) {
-                JSONObject target = targets.getJSONObject(i); validateTarget(target);
-                if (!selectedFleet.equals(target.getString("fleetId")) || blockedCredentialProfiles.contains(target.getString("credentialId"))) continue;
-                String pc = target.getString("pcId"), fleet = target.getString("fleetId");
-                boolean pending = networkCache.pendingDelivery(fleet, pc);
-                long ipDeadline = pending ? networkCache.nextDeliveryAt(fleet, pc) : networkCache.nextReadAt(pc);
-                if (!ipInFlight.contains(pc) && permittedNetworkObservation(store, target)
-                        && ipDeadline <= now && target.optLong("networkRetryAtMs") <= now) {
-                    ipEligible.put(pc, target); ipOldest.put(pc, target.optLong("lastNetworkAttemptAtMs"));
-                }
-                if (inFlight.contains(target.getString("id"))) continue;
-                boolean approved = target.optBoolean("approved"), paused = target.optBoolean("paused");
-                boolean setup = target.optBoolean("setupPending") && MonitoringPolicy.due(true, approved, paused, now,
-                        target.optLong("lastSetupAttemptAtMs"), target.optLong("retryAtMs"), 300_000);
-                boolean gpu = MonitoringPolicy.due(true, approved, paused, now, target.optLong("lastGpuAttemptAtMs"), target.optLong("retryAtMs"), MonitoringPolicy.GPU_INTERVAL_MS);
-                boolean rewards = target.optBoolean("rewardsAuthorized") && MonitoringPolicy.due(true, approved, paused, now,
-                        target.optLong("lastRewardsAttemptAtMs"), Math.max(Math.max(observedProviderRetryAt, store.rewardsRetryAtMs()), Math.max(target.optLong("retryAtMs"), target.optLong("rewardsRetryAtMs"))), MonitoringPolicy.REWARDS_INTERVAL_MS);
-                if (gpu || rewards || setup) {
-                    String id = target.getString("id"); eligible.put(id, target); operations.put(id, new boolean[]{setup, rewards, gpu || setup});
-                    long attempt = Math.min(gpu || setup ? target.optLong("lastGpuAttemptAtMs") : Long.MAX_VALUE,
-                            rewards ? target.optLong("lastRewardsAttemptAtMs") : Long.MAX_VALUE);
-                    oldest.put(id, attempt);
-                }
+                // A malformed record must not starve unrelated PCs. Node state is
+                // deliberately checked only after admitting this PC's IP lane.
+                try {
+                    JSONObject target = targets.getJSONObject(i);
+                    if (!selectedFleet.equals(target.optString("fleetId"))) continue;
+                    validatePcTarget(target);
+                    if (blockedCredentialProfiles.contains(target.getString("credentialId"))) continue;
+                    String pc = target.getString("pcId"), fleet = target.getString("fleetId");
+                    boolean pending = networkCache.pendingDelivery(fleet, pc);
+                    long ipDeadline = pending ? networkCache.nextDeliveryAt(fleet, pc) : networkCache.nextReadAt(pc);
+                    if (!ipInFlight.contains(pc) && permittedNetworkObservation(store, target)
+                            && ipDeadline <= now && target.optLong("networkRetryAtMs") <= now) {
+                        ipEligible.put(pc, target); ipOldest.put(pc, target.optLong("lastNetworkAttemptAtMs"));
+                    }
+                    if (inFlight.contains(target.getString("id"))) continue;
+                    validateNodeTarget(target);
+                    boolean approved = target.optBoolean("approved"), paused = target.optBoolean("paused");
+                    boolean setup = target.optBoolean("setupPending") && MonitoringPolicy.due(true, approved, paused, now,
+                            target.optLong("lastSetupAttemptAtMs"), target.optLong("retryAtMs"), 300_000);
+                    boolean gpu = MonitoringPolicy.due(true, approved, paused, now, target.optLong("lastGpuAttemptAtMs"), target.optLong("retryAtMs"), MonitoringPolicy.GPU_INTERVAL_MS);
+                    boolean rewards = target.optBoolean("rewardsAuthorized") && MonitoringPolicy.due(true, approved, paused, now,
+                            target.optLong("lastRewardsAttemptAtMs"), Math.max(Math.max(observedProviderRetryAt, store.rewardsRetryAtMs()), Math.max(target.optLong("retryAtMs"), target.optLong("rewardsRetryAtMs"))), MonitoringPolicy.REWARDS_INTERVAL_MS);
+                    if (gpu || rewards || setup) {
+                        String id = target.getString("id"); eligible.put(id, target); operations.put(id, new boolean[]{setup, rewards, gpu || setup});
+                        long attempt = Math.min(gpu || setup ? target.optLong("lastGpuAttemptAtMs") : Long.MAX_VALUE,
+                                rewards ? target.optLong("lastRewardsAttemptAtMs") : Long.MAX_VALUE);
+                        oldest.put(id, attempt);
+                    }
+                } catch (Exception invalidTarget) { /* Preserve the record; use only independently validated PC authority. */ }
+            }
+            for (String pc : MonitoringPolicy.oldestFirst(ipOldest, MonitoringPolicy.IP_SLOTS - ipInFlight.size() - (reconcilingNetworkDelivery ? 1 : 0))) {
+                try { dispatchNetwork(ipEligible.get(pc)); } catch (Exception unavailable) { /* The saved PC stays eligible under its own retry policy. */ }
             }
             for (String id : MonitoringPolicy.oldestFirst(oldest, MonitoringPolicy.NODE_SLOTS - inFlight.size())) {
-                boolean[] actions = operations.get(id); dispatch(eligible.get(id), actions[0], actions[1], actions[2]);
+                try {
+                    boolean[] actions = operations.get(id); dispatch(eligible.get(id), actions[0], actions[1], actions[2]);
+                } catch (Exception unavailable) { /* An independent node-state failure cannot cancel the PC IP lane. */ }
             }
-            for (String pc : MonitoringPolicy.oldestFirst(ipOldest, MonitoringPolicy.IP_SLOTS - ipInFlight.size())) dispatchNetwork(ipEligible.get(pc));
         } catch (Exception ignored) { /* Vault unavailable: no credentials or endpoints are guessed. */ }
-        handler.postDelayed(tick, inFlight.isEmpty() && ipInFlight.isEmpty() ? 5000 : 1000);
+        handler.postDelayed(tick, inFlight.isEmpty() && ipInFlight.isEmpty() && !reconcilingNetworkDelivery ? 5000 : 1000);
     }
     private void dispatch(JSONObject target, boolean enable, boolean rewards, boolean gpu) throws Exception {
         String id = target.getString("id");
@@ -507,7 +547,13 @@ final class MonitoringController {
         });
     }
     private SshDiscovery.NetworkResult readPcNetwork(long run, JSONObject target, SshDiscovery.Credential credential) throws Exception {
-        DiscoveryNetwork network = DiscoveryNetwork.capture(activity);
+        DiscoveryNetwork network;
+        try { network = DiscoveryNetwork.capture(activity); }
+        catch (Exception unavailable) {
+            if (!canCollectNetwork(run, target)) return new SshDiscovery.NetworkResult("cancelled", null);
+            return new SshDiscovery.NetworkResult("network-unavailable", new PublicIpReader.Observation(System.currentTimeMillis(),
+                    null, null, null, null, 0, PublicIpReader.SOURCE, "connection", "interface-read-failure", null));
+        }
         networks.add(network); networkCredentials.put(network, target.getString("credentialId"));
         networkTargets.put(network, target.getString("id"));
         try {
@@ -518,6 +564,10 @@ final class MonitoringController {
         } finally { networkTargets.remove(network); networkCredentials.remove(network); networks.remove(network); network.close(); }
     }
     private boolean currentFleetHasPc(String fleetId, String pcId) throws Exception {
+        return currentFleetPcIds(fleetId).contains(pcId);
+    }
+    private Set<String> currentFleetPcIds(String fleetId) throws Exception {
+        Set<String> result = new HashSet<>();
         JSONArray fleets = request("/mobile/fleets", null, 4 * 1024 * 1024).getJSONArray("fleets");
         for (int i = 0; i < fleets.length(); i++) {
             JSONObject fleet = fleets.getJSONObject(i);
@@ -525,10 +575,86 @@ final class MonitoringController {
             JSONArray hosts = fleet.getJSONArray("hosts");
             for (int j = 0; j < hosts.length(); j++) {
                 JSONObject pc = hosts.getJSONObject(j).optJSONObject("pcMetadata");
-                if (pc != null && pcId.equals(pc.optString("pcId"))) return true;
+                if (pc != null && pc.optString("pcId").matches("[a-f0-9]{64}")) result.add(pc.getString("pcId"));
             }
         }
-        return false;
+        return result;
+    }
+    /** Confirm native delivery receipts against the real receiver on resume, without source reads. */
+    private void reconcileNetworkDelivery(JSONArray targets, long now) {
+        long run = generation; String fleet = selectedFleet;
+        reconcilingNetworkDelivery = true; reconciledNetworkGeneration = run; lastNetworkReconciliationAt = now;
+        try {
+            ipWorker.execute(() -> {
+                try {
+                    if (!active(run)) return;
+                    JSONObject response = request("/mobile/observations?fleet=" + fleet, null, 4 * 1024 * 1024);
+                    if (!(response.opt("schema") instanceof Number) || response.getDouble("schema") != 1
+                            || !fleet.equals(response.optString("fleetId")) || !response.has("error") || !response.isNull("error")) return;
+                    JSONArray records = response.getJSONArray("pcNetworks");
+                    if (records.length() > 2048) return;
+                    Map<String, PublicIpReader.Observation> received = new java.util.HashMap<>();
+                    for (int i = 0; i < records.length(); i++) {
+                        JSONObject record = records.getJSONObject(i);
+                        exactFields(record, new String[]{"pcId", "network", "receivedAtMs"}, new String[]{"lastGoodNetwork"});
+                        String pcId = strictString(record, "pcId");
+                        if (!pcId.matches("[a-f0-9]{64}") || received.containsKey(pcId)) throw new IllegalArgumentException("Invalid PC network receiver");
+                        strictTime(record, "receivedAtMs", false);
+                        PublicIpReader.Observation observation = receiverNetwork(record.getJSONObject("network"));
+                        if (record.has("lastGoodNetwork")) receiverNetwork(record.getJSONObject("lastGoodNetwork"));
+                        received.put(pcId, observation);
+                    }
+                    Set<String> associated = currentFleetPcIds(fleet);
+                    if (!active(run)) return;
+                    for (int i = 0; i < targets.length(); i++) {
+                        JSONObject target = targets.optJSONObject(i);
+                        if (target == null || !fleet.equals(target.optString("fleetId"))) continue;
+                        String pcId = target.optString("pcId");
+                        if (associated.contains(pcId) && canCollectNetwork(run, target))
+                            networkCache.reconcileDelivery(fleet, pcId, received.get(pcId));
+                    }
+                } catch (Exception unavailable) { /* Only a complete validated receiver response can invalidate a receipt. */ }
+                finally { reconcilingNetworkDelivery = false; }
+            });
+        } catch (java.util.concurrent.RejectedExecutionException stopped) { reconcilingNetworkDelivery = false; }
+    }
+    /** Parse fields explicitly; server JSON property order is not part of the wire contract. */
+    static PublicIpReader.Observation receiverNetwork(JSONObject value) throws Exception {
+        exactFields(value, new String[]{"schema", "observedAtMs", "status", "publicIp", "publicObservedAtMs", "privateIp", "privateObservedAtMs", "source"},
+                new String[]{"publicFailure", "privateFailure", "httpStatus", "retryAtMs"});
+        if (!(value.opt("schema") instanceof Number) || value.getDouble("schema") != 1) throw new IllegalArgumentException("Invalid network schema");
+        long observed = strictTime(value, "observedAtMs", false);
+        String publicIp = value.isNull("publicIp") ? null : strictString(value, "publicIp");
+        String privateIp = value.isNull("privateIp") ? null : strictString(value, "privateIp");
+        Long publicAt = value.isNull("publicObservedAtMs") ? null : strictTime(value, "publicObservedAtMs", false);
+        Long privateAt = value.isNull("privateObservedAtMs") ? null : strictTime(value, "privateObservedAtMs", false);
+        String status = strictString(value, "status"), source = strictString(value, "source");
+        String publicFailure = value.has("publicFailure") ? strictString(value, "publicFailure") : null;
+        String privateFailure = value.has("privateFailure") ? strictString(value, "privateFailure") : null;
+        Integer httpStatus = value.has("httpStatus") ? Math.toIntExact(strictTime(value, "httpStatus", false)) : null;
+        long retry = value.has("retryAtMs") ? strictTime(value, "retryAtMs", false) : 0;
+        if (!status.equals(publicIp == null ? "unavailable" : "ok") || httpStatus != null && !"http-refusal".equals(publicFailure))
+            throw new IllegalArgumentException("Invalid network status");
+        return new PublicIpReader.Observation(observed, publicIp, publicAt, privateIp, privateAt, retry, source, publicFailure, privateFailure, httpStatus);
+    }
+    private static void exactFields(JSONObject value, String[] required, String[] optional) throws Exception {
+        Set<String> allowed = new HashSet<>(java.util.Arrays.asList(required)); allowed.addAll(java.util.Arrays.asList(optional));
+        for (String key : required) if (!value.has(key)) throw new IllegalArgumentException("Missing network field");
+        java.util.Iterator<String> keys = value.keys();
+        while (keys.hasNext()) if (!allowed.contains(keys.next())) throw new IllegalArgumentException("Unknown network field");
+    }
+    private static String strictString(JSONObject value, String key) throws Exception {
+        Object field = value.get(key);
+        if (!(field instanceof String)) throw new IllegalArgumentException("Invalid network string");
+        return (String) field;
+    }
+    private static long strictTime(JSONObject value, String key, boolean zeroAllowed) throws Exception {
+        Object field = value.get(key);
+        if (!(field instanceof Number)) throw new IllegalArgumentException("Invalid network number");
+        double number = ((Number) field).doubleValue();
+        if (!Double.isFinite(number) || number != Math.rint(number) || number < (zeroAllowed ? 0 : 1) || number > PublicIpReader.MAX_SAFE_INTEGER)
+            throw new IllegalArgumentException("Invalid network time");
+        return ((Number) field).longValue();
     }
     private boolean canCollectNetwork(long run, JSONObject target) {
         return activeTarget(run, target) && !storageBlocked && permittedNetworkObservation(store, target) && activeTarget(run, target);
@@ -536,10 +662,12 @@ final class MonitoringController {
     static boolean permittedNetworkObservation(DiscoveryStore store, JSONObject expected) { return permittedTarget(store, expected, true); }
     private static boolean permittedTarget(DiscoveryStore store, JSONObject expected, boolean pcNetwork) {
         try {
+            validatePcTarget(expected);
             JSONArray targets = store.monitoringTargets();
             for (int i = 0; i < targets.length(); i++) {
-                JSONObject current = targets.getJSONObject(i);
-                if (!current.getString("id").equals(expected.getString("id"))) continue;
+                JSONObject current = targets.optJSONObject(i);
+                if (current == null || !current.optString("id").equals(expected.getString("id"))) continue;
+                validatePcTarget(current);
                 if (!(pcNetwork ? MonitoringPolicy.pcNetworkPermitted(current.optBoolean("approved"), current.optBoolean("paused"), current.optString("status"))
                         : current.optBoolean("approved") && !current.optBoolean("paused"))
                         || current.optBoolean("aliasReplaced") || !current.getString("pcId").equals(expected.getString("pcId"))

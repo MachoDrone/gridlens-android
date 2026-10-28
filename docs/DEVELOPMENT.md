@@ -355,3 +355,30 @@ and combined mode always preserves both positions with − for missing values.
 Missing/invalid preferences default to hidden. Live and synthetic views, header
 help and accessible labels share the cycle. Sorting retains full values and taps
 initiate no network requests. These adaptations do not edit the desktop checkout.
+
+## Saved PC IP recovery in 0.2.10
+
+PC identity/credential/approval validation is now separate from validation of node
+bindings and optional sudo state. A malformed target is isolated to its own work;
+it cannot abort scheduling for other PCs or fleets. Node work keeps its strict
+binding validation. PC IP work continues only with valid saved PC authority and
+current fleet association; no malformed record or denial is silently removed.
+
+The reserved IP worker reconciles acknowledged native observations against the
+actual cache-only observation API on resume and at a bounded one-minute interval.
+A missing or older received record makes the same native observation eligible for
+delivery again, without another curl read or timestamp change. Existing local
+delivery retry and provider deadlines remain intact. Invalid/unavailable receiver
+responses do not discard delivery receipts.
+
+Explicit native monitoring approval can register PC-only access after an
+authenticated discovery and matching saved fleet PC association even when exact
+node bindings are unavailable. It keeps node reads paused and grants no additional
+reward or GPU authority. Existing node records, source restrictions and cached
+measurements are preserved.
+
+`SmokeInstrumentation -e productionSsh true` exercises real Android network capture,
+SSH authentication and the production controller against a generated local SSH
+fixture, including three nodes with unsupported GPU namespaces. The fixture never
+executes supplied shell commands or contacts public providers. Saved-state fixtures
+cover invalid node records and cache receipt recovery independently of real PCs.

@@ -465,7 +465,9 @@ final class DiscoveryController {
             + (results.size() < expected ? " Some selected PCs were not inspected." : "")
             + (unresolved > 0 ? " Normal and elevated inventory observations may refer to the same unresolved instance." : "")
             + (pcConflicts > 0 ? " " + pcConflicts + " host addresses appeared on conflicting PC identities; their PC name and IP addresses remain unknown." : "") + pcDetails;
-        if (addresses.isEmpty()) { message("No verified host identities", summary + " Existing saved fleets remain unchanged."); cancel(); return; }
+        if (addresses.isEmpty() && !allowsEmptyMonitoringMerge(fleetId, enableMonitoringForBatch, lastRequests, results)) {
+            message("No verified host identities", summary + " Existing saved fleets remain unchanged."); cancel(); return;
+        }
         String savedFleet = fleetId;
         int run = generation;
         JSONObject operation = new JSONObject();
@@ -495,16 +497,34 @@ final class DiscoveryController {
                 List<JSONObject> setupTargets = setup;
                 String setupIssue = setupFailure;
                 boolean enabled = enableMonitoringForBatch;
+                long pcOnly = setupTargets.stream().filter(target -> "binding-changed".equals(target.optString("status"))
+                        && !target.optBoolean("setupPending")).count();
                 ui(run, () -> {
                     dismissProgress(); working = false; cancel(); navigation.open("fleet:" + id);
                     if (monitoring != null && enabled) monitoring.startSetup(setupTargets);
                     message("Fleet saved", summary + (setupIssue != null ? " " + setupIssue : enabled ? setupTargets.isEmpty()
-                            ? " No exact node-container bindings could be verified for monitoring. Existing public Fleet data remains available."
-                            : " Monitoring setup is now verifying rewards and GPU access. Keep this fleet open; unavailable targets show their own status."
+                            ? " No approved PC connection could be registered for this fleet. Existing public Fleet data remains available."
+                            : pcOnly > 0 ? " PC IP checks are enabled. Node bindings remain unverified on " + pcOnly
+                                + " PCs; rewards and GPU setup are not started on those PCs. Keep this fleet open for independent IP checks."
+                            : " PC IP checks are enabled, and monitoring setup is verifying rewards and GPU access. Keep this fleet open; unavailable targets show their own status."
                             : " Public Fleet reads need no SSH. Choose Enable monitoring to connect rewards and GPU recordings using these saved PCs."));
                 });
             } catch (Exception error) { ui(run, () -> { dismissProgress(); working = false; message("Fleet could not be saved", "The save could not be confirmed. Check Saved fleets before retrying; the request may have completed."); cancel(); }); }
         });
+    }
+    /** An explicitly approved saved-PC repair may keep the roster when node discovery is unavailable. */
+    static boolean allowsEmptyMonitoringMerge(String savedFleet, boolean approved, List<SshDiscovery.BatchRequest> requests,
+            java.util.Map<String, SshDiscovery.Result> results) {
+        if (!approved || savedFleet == null || !savedFleet.matches("[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}")) return false;
+        for (SshDiscovery.BatchRequest request : requests) {
+            SshDiscovery.Result result = results.get(request.candidate.endpointKey());
+            if (result == null || result.pcMetadata == null || result.status == SshDiscovery.Status.AUTH_FAILED
+                    || result.status == SshDiscovery.Status.IDENTITY_CHANGED || result.status == SshDiscovery.Status.CANCELLED
+                    || result.status == SshDiscovery.Status.UNREACHABLE) continue;
+            try { if (MonitoringController.pcId(request.identity).equals(result.pcMetadata.pcId)) return true; }
+            catch (Exception invalidIdentity) { /* Only an authenticated, matching PC can preserve this repair flow. */ }
+        }
+        return false;
     }
     private void fleets() {
         io.execute(() -> {
