@@ -1,8 +1,9 @@
 # Android Network Discovery and Saved Fleets
 
 Network Discovery is Android's initial scenario. Search network (or Fleets →
-Search network) opens native Android screens. No network search or SSH connection
-starts on app launch, scenario reopening, normal refresh or foreground resume.
+Search network) opens native Android screens. Network searches remain explicitly initiated. Approved PC IP collection and
+separately approved rewards/GPU monitoring reuse saved SSH endpoints while the
+saved fleet is open; they do not repeat discovery.
 Supplied Host Addresses and Real200 imports remain separate. Desktop code,
 services, external input files and VPN configuration are unchanged.
 
@@ -31,14 +32,21 @@ services, external input files and VPN configuration are unchanged.
 5. Read-only inventory reports verified public addresses, inaccessible PCs and
    unresolved Nosana instances separately. Container access may need explicit
    per-PC sudo approval and a password. No passwordless-sudo setup is required.
-   Successful public addresses automatically create and select a named fleet.
+   The normal review offers **Inspect + automatic IP**, explicitly approving
+   foreground PC-only IP refresh with the already remembered credentials. It
+   grants no wallet/GPU/sudo operations. **Inspect only** preserves one-time
+   inspection. Credentials left unremembered remain ephemeral and are excluded
+   from automatic IP collection. Existing protected pauses and denials remain;
+   the save result reports exclusions. Successful public addresses automatically
+   create and select a named fleet.
    Rename, reopen, rescan, remove selected hosts or delete it through Fleets.
 
 Rescans merge verified discoveries and update their discovery dates. Unreachable
 PCs do not remove saved hosts. A successful discovery is not a fresh metric
-reading. Normal monitoring uses the existing public providers, shared caches,
-request budgets, retry deadlines and source timestamps over ordinary internet;
-it needs neither ongoing SSH access nor the original VPN.
+reading. Public Nosana/Solana readings use the existing providers, shared caches, request
+budgets, retry deadlines and source timestamps over ordinary internet. Automatic
+PC IP checks separately need the saved SSH endpoint reachable over Wi-Fi or VPN;
+failed or unavailable connections retain dated values without renewing them.
 
 ## Network and SSH boundaries
 

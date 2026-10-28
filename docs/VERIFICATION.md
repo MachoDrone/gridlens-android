@@ -711,3 +711,68 @@ Physical acceptance of the reported nn01 case remains pending operator feedback.
 
 Verified signed APK size: 197354084 bytes. SHA-256:
 `82670036492b3c018a034c6e7e2756e5b51ce2d8f1c0bdfa06f366f3b62dcc89`.
+
+## Android 0.2.12 — automatic PC IP enrollment in normal discovery, October 28, 2026
+
+Version code 15 adds explicit PC-only automatic IP scope to ordinary native review
+and saving. **Inspect + automatic IP** uses already remembered credentials after
+successful SSH/PC verification. **Inspect only** remains available; unchecked
+Remember remains ephemeral. No separate repair action or full rewards/GPU setup is
+required to enroll new PCs. Existing healthy monitoring, protected pauses, source
+restrictions and retry deadlines stay intact. Only strictly untouched legacy
+inspection records can be converted through the new explicit approval.
+
+The operator reported that 0.2.11's native repair worked on nn01, but rejected the
+extra repair step as ordinary setup. That action is a reported workaround; the
+underlying nn01 state was not inspected. Code review separately confirmed the old
+normal Inspect path could save hosts without enabling PC IP collection. The
+operator's public IP literal is absent from the complete signed APK; the live
+reader continues to parse the host curl response, not an embedded address.
+
+Completed verification:
+
+- `npm run check` passed: 117 Android runtime/helper/browser tests, 27 Python
+  recorder tests, 816 inherited Node tests and 332 browser tests (11.7 minutes).
+  No vendored browser implementation changed in this update; provenance and
+  artifact checks still reproduce the existing snapshot.
+- All 168 Android unit tests passed in each debug/release variant. Release lint,
+  debug/test APKs and the signed release build passed. Pure enrollment checks
+  cover authenticated PC identity, matching remembered credentials, explicit
+  ordinary permission and strict legacy-state eligibility.
+- API 36 native-only verification passed in 10.458 seconds, full smoke in 98.187
+  seconds, real production SSH in 8.218 seconds and direct IP repair in 16.024
+  seconds. Those checks used the final application APK.
+- Fresh normal onboarding passed in 61.612 seconds: actual native search, SSH
+  trust, credential entry, **Inspect + automatic IP**, three differently named
+  containers, fleet saving, automatic PC egress/interface reading and three
+  rendered IP cells. No manual IP-repair action, full-monitoring approval,
+  wallet/GPU/sudo grant or repeated discovery was used. Encrypted-store checks
+  preserve current authority, manual pauses, revoked access, source waits and
+  actual SSH identity/credential denials, including a shared batch rejection.
+- A separate fresh onboarding run with **Remember unchecked** passed in 25.922
+  seconds. It saved the three public host records without a persisted credential,
+  monitoring target or PC-IP observation. Across the two runs the isolated SSH
+  server counted one public-IP read, zero prohibited commands and zero unexpected
+  commands. Provider routes were intercepted before synthetic addresses reached
+  public readers.
+- The debug fixture guard restricts real sockets to its generated emulator-host
+  port, blocks mandatory port-22 probes and other destinations, and suppresses
+  advertisement discovery only during the test. Release builds cannot activate
+  this restriction. All fixtures used generated identities and disposable app
+  data; no operator PC, wallet key or existing host service was accessed.
+- The signed package is `com.gridlens.android`, 0.2.12/code 15, with the original
+  release certificate. Signature continuity, update manifest, ZIP/ELF 16 KiB
+  alignment, all 47 runtime/four helper assets, automatic-enrollment code and
+  exclusion of native test classes/private inputs verify.
+
+Fixture development corrected preflight address construction, waited for real
+foreground Wi-Fi/VPN readiness, and used physical taps for native list items.
+The normal first-read UI assertion allows the existing thirty-second cache poll
+plus request allowance. An artificial chained pause/forget/second-search sequence
+was not established; the remembered and unremembered normal onboarding branches
+were verified in separate clean runs instead. The application APK and product
+permission/network guards were unchanged during these harness corrections. Owned
+emulators and synthetic data were removed; raw evidence remains outside Git.
+
+Verified signed APK size: 197354084 bytes. SHA-256:
+`ef8f3bec11df359c244fde639e878a888a58d9faf8a29994c6489fa2ccf23aca`.

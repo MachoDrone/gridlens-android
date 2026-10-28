@@ -18,6 +18,9 @@ public final class ProductionNetworkInstrumentation extends Instrumentation {
     private Bundle arguments;
     private Instrumentation driver = this;
     static void verify(Instrumentation provided, Bundle arguments) {
+        if (arguments != null && "true".equals(arguments.getString("autoIp"))) {
+            AutomaticPcIpVerification.verify(provided, arguments); return;
+        }
         if (arguments != null && "true".equals(arguments.getString("directIp"))) {
             DirectPcIpVerification.verify(provided, arguments); return;
         }

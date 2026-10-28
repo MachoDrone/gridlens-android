@@ -113,6 +113,120 @@ final class MonitoringController {
         for (byte b : hash) text.append(String.format(java.util.Locale.ROOT, "%02x", b & 255));
         return text.toString();
     }
+    static final class PcIpEnrollmentReport {
+        int enabled, unchanged;
+        final List<String> excluded = new ArrayList<>();
+        String summary() {
+            return enabled + " PCs approved for automatic IP checks while this fleet is open. Rewards and GPU permissions were not added."
+                    + (unchanged == 0 ? "" : " " + unchanged + " existing PC approvals were kept unchanged.")
+                    + (excluded.isEmpty() ? "" : "\nAutomatic IP excluded: " + String.join("; ", excluded) + ".")
+                    + " Keep this fleet open for its scheduled IP readings.";
+        }
+    }
+    /** Ordinary discovery grants only PC IP access, using credentials already remembered by the user. */
+    PcIpEnrollmentReport registerAutomaticPcIp(String fleetId, String profileId, List<SshDiscovery.BatchRequest> requests,
+            Map<String, SshDiscovery.Result> results, Map<String, String> credentialIds,
+            java.util.function.BooleanSupplier consentActive) throws Exception {
+        PcIpEnrollmentReport report = new PcIpEnrollmentReport();
+        Set<String> rejectedCredentials = new HashSet<>();
+        for (SshDiscovery.BatchRequest request : requests) {
+            SshDiscovery.Result result = results.get(request.candidate.endpointKey());
+            String credentialId = credentialIds.get(request.candidate.endpointKey());
+            if (result != null && result.status == SshDiscovery.Status.AUTH_FAILED && credentialId != null) {
+                rejectedCredentials.add(credentialId);
+                JSONObject remembered = store.credential(credentialId);
+                if (remembered != null && matchesRememberedCredential(request, remembered)) {
+                    try { store.suspendDirectPcCredential(credentialId, remembered.toString()); }
+                    catch (Exception failure) { storageBlocked = true; cancelActive(); throw failure; }
+                    rejectDirectPcCredential(credentialId);
+                }
+            }
+        }
+        Set<String> associated = currentFleetPcIds(fleetId);
+        for (SshDiscovery.BatchRequest request : requests) {
+            String endpoint = request.candidate.endpointKey(), reason = null;
+            String credentialId = credentialIds.get(endpoint);
+            SshDiscovery.Result result = results.get(endpoint);
+            if (!consentActive.getAsBoolean()) reason = "approval interrupted";
+            else if (storageBlocked) reason = "permission storage needs recovery";
+            else if (!PcIpEnrollment.authenticatedPc(request, result)) reason = "PC identity or SSH login not verified";
+            String pc = pcId(request.identity);
+            if (reason == null && !associated.contains(pc)) reason = "no matching saved host association";
+            JSONObject remembered = credentialId == null ? null : store.credential(credentialId);
+            if (reason == null && (remembered == null || !matchesRememberedCredential(request, remembered))) reason = "matching remembered SSH credentials required";
+            if (reason == null && (rejectedCredentials.contains(credentialId) || !automaticCredentialAllowed(credentialId))) reason = "saved SSH credentials remain paused";
+            JSONObject existing = store.findMonitoringPc(fleetId, pc);
+            if (reason == null && existing != null && !unusedInspection(existing)) {
+                if (existing.optBoolean("approved") && !existing.optBoolean("aliasReplaced")
+                        && MonitoringPolicy.pcNetworkPermitted(true, existing.optBoolean("paused"), existing.optString("status"))) {
+                    report.unchanged++; continue;
+                }
+                reason = "existing restrictions kept; use the PC IP repair action";
+            }
+            if (reason == null && !automaticPcStateAllowed(fleetId, pc, existing, request.candidate)) reason = "saved PC or endpoint records need explicit repair";
+            if (reason != null) { report.excluded.add(endpoint + " (" + reason + ")"); continue; }
+            JSONObject target = existing == null ? new JSONObject().put("id", java.util.UUID.randomUUID().toString())
+                    .put("bindings", new JSONArray()).put("rewardsAuthorized", false).put("rewardsVerified", new JSONArray())
+                    .put("rewardsSuspended", new JSONArray()).put("sudoApproved", false)
+                    .put("authorizationId", java.util.UUID.randomUUID().toString()) : new JSONObject(existing.toString());
+            target.put("fleetId", fleetId).put("profileId", profileId).put("address", request.candidate.address).put("port", request.candidate.port)
+                    .put("keyBase64", request.identity.keyBase64).put("algorithm", request.identity.algorithm).put("pcId", pc)
+                    .put("credentialId", credentialId).put("approved", true).put("paused", true)
+                    .put("setupPending", false).put("status", "binding-changed");
+            boolean saved = store.approveDirectPcIp(existing, target, remembered.toString(), () -> consentActive.getAsBoolean()
+                    && !storageBlocked && automaticCredentialAllowed(credentialId)
+                    && automaticPcStateAllowed(fleetId, pc, existing, request.candidate));
+            if (saved) report.enabled++;
+            else report.excluded.add(endpoint + " (saved approval or credentials changed; no access added)");
+        }
+        return report;
+    }
+    private boolean automaticCredentialAllowed(String credentialId) {
+        if (credentialId == null || blockedCredentialProfiles.contains(credentialId)) return false;
+        try {
+            JSONArray saved = store.monitoringTargets();
+            for (int i = 0; i < saved.length(); i++) {
+                JSONObject target = saved.optJSONObject(i);
+                if (target != null && credentialId.equals(target.optString("credentialId"))
+                        && "credentials-required".equals(target.optString("status"))) return false;
+            }
+            return true;
+        } catch (Exception unavailable) { return false; }
+    }
+    private boolean automaticPcStateAllowed(String fleet, String pc, JSONObject expected, DiscoveryPolicy.Candidate endpoint) {
+        try {
+            int matches = 0;
+            JSONArray saved = store.monitoringTargets();
+            for (int i = 0; i < saved.length(); i++) {
+                JSONObject target = saved.optJSONObject(i);
+                if (target == null || !fleet.equals(target.optString("fleetId"))) continue;
+                if (pc.equals(target.optString("pcId"))) matches++;
+                else if (endpoint.address.equals(target.optString("address")) && endpoint.port == target.optInt("port")) return false;
+            }
+            return matches == (expected == null ? 0 : 1);
+        } catch (Exception unavailable) { return false; }
+    }
+    private static boolean matchesRememberedCredential(SshDiscovery.BatchRequest request, JSONObject remembered) throws Exception {
+        try (SshDiscovery.Credential credential = DiscoveryController.decodeCredential(remembered)) {
+            return PcIpEnrollment.sameCredential(request.credential, credential);
+        }
+    }
+    private static boolean unusedInspection(JSONObject target) {
+        boolean clear = Boolean.FALSE.equals(target.opt("approved")) && Boolean.FALSE.equals(target.opt("paused"))
+                && Boolean.FALSE.equals(target.opt("setupPending")) && Boolean.FALSE.equals(target.opt("rewardsAuthorized"))
+                && target.optJSONArray("rewardsVerified") != null && target.optJSONArray("rewardsVerified").length() == 0
+                && target.optJSONArray("rewardsSuspended") != null && target.optJSONArray("rewardsSuspended").length() == 0
+                && Boolean.FALSE.equals(target.opt("sudoApproved")) && !target.has("sudoPassword")
+                && (!target.has("aliasReplaced") || Boolean.FALSE.equals(target.opt("aliasReplaced")))
+                && target.opt("lastSetupAttemptAtMs") instanceof Number
+                && ((Number) target.opt("lastSetupAttemptAtMs")).doubleValue() == 0;
+        for (String field : new String[]{"gpuCursors", "lastGpuAttemptAtMs", "lastRewardsAttemptAtMs", "lastNetworkAttemptAtMs",
+                "lastConnectionCheckAtMs", "lastConnectionCheckStatus", "retryAtMs", "rewardsRetryAtMs", "networkRetryAtMs", "recoveryGeneration"})
+            if (target.has(field)) clear = false;
+        if (target.optLong("lastSetupAttemptAtMs") != 0) clear = false;
+        return PcIpEnrollment.unusedInspection(target.optBoolean("approved"), target.optBoolean("paused"), target.optString("status"),
+                target.optBoolean("setupPending"), target.optBoolean("aliasReplaced"), clear);
+    }
     /** Called only by the native discovery save flow after successful explicit approval. */
     List<JSONObject> register(String fleetId, String profileId, List<SshDiscovery.BatchRequest> requests,
             Map<String, SshDiscovery.Result> results, Map<String, String> credentialIds,

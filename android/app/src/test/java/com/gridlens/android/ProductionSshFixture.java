@@ -29,14 +29,20 @@ public final class ProductionSshFixture {
         server.setKeyPairProvider(KeyPairProvider.wrap(java.util.List.of(key, ec.generateKeyPair())));
         server.setPasswordAuthenticator((user, password, session) -> user.equals("fixture") && password.equals("isolated-ssh-password"));
         Map<String,String> replies = new HashMap<>();
+        replies.put(PcMetadata.NAME_COMMAND, "three-host-fixture\n");
         replies.put(PcMetadata.ADDRESSES_COMMAND, "192.168.10.101 172.17.0.1 172.18.0.1\n");
         replies.put(PublicIpReader.command(4), "HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\n8.8.8.8\n");
+        StringBuilder inventory = new StringBuilder();
+        String[] names = {"render-worker-east", "arbitrary_blue_2", "compute.third"};
         for (int index = 1; index <= 3; index++) {
             NodeBinding binding = new NodeBinding("docker", null, "a".repeat(63) + index, "1".repeat(31) + index);
+            inventory.append(binding.nodeContainerId).append("\tnosana/nosana-node:latest\t")
+                    .append(names[index - 1]).append('\n');
             replies.put(DiscoveryPolicy.bindingInspectionCommand(binding, false), binding.nodeContainerId + "\ttrue\tnosana/nosana-node:latest\thost\n");
             replies.put(DiscoveryPolicy.bindingAddressCommand(binding, false), binding.address + "\n");
         }
-        AtomicInteger publicReads = new AtomicInteger(), otherCommands = new AtomicInteger();
+        replies.put(DiscoveryPolicy.inventoryCommand("docker", null, false), inventory.toString());
+        AtomicInteger publicReads = new AtomicInteger(), otherCommands = new AtomicInteger(), prohibitedCommands = new AtomicInteger(), unexpectedCommands = new AtomicInteger();
         server.setCommandFactory((channel, command) -> new Command() {
             OutputStream out; ExitCallback exit;
             public void setInputStream(InputStream value) { }
@@ -46,7 +52,15 @@ public final class ProductionSshFixture {
             public void start(ChannelSession channel, Environment environment) throws java.io.IOException {
                 if (command.equals(PublicIpReader.command(4))) publicReads.incrementAndGet();
                 else otherCommands.incrementAndGet();
+                // Count unapproved authority without logging commands, generated credentials
+                // or key material. Even an unexpected command is never executed.
+                if (command.contains("sudo") || command.contains("/nosana_key.json") || command.contains("rewards")
+                        || command.contains(" docker run ") || command.contains("/docker run ")
+                        || command.contains(" volume create ") || command.contains(" pull ")
+                        || command.contains(" container start ")) prohibitedCommands.incrementAndGet();
                 String response = replies.get(command);
+                if (response == null && !command.equals(DiscoveryPolicy.inventoryCommand("podman", null, false))
+                        && !command.equals(GpuCollector.listContainer(false))) unexpectedCommands.incrementAndGet();
                 if (response != null) { out.write(response.getBytes(StandardCharsets.UTF_8)); out.flush(); }
                 exit.onExit(response == null ? 127 : 0);
             }
@@ -59,7 +73,8 @@ public final class ProductionSshFixture {
         try { while (System.in.read() != -1) { } }
         finally {
             server.stop(true);
-            System.out.println("{\"publicReads\":" + publicReads.get() + ",\"otherCommands\":" + otherCommands.get() + "}");
+            System.out.println("{\"publicReads\":" + publicReads.get() + ",\"otherCommands\":" + otherCommands.get()
+                    + ",\"prohibitedCommands\":" + prohibitedCommands.get() + ",\"unexpectedCommands\":" + unexpectedCommands.get() + "}");
         }
     }
     private ProductionSshFixture() { }

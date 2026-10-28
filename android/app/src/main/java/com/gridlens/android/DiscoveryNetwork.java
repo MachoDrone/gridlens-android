@@ -28,8 +28,15 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class DiscoveryNetwork implements AutoCloseable {
     private static final java.util.concurrent.atomic.AtomicLong searches = new java.util.concurrent.atomic.AtomicLong();
     private static final java.util.concurrent.atomic.AtomicLong connections = new java.util.concurrent.atomic.AtomicLong();
+    private static volatile int fixturePortForTesting;
     static long startedSearchesForTesting() { return searches.get(); }
     static long startedConnectionsForTesting() { return connections.get(); }
+    /** Debug instrumentation may only narrow real sockets to its generated emulator fixture. */
+    static void fixtureEndpointForTesting(int port) {
+        if (!BuildConfig.DEBUG) throw new SecurityException("Fixture endpoint restriction requires a debug build");
+        if (port != 0 && (port <= 1024 || port > 65535)) throw new IllegalArgumentException("Generated fixture port required");
+        fixturePortForTesting = port;
+    }
     public interface Progress { void update(int completed, int total, int found); }
     public final List<String> suggestedRanges;
     public final boolean vpn;
@@ -45,6 +52,9 @@ public final class DiscoveryNetwork implements AutoCloseable {
     private final AtomicBoolean overflow = new AtomicBoolean();
     private final NsdManager nsd;
     private final String transportIdentity;
+    // A session retains its restriction even when instrumentation clears the next
+    // capture's guard, so late cancelled workers cannot connect outside the fixture.
+    private final int fixturePort;
     private final java.util.concurrent.ConcurrentLinkedQueue<NsdServiceInfo> pendingServices = new java.util.concurrent.ConcurrentLinkedQueue<>();
     private final AtomicBoolean resolving = new AtomicBoolean();
     private final Map<String, DiscoveryPolicy.Candidate> advertised = Collections.synchronizedMap(new LinkedHashMap<>());
@@ -63,6 +73,7 @@ public final class DiscoveryNetwork implements AutoCloseable {
     }
     private DiscoveryNetwork(Context context, ConnectivityManager manager, Network network, LinkProperties links, boolean vpn) throws IOException {
         this.manager = manager; this.network = network; this.links = links; this.vpn = vpn;
+        this.fixturePort = BuildConfig.DEBUG ? fixturePortForTesting : 0;
         this.nsd = context.getSystemService(NsdManager.class);
         this.transportIdentity = transports(manager.getNetworkCapabilities(network));
         if (vpn) for (Network physical : manager.getAllNetworks()) {
@@ -137,6 +148,8 @@ public final class DiscoveryNetwork implements AutoCloseable {
         synchronized (sockets) { for (Socket socket : sockets) { try { socket.close(); } catch (IOException ignored) { } } sockets.clear(); }
     }
     public Socket connect(String address, int port, int timeout) throws IOException {
+        if (fixturePort != 0 && (!"10.0.2.2".equals(address) || port != fixturePort))
+            throw new IOException("Connection is outside the generated emulator fixture");
         ensureActive();
         connections.incrementAndGet();
         Socket socket = network.getSocketFactory().createSocket();
@@ -152,6 +165,7 @@ public final class DiscoveryNetwork implements AutoCloseable {
     void release(Socket socket) { sockets.remove(socket); try { socket.close(); } catch (IOException ignored) { } }
     /** Optional advertisements use the selected network, never SSH identity evidence. */
     private void startAdvertisements() {
+        if (fixturePort != 0) return;
         if (Build.VERSION.SDK_INT < 33 || android.os.ext.SdkExtensions.getExtensionVersion(Build.VERSION_CODES.TIRAMISU) < 3 || nsd == null || serviceListener != null) return;
         serviceListener = new NsdManager.DiscoveryListener() {
             public void onDiscoveryStarted(String type) { }

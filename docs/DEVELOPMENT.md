@@ -422,3 +422,29 @@ The existing smoke runner’s `productionSsh=true,directIp=true` mode exercises 
 actual popup action/native confirmation and PC-only repair over generated local
 SSH fixtures. It requires an empty disposable emulator; it is not a physical-PC
 or production-data diagnostic command.
+
+## Automatic PC IP enrollment in normal discovery (0.2.12)
+
+The ordinary native review now offers **Inspect + automatic IP**, with explicit
+PC-only foreground collection scope and the existing **Inspect only** alternative.
+Full rewards/GPU monitoring remains a separate approval. Automatic IP enrollment
+requires successful authenticated PC metadata, the current saved fleet association
+and a byte-matching remembered credential used by that inspection. It never saves
+a deliberately ephemeral credential and never grants node, wallet, GPU or sudo
+authority. Successful enrollment uses the existing one-slot PC IP scheduler/cache.
+
+New PC targets are eligible; strictly untouched, never-approved legacy inspection
+records can be converted after this explicit review action. Existing healthy
+monitoring and protected or ambiguous records remain unchanged. The checks reject
+manual/revoked access, source restrictions, prior activity/recovery state, malformed
+fields, duplicate PC records and identity/credential changes. Shared credential
+rejection elsewhere in the same inspection batch prevents automatic enrollment
+with that credential. Foreground cancellation and an atomic snapshot comparison
+protect the approval commit. No public-IP value is inferred or embedded.
+
+The `productionSsh=true,autoIp=true` instrumentation mode drives normal discovery,
+SSH trust, credentials, review and saving, then checks automatic IP delivery to
+three arbitrary-name hosts without invoking manual repair. A second run leaves
+Remember unchecked and verifies that no credential or ongoing IP permission is
+persisted. It is restricted to a disposable emulator and generated local SSH
+fixture; provider routes are intercepted before synthetic addresses reach readers.

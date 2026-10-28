@@ -52,7 +52,8 @@ final class DiscoveryController {
     private final java.util.Map<String, String> credentialIds = new java.util.HashMap<>();
     private final java.util.Map<String, byte[]> monitoringSudo = new java.util.HashMap<>();
     private List<SshDiscovery.BatchRequest> lastRequests = new ArrayList<>();
-    private boolean enableMonitoringForBatch, monitoringIntent, foreground;
+    private boolean enableMonitoringForBatch, monitoringIntent;
+    private volatile boolean enableAutomaticIpForBatch, foreground;
     private volatile boolean recoveringConnections;
     private volatile boolean directPcChecking;
     private boolean directPcCredentialEntry;
@@ -238,27 +239,33 @@ final class DiscoveryController {
         } catch (Exception error) { credentialError(); cancel(); }
     }
     private void reviewRequests(List<Trusted> hosts, List<SshDiscovery.BatchRequest> requests) {
-        String[] choices = new String[hosts.size()];
-        for (int i = 0; i < hosts.size(); i++) choices[i] = "Change credentials: " + display(hosts.get(i).candidate);
+        int offset = monitoringIntent ? 0 : 1;
+        String[] choices = new String[hosts.size() + offset];
+        if (!monitoringIntent) choices[0] = "Enable full monitoring…";
+        for (int i = 0; i < hosts.size(); i++) choices[i + offset] = "Change credentials: " + display(hosts.get(i).candidate);
+        LinearLayout explanation = form();
+        if (!monitoringIntent) label(explanation, "Inspect + automatic IP approves reconnecting to these verified PCs using credentials you already chose to remember, only while their saved fleet is open. Read private interfaces and check public IP with installed curl using ipify; successful checks are cached for 30 minutes. No wallet reads, GPU recorder setup or sudo permission is granted.\n\n"
+                + "PCs without remembered credentials are inspected once and excluded from automatic IP. Existing pauses and restrictions stay in place. Inspect only grants no new automatic access.");
         new AlertDialog.Builder(activity).setTitle("Review " + hosts.size() + " selected, trusted PCs")
+            .setView(monitoringIntent ? null : scroll(explanation))
             .setItems(choices, (d, index) -> {
-                Trusted host = hosts.get(index);
+                if (!monitoringIntent && index == 0) { approveGpuRecording(hosts, requests); return; }
+                int requestIndex = index - offset;
+                Trusted host = hosts.get(requestIndex);
                 newCredential(host, false, (value, ignored) -> {
                     try {
                         SshDiscovery.Credential replacement = decodeCredential(value); openCredentials.add(replacement);
-                        SshDiscovery.BatchRequest old = requests.set(index, new SshDiscovery.BatchRequest(host.candidate, host.identity, replacement, null));
+                        SshDiscovery.BatchRequest old = requests.set(requestIndex, new SshDiscovery.BatchRequest(host.candidate, host.identity, replacement, null));
                         if (value.has("id")) credentialIds.put(host.candidate.endpointKey(), value.getString("id"));
                         else credentialIds.remove(host.candidate.endpointKey());
                         old.credential.close(); openCredentials.remove(old.credential);
                         reviewRequests(hosts, requests);
                     } catch (Exception error) { credentialError(); cancel(); }
                 });
-            }).setPositiveButton(monitoringIntent ? "Enable monitoring" : "Inspect selected PCs", (d, w) -> {
-                if (monitoringIntent) approveGpuRecording(hosts, requests); else collect(requests, false);
+            }).setPositiveButton(monitoringIntent ? "Enable monitoring" : "Inspect + automatic IP", (d, w) -> {
+                if (monitoringIntent) approveGpuRecording(hosts, requests); else collect(requests, false, true);
             })
-            .setNeutralButton(monitoringIntent ? "Inspect only" : "Enable monitoring…", (d, w) -> {
-                if (monitoringIntent) collect(requests, false); else approveGpuRecording(hosts, requests);
-            })
+            .setNeutralButton("Inspect only", (d, w) -> collect(requests, false))
             .setNegativeButton("Cancel", (d, w) -> cancel()).setOnCancelListener(d -> cancel()).show();
     }
     private void approveGpuRecording(List<Trusted> hosts, List<SshDiscovery.BatchRequest> requests) {
@@ -386,7 +393,11 @@ final class DiscoveryController {
         }); return true;
     }
     private void collect(List<SshDiscovery.BatchRequest> selectedRequests, boolean enableGpuRecording) {
+        collect(selectedRequests, enableGpuRecording, false);
+    }
+    private void collect(List<SshDiscovery.BatchRequest> selectedRequests, boolean enableGpuRecording, boolean automaticIp) {
         enableMonitoringForBatch = enableGpuRecording;
+        enableAutomaticIpForBatch = automaticIp;
         String collectorSource;
         try (InputStream input = activity.getAssets().open("gpu-collector/collector.py")) {
             collectorSource = new String(NodeRuntime.readBounded(input, GpuCollector.MAX_SOURCE_BYTES), StandardCharsets.UTF_8);
@@ -469,7 +480,7 @@ final class DiscoveryController {
             + (results.size() < expected ? " Some selected PCs were not inspected." : "")
             + (unresolved > 0 ? " Normal and elevated inventory observations may refer to the same unresolved instance." : "")
             + (pcConflicts > 0 ? " " + pcConflicts + " host addresses appeared on conflicting PC identities; their PC name and IP addresses remain unknown." : "") + pcDetails;
-        if (addresses.isEmpty() && !allowsEmptyMonitoringMerge(fleetId, enableMonitoringForBatch, lastRequests, results)) {
+        if (addresses.isEmpty() && !allowsEmptyMonitoringMerge(fleetId, enableMonitoringForBatch || enableAutomaticIpForBatch, lastRequests, results)) {
             message("No verified host identities", summary + " Existing saved fleets remain unchanged."); cancel(); return;
         }
         String savedFleet = fleetId;
@@ -488,6 +499,10 @@ final class DiscoveryController {
             operation.put("pcMetadata", metadata);
             if (savedFleet == null) operation.put("name", profile.getString("name")); else operation.put("id", savedFleet);
         } catch (Exception error) { storageError(); cancel(); return; }
+        boolean automaticIpApproved = enableAutomaticIpForBatch, fullMonitoringApproved = enableMonitoringForBatch;
+        List<SshDiscovery.BatchRequest> approvedRequests = new ArrayList<>(lastRequests);
+        java.util.Map<String, String> approvedCredentialIds = new java.util.HashMap<>(credentialIds);
+        String approvedProfileId = profile.optString("id");
         working = true; busy("Saving discovered fleet", summary);
         io.execute(() -> {
             try {
@@ -495,23 +510,33 @@ final class DiscoveryController {
                 String id = response.getString("fleetId");
                 List<JSONObject> setup;
                 String setupFailure = null;
-                try { setup = monitoring == null ? new ArrayList<>() : monitoring.register(id, profile.getString("id"), lastRequests,
-                        results, credentialIds, monitoringSudo, enableMonitoringForBatch); }
-                catch (Exception error) { setup = new ArrayList<>(); setupFailure = "The public fleet was saved, but monitoring setup could not be saved. Each PC supports at most 64 exact node bindings and needs remembered SSH credentials. Open Fleets → Enable / repair monitoring to retry."; }
+                String automaticIpSummary = null;
+                try {
+                    if (automaticIpApproved && monitoring != null) {
+                        setup = new ArrayList<>();
+                        automaticIpSummary = monitoring.registerAutomaticPcIp(id, approvedProfileId, approvedRequests,
+                                results, approvedCredentialIds, () -> run == generation && foreground && !destroyed && enableAutomaticIpForBatch).summary();
+                    } else setup = monitoring == null || !fullMonitoringApproved ? new ArrayList<>() : monitoring.register(id, approvedProfileId, approvedRequests,
+                            results, approvedCredentialIds, monitoringSudo, true);
+                }
+                catch (Exception error) { setup = new ArrayList<>(); setupFailure = automaticIpApproved
+                        ? "The public fleet was saved, but automatic IP approval could not finish. Previously saved approvals remain. Reopen native discovery to review the selected PCs again."
+                        : "The public fleet was saved, but monitoring setup could not be saved. Each PC supports at most 64 exact node bindings and needs remembered SSH credentials. Open Fleets → Enable / repair monitoring to retry."; }
                 List<JSONObject> setupTargets = setup;
                 String setupIssue = setupFailure;
-                boolean enabled = enableMonitoringForBatch;
+                String ipSummary = automaticIpSummary;
+                boolean enabled = fullMonitoringApproved;
                 long pcOnly = setupTargets.stream().filter(target -> "binding-changed".equals(target.optString("status"))
                         && !target.optBoolean("setupPending")).count();
                 ui(run, () -> {
                     dismissProgress(); working = false; cancel(); navigation.open("fleet:" + id);
                     if (monitoring != null && enabled) monitoring.startSetup(setupTargets);
-                    message("Fleet saved", summary + (setupIssue != null ? " " + setupIssue : enabled ? setupTargets.isEmpty()
+                    message("Fleet saved", summary + (setupIssue != null ? " " + setupIssue : ipSummary != null ? "\n\n" + ipSummary : enabled ? setupTargets.isEmpty()
                             ? " No approved PC connection could be registered for this fleet. Existing public Fleet data remains available."
                             : pcOnly > 0 ? " PC IP checks are enabled. Node bindings remain unverified on " + pcOnly
                                 + " PCs; rewards and GPU setup are not started on those PCs. Keep this fleet open for independent IP checks."
                             : " PC IP checks are enabled, and monitoring setup is verifying rewards and GPU access. Keep this fleet open; unavailable targets show their own status."
-                            : " Public Fleet reads need no SSH. Choose Enable monitoring to connect rewards and GPU recordings using these saved PCs."));
+                            : " Public Fleet reads need no SSH. No new automatic PC access was approved; existing monitoring settings are unchanged."));
                 });
             } catch (Exception error) { ui(run, () -> { dismissProgress(); working = false; message("Fleet could not be saved", "The save could not be confirmed. Check Saved fleets before retrying; the request may have completed."); cancel(); }); }
         });
@@ -906,7 +931,7 @@ final class DiscoveryController {
         if (monitoring != null) monitoring.selectedScenario(scenario);
     }
     void resumed() { foreground = true; if (monitoring != null && !working && network == null && !directPcCredentialEntry) monitoring.resume(); }
-    void paused() { foreground = false; if (monitoring != null) monitoring.pause(); if (recoveringConnections || directPcChecking) cancel(); }
+    void paused() { foreground = false; if (monitoring != null) monitoring.pause(); if (recoveringConnections || directPcChecking || enableAutomaticIpForBatch) cancel(); }
     void stopped() { paused(); if (working) cancel(); if (store != null) store.lock(); }
     void destroy() { destroyed = true; if (monitoring != null) monitoring.destroy(); cancel(); if (keyForm != null) keyForm.clear(); io.shutdownNow(); if (store != null) store.lock(); }
     private void cancel() {
@@ -915,6 +940,7 @@ final class DiscoveryController {
         if (network != null) { network.cancel(); try { network.close(); } catch (Exception ignored) {} network = null; }
         dismissProgress(); for (SshDiscovery.Credential credential : openCredentials) credential.close(); openCredentials.clear(); if (store != null) store.lock();
         credentialIds.clear(); lastRequests = new ArrayList<>();
+        enableAutomaticIpForBatch = false;
         for (byte[] password : monitoringSudo.values()) Arrays.fill(password, (byte) 0);
         monitoringSudo.clear();
         if (!destroyed && foreground && monitoring != null) monitoring.resume();

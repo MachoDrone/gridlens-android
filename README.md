@@ -8,6 +8,18 @@ continues independently.
 
 **[Download the signed Android APK](https://github.com/MachoDrone/gridlens-android-releases/releases/latest/download/gridlens-android.apk)**
 
+**Version 0.2.12** includes automatic PC IP collection in normal discovery.
+Choose **Inspect + automatic IP** on the native review screen. After successful
+PC verification and fleet saving, the app uses the selected remembered SSH
+credentials to keep IP addresses current while that fleet is open. No separate
+IP-repair action or rewards/GPU-monitoring setup is needed for newly enrolled PCs.
+
+**Inspect only** remains available. Credentials deliberately left unremembered
+are not saved or used for automatic monitoring. Existing healthy monitoring,
+manual pauses, revoked access, credential/identity restrictions and provider waits
+are preserved; the save result explains any excluded PCs. Clean legacy inspection
+records can receive PC-only approval through the same explicit review action.
+
 **Version 0.2.11** adds a direct PC-only IP check. Tap a PC’s IP value, then
 **Check / repair this PC’s IP**. The native screen verifies its saved SSH connection
 and checks installed host curl without inspecting node containers. If PC-IP access
