@@ -49,7 +49,13 @@ final class PublicNetworkCache {
             persist(pcId + ":retryAtMs", Long.toString(deadline));
         }
     }
+    boolean storageNeedsRecovery() { return storageBlocked; }
     PublicIpReader.Observation peek(String pcId) { return PublicIpReader.parse(store.read(pcId)); }
+    long providerRetryAt(String pcId) {
+        PublicIpReader.Observation cached = peek(pcId);
+        return Math.max(cached == null ? 0 : cached.retryAtMs,
+                Math.max(observedRetryAt.getOrDefault(pcId, 0L), savedDeadline(store.read(pcId + ":retryAtMs"))));
+    }
     long nextReadAt(String pcId) {
         PublicIpReader.Observation cached = peek(pcId);
         long retry = Math.max(cached == null ? 0 : cached.retryAtMs, Math.max(observedRetryAt.getOrDefault(pcId, 0L), savedDeadline(store.read(pcId + ":retryAtMs"))));

@@ -382,3 +382,43 @@ SSH authentication and the production controller against a generated local SSH
 fixture, including three nodes with unsupported GPU namespaces. The fixture never
 executes supplied shell commands or contacts public providers. Saved-state fixtures
 cover invalid node records and cache receipt recovery independently of real PCs.
+
+## Direct PC-only IP checks and pinned SSH key preference in 0.2.11
+
+The Android IP popup includes **Check / repair this PC’s IP**. Its fixed native
+navigation contains only a saved fleet UUID and PC identity digest. MainActivity
+requires a same-origin top-level user gesture and exact validated parameters; the
+native controller resolves current fleet association, trusted saved endpoints and
+encrypted credentials. No command, credential or arbitrary endpoint is supplied
+by the WebView. Node status remains in dated Source details rather than being
+presented as the IP collector’s current result.
+
+The native flow uses the existing reserved IP worker after pausing automatic
+collection. It requires native confirmation and actual pinned SSH verification
+when PC-IP approval is missing or restricted. Cached readings cannot substitute
+for connection verification: an authentication-only connection is used when a
+cache/provider deadline prevents curl. Successful PC-only approval leaves node
+work paused, preserves wallet/GPU policy and changes no container resources. An
+already healthy target remains unchanged; choosing another trusted endpoint or
+credential for it is an explicitly confirmed one-time check. Genuine identity or
+credential failures remain rejected, and local permission-storage failure stops
+further collection. Backgrounding, cancellation and scope changes cancel the flow.
+
+A successful result is posted through the existing network-only observation API
+and read back before native delivery is reported. The saved fleet reloads after
+completion, sharing the PC reading with its associated hosts. Native dialogs keep
+cached readings, original attempt/source times, provider waits and local delivery
+failures distinct. Repeated actions honor existing success, failure and provider
+deadlines; they do not reset source timestamps.
+
+SSH negotiation now tries the already pinned key type first while keeping the
+existing supported alternatives. The old preference could select ECDSA instead
+of a still-offered saved RSA key and falsely report an identity change. RSA pins
+use RSA-SHA2 algorithms; no legacy RSA-SHA1 algorithm was added. The exact saved
+key is still required before authentication, so actual replacement/removal remains
+rejected. The same selection applies to ordinary monitoring and direct repair.
+
+The existing smoke runner’s `productionSsh=true,directIp=true` mode exercises the
+actual popup action/native confirmation and PC-only repair over generated local
+SSH fixtures. It requires an empty disposable emulator; it is not a physical-PC
+or production-data diagnostic command.

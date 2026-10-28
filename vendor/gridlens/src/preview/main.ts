@@ -2,7 +2,7 @@ import { createMobileMonitoring } from "./mobile-monitoring.ts";
 import { rewardView, rewardAtoms, jobGpuConditions, networkView } from "../fleet/pc-observations.ts";
 import { gpuRecordingFacts } from "./mobile-telemetry.ts";
 import "./sidebar.ts";
-import { isSavedFleetScenario, readMobileScenarios, mobilePcAddresses, formatMobileIPDisplay, normalizeMobileIPMode, nextMobileIPMode, mobileIPModeLabel } from "./mobile-scenarios.ts";
+import { isSavedFleetScenario, readMobileScenarios, mobilePcAddresses, formatMobileIPDisplay, normalizeMobileIPMode, nextMobileIPMode, mobileIPModeLabel, mobilePcIpCheckHref } from "./mobile-scenarios.ts";
 import type { MobileIPDisplayMode } from "./mobile-scenarios.ts";
 import { bindFleetViewport } from "./viewport.ts";
 import { bindFleetTableScroll } from "./table-scroll.ts";
@@ -312,11 +312,31 @@ durationMotionSelect.addEventListener("change", () => {
 
 const dialog = element<HTMLDialogElement>("info-dialog");
 let infoReturnTarget: HTMLElement | null = null;
-function showInfo(title: string, content: InfoContent): void {
+interface PcIpCheckAction { readonly fleetId: string; readonly pcId: string }
+function showInfo(title: string, content: InfoContent, pcIpCheck?: PcIpCheckAction): void {
   infoReturnTarget = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   element("info-title").textContent = title;
-  renderInfoContent(element("info-body"), content);
-  element("info-body").scrollTop = 0;
+  const body = element("info-body");
+  renderInfoContent(body, content);
+  const href = mobileScenarios.enabled && pcIpCheck ? mobilePcIpCheckHref(pcIpCheck.fleetId, pcIpCheck.pcId) : null;
+  if (href) {
+    const action = document.createElement("div");
+    action.className = "mobile-ip-check";
+    const link = document.createElement("a");
+    link.className = "mobile-ip-check-action";
+    link.href = href;
+    link.textContent = "Check / repair this PC’s IP";
+    link.setAttribute("aria-describedby", "mobile-ip-check-description");
+    // Native Android intercepts only a real foreground user navigation. The
+    // browser receives no connection authority and performs no check itself.
+    link.addEventListener("click", () => dialog.close());
+    const description = document.createElement("p");
+    description.id = "mobile-ip-check-description";
+    description.textContent = "The app verifies the saved connection and shows the IP-check result. Restoring paused access requires confirmation.";
+    action.append(link, description);
+    body.insertBefore(action, body.querySelector(".info-facts") ?? body.querySelector(".info-source"));
+  }
+  body.scrollTop = 0;
   dialog.showModal();
 }
 element("close-info").addEventListener("click", () => dialog.close());
@@ -326,7 +346,7 @@ dialog.addEventListener("close", () => {
   restoreSuppressedInfoTarget(opener);
 });
 
-interface CellInfo extends InfoContent { readonly checked?: InfoText }
+interface CellInfo extends InfoContent { readonly checked?: InfoText; readonly pcIpCheck?: PcIpCheckAction }
 const cellInformation = new WeakMap<HTMLTableCellElement, CellInfo>();
 const ink = (text: string, tone: InfoTone = "plain"): InfoPart => ({ text, tone });
 const brief = (text: string, maximum = 200): string => {
@@ -358,7 +378,7 @@ function rememberInfo(cell: HTMLTableCellElement, content: CellInfo, value?: HTM
 function openCellInfo(cell: HTMLTableCellElement, title: string): void {
   if (!hasRowInformation(cell)) return;
   const content = cellInformation.get(cell);
-  if (content) showInfo(title, content);
+  if (content) showInfo(title, content, content.pcIpCheck);
 }
 
 function changeSort(next: FleetSort): void {
@@ -2578,19 +2598,24 @@ function renderMobilePc(cell: HTMLTableCellElement, key: "pc" | "ip", address: s
     ...(network?.privateFailure ? ["Private IP failure: interface read failed."] : []),
     ...(network?.retryAtMs ? [checkedFact(network.retryAtMs, "Public IP retry eligible")] : []),
   ];
-  const monitoringFact = [record?.monitoring ? `PC monitoring: ${record.monitoring.status.replaceAll("-", " ")}.` : "No PC monitoring status is available yet.",
-    ...failures,
+  const nodeMonitoringFact = record?.monitoring
+    ? `Saved node-monitoring status: ${record.monitoring.status.replaceAll("-", " ")}. ${checkedFact(record.monitoring.checkedAtMs, "Node status recorded")}`
+    : "No saved node-monitoring status is available.";
+  const ipOutcomeFact = [...failures,
     ...(network?.status === "unavailable" ? ["The public IP lookup did not succeed.", checkedFact(network.observedAtMs, "Public IP attempt"),
       "A failed lookup normally becomes eligible to retry after one minute. Provider-requested waits are honored. Enabled monitoring retries while this fleet is open; an offline PC or paused monitoring can delay it."] : [])].join(" ");
   const discoveryFact = pc ? `${checkedFact(pc.observedAtMs, "Discovered")} Discovered addresses: ${pc.ipAddresses.join(", ")}.`
     : "No saved PC discovery details are available.";
-  const method = "Enabled monitoring checks this PC’s external/public IP directly with installed curl, independently of node containers, with or without NAT, preferring IPv4 with IPv6 fallback. Shared public addresses are valid for multiple PCs and hosts. A PC-side VPN can change the outward address.";
+  const method = "PC IP checks use this PC’s saved connection and installed curl, independently of node containers and GPU setup. They prefer IPv4 with IPv6 fallback. Shared public addresses are valid for multiple PCs and hosts. A PC-side VPN can change the outward address.";
   rememberInfo(cell, {
     summary: [ink(key === "ip" ? "Public and private IP observations." : pc ? `PC: ${pc.pcName ?? "name unavailable"}.` : "PC name unavailable.", pc || key === "ip" ? "plain" : "warning")],
     // The shared dialog shows four facts. Keep current IPs and failure/retry status
     // in those visible slots; full discovery inventory remains in source details.
-    facts: key === "ip" ? [publicFact, privateFact, monitoringFact, method] : [discoveryFact, publicFact, privateFact, monitoringFact],
-    source: [discoveryFact, ...(network ? [`Latest IP observation source: ${network.source}.`] : []),
+    facts: key === "ip" ? [publicFact, privateFact, ...(ipOutcomeFact ? [ipOutcomeFact] : []), method]
+      : [discoveryFact, publicFact, privateFact, nodeMonitoringFact],
+    ...(key === "ip" && pc && savedFleet && mobilePcIpCheckHref(savedFleet.id, pc.pcId)
+      ? { pcIpCheck: { fleetId: savedFleet.id, pcId: pc.pcId } } : {}),
+    source: [discoveryFact, nodeMonitoringFact, ...(network ? [`Latest IP observation source: ${network.source}.`] : []),
       ...(networkRecord?.lastGoodNetwork ? [`Retained successful IP source: ${networkRecord.lastGoodNetwork.source}.`] : []), "PC name and discovered addresses keep their original discovery time. Enabled monitoring refreshes IP checks separately while this fleet is open.", method,
       pc ? `Verified SSH identity digest: ${pc.pcId}\nObserved: ${new Date(pc.observedAtMs).toISOString()}` : "No saved machine-name observation is connected for this host.",
       ...(pc?.gpuTelemetry ? [`GPU recorder: ${pc.gpuTelemetry.collector.status}. Expand GPU conditions below Scenario for recorded signals.`] : [])].join("\n"),

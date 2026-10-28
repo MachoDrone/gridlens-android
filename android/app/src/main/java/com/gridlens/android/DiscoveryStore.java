@@ -329,6 +329,56 @@ final class DiscoveryStore {
             saveMonitoringTarget(copy); return;
         }
     }
+    synchronized JSONObject findMonitoringTarget(String id) throws Exception {
+        JSONArray targets = monitoringTargets();
+        for (int i = 0; i < targets.length(); i++) {
+            JSONObject target = targets.optJSONObject(i);
+            if (target != null && id.equals(target.optString("id"))) return new JSONObject(target.toString());
+        }
+        return null;
+    }
+    synchronized JSONObject findMonitoringPc(String fleet, String pc) throws Exception {
+        JSONArray targets = monitoringTargets(); JSONObject selected = null;
+        for (int i = 0; i < targets.length(); i++) {
+            JSONObject target = targets.optJSONObject(i);
+            if (target == null || !fleet.equals(target.optString("fleetId")) || !pc.equals(target.optString("pcId"))) continue;
+            if (selected == null || selected.optBoolean("aliasReplaced") && !target.optBoolean("aliasReplaced")
+                    || !target.optBoolean("aliasReplaced") && !selected.optBoolean("aliasReplaced") && target.optBoolean("approved") && !selected.optBoolean("approved")) selected = target;
+        }
+        return selected == null ? null : new JSONObject(selected.toString());
+    }
+    /** A direct native check can commit only the unchanged consent snapshot it verified. */
+    synchronized boolean approveDirectPcIp(JSONObject expected, JSONObject replacement, String credentialSnapshot,
+            java.util.function.BooleanSupplier consentActive) throws Exception {
+        if (!consentActive.getAsBoolean()) return false;
+        JSONObject credential = credential(replacement.getString("credentialId"));
+        if (credential == null || !credentialSnapshot.equals(credential.toString())) return false;
+        if (expected == null) {
+            if (findMonitoringPc(replacement.getString("fleetId"), replacement.getString("pcId")) != null) return false;
+        } else {
+            JSONObject current = findMonitoringTarget(expected.getString("id"));
+            if (current == null || !current.toString().equals(expected.toString())) return false;
+        }
+        String endpoint = new DiscoveryPolicy.Candidate(replacement.getString("address"), replacement.getInt("port"), "").endpointKey();
+        if (!replacement.getString("keyBase64").equals(trustedKey(replacement.getString("profileId"), endpoint)) || !consentActive.getAsBoolean()) return false;
+        savePcMonitoringTarget(replacement); return true;
+    }
+    /** A real rejection of explicitly selected saved credentials pauses that profile everywhere. */
+    synchronized void suspendDirectPcCredential(String credentialId, String expectedCredential) throws Exception {
+        JSONObject currentCredential = credential(credentialId);
+        if (currentCredential == null || !currentCredential.toString().equals(expectedCredential)) return;
+        JSONObject candidate = new JSONObject(credentials().toString());
+        JSONArray targets = candidate.optJSONArray("monitoringTargets");
+        if (targets == null) return;
+        boolean changed = false;
+        for (int i = 0; i < targets.length(); i++) {
+            JSONObject target = targets.optJSONObject(i);
+            if (target != null && credentialId.equals(target.optString("credentialId"))) {
+                target.put("paused", true).put("status", "credentials-required"); changed = true;
+            }
+        }
+        if (changed) saveCredentials(candidate);
+    }
     /** Explicit PC-only approval updates connection authority while retaining opaque node policy/history. */
     synchronized void savePcMonitoringTarget(JSONObject target) throws Exception {
         MonitoringController.validatePcTarget(target);

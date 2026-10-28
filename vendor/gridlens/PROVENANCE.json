@@ -222,7 +222,7 @@
     {
       "path": "src/preview/main.ts",
       "sourceSha256": "14277fed44c31c870188eba752bb334cdd3420bea2500a1168c98ca51a557af0",
-      "sha256": "51f2e2c7b3dcf08268d460828faf7a1b1d77bde314f564743d5b1efa13b53025"
+      "sha256": "337c2fff93321e603ad0a52fa1929a1c44c790ec56a0b763085fb2a2d9247716"
     },
     {
       "path": "src/preview/online-roster.ts",
@@ -247,7 +247,7 @@
     {
       "path": "src/preview/styles.css",
       "sourceSha256": "4a72083cc6ac6185d98b1f71bcb59c87a13cff9e73f15ba6c8be0b311298000a",
-      "sha256": "f075306531af14cc7490133c854824ff4dc21e00f186bc96d97c8458d1d7da7e"
+      "sha256": "2f1fd738df8c5c8587c0b5e7f02cb40d757bf77ed6c67f0d9ccaad14ab138d6e"
     },
     {
       "path": "src/preview/table-scroll.ts",
@@ -967,7 +967,7 @@
     {
       "path": "src/preview/mobile-scenarios.ts",
       "sourceSha256": null,
-      "sha256": "94843ae08dec52766ef8e09c339f485bfc7e0c365473befc0d822103c83cfad5"
+      "sha256": "df85b19321a1f3afcbaa3587a6318218a182efdfe8882a8e4bcc8922e2ddf788"
     },
     {
       "path": "src/preview/mobile-telemetry.ts",

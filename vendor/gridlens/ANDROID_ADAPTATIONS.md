@@ -98,3 +98,11 @@ fields while retaining the existing reward/GPU/node contracts.
 Android 0.2.10 corrects the remaining Column info IP summary to describe all six
 modes and direct PC curl collection. Data meanings, saved preferences, sorting
 and provider requests are unchanged.
+
+Android IP details offer a fixed, saved-fleet/PC-scoped native check/repair link.
+Only the Android marker and validated saved PC metadata can produce the action;
+synthetic and desktop details have none. The link passes no credentials, endpoint
+or command and remains subject to native user-gesture, identity and approval
+checks. Header toggles still change presentation only. Dated node-monitoring
+status stays in Source details so it cannot be mistaken for the independent IP
+check outcome; actual network observations and bounded failures retain their times.

@@ -649,3 +649,65 @@ was changed; no new privileged host operation was added.
 
 Verified signed APK size: 197337024 bytes. SHA-256:
 `ceb4adafcbfae3f794e692d8fc55d4335eb0f0c5941c2aa751f07908df8d320e`.
+
+## Android 0.2.11 — direct PC IP repair and SSH pin negotiation, October 28, 2026
+
+Version code 14 adds a native **Check / repair this PC’s IP** action to Android IP
+details. It verifies the saved PC connection independently of container bindings,
+and can restore missing or restricted PC-IP approval only after native confirmation
+and successful verification of the existing SSH pin. Healthy node monitoring,
+wallet permissions, source observations and provider waits are preserved.
+
+A real SSH regression reproduced against the released 0.2.10 class: a server still
+offering the exact saved RSA key, alongside ECDSA, was reported as identity-changed.
+The client selected another offered algorithm first. The fix prefers the saved key
+type while still requiring the exact pinned key. This establishes the code defect;
+it does not independently establish nn01’s private saved state or phone outcome.
+Existing pauses are not silently removed by installation. The native IP action
+verifies access before restoring PC-only collection.
+
+Verification on the candidate:
+
+- `npm run check` passed: 117 Android runtime/helper/browser tests, 27 Python tests,
+  816 inherited Node tests and 332 browser tests (11.9 minutes). The new popup action
+  is scoped to the current saved fleet/PC, absent without association or in synthetic
+  and non-Android views, and separate from request-free six-mode toggles. Phone
+  layout was visually reviewed with isolated data. Provenance reproduces all 196
+  vendored files from 192 verified originals.
+- All 164 Android unit tests passed in both debug and release variants. Five actual
+  SSH tests verify saved RSA with additional ECDSA, saved ECDSA-384 with additional
+  ECDSA-256, genuinely replaced/removed pins rejected before credentials, and
+  unchanged first-discovery preference. No RSA-SHA1 algorithm was added. Release
+  lint and debug, instrumentation and signed release APK builds passed.
+- Fresh API 36 native-only checks passed in 10.726 seconds, complete runtime/WebView
+  smoke in 110.885 seconds, and production SSH monitoring in 12.398 seconds. The
+  generated SSH fixture offers multiple host-key types while retaining the saved
+  RSA pin. It never executes supplied commands or contacts operator PCs/providers.
+- The direct PC IP check passed in 21.382 seconds on a fresh emulator. It starts
+  with saved PC metadata, a trusted SSH pin and credential but no monitoring target.
+  It verifies explicit approval, measured delivery to three hosts, unchanged node
+  history, cache reuse, restoration of paused access with real SSH proof, provider
+  waits, stale-plan/revocation/cancellation, malformed node bindings, missing or
+  rejected credentials and genuinely wrong pins. The actual WebView action was
+  physically tapped, the native confirmation activated, and all three rendered IP
+  cells checked after the real SSH result. Gestureless, subframe and malformed
+  native-action requests were rejected without starting SSH.
+- Package identity is `com.gridlens.android`, 0.2.11/code 14, with the unchanged
+  pinned release certificate and continuity with 0.2.10. Signature, ZIP/ELF 16 KiB
+  alignment, the update manifest and all 47 runtime/four helper assets verify.
+  Packaged direct-IP/native approval code and the new action are present; private
+  inputs and native instrumentation are absent.
+
+The first direct-UI fixture called a WebView getter off the main thread. Subsequent
+harness corrections replaced accessibility-only link activation with a physical
+pointer event, matched Android’s uppercase native button text, and waited for the
+accessibility tree within the existing bounded tap allowance. The complete direct
+flow passed after those test-only corrections. The application APK did not change
+during these reruns; product gesture, confirmation, identity and timeout checks
+were not relaxed. Evidence from all attempts was retained outside Git.
+
+No operator PC, physical phone, existing container/VPN or wallet was modified.
+Physical acceptance of the reported nn01 case remains pending operator feedback.
+
+Verified signed APK size: 197354084 bytes. SHA-256:
+`82670036492b3c018a034c6e7e2756e5b51ce2d8f1c0bdfa06f366f3b62dcc89`.

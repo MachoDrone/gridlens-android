@@ -259,7 +259,8 @@ test("phone Fleet reads exact rewards and retained failures from the native cach
     assert.match(await page.locator("#info-dialog").innerText(), /public IP lookup did not succeed/);
     assert.match(await page.locator("#info-dialog").innerText(), /Public IP attempt/);
     assert.match(await page.locator("#info-dialog").innerText(), /eligible to retry after one minute/);
-    assert.match(await page.locator("#info-dialog").innerText(), /PC monitoring: authorization required/);
+    assert.doesNotMatch(await page.locator("#info-body .info-facts").innerText(), /authorization required/);
+    assert.match(await page.locator("#info-body .info-source-body").textContent() ?? "", /Saved node-monitoring status: authorization required/);
     await page.locator("#close-info").click();
     await page.reload();
     await exactText(row(page, first).locator('td[data-col="ip"]'), "8.8.4.4 / 192.168.9.42");

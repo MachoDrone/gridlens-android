@@ -387,6 +387,11 @@ dialog p { font-size: 12px; line-height: 21px; white-space: pre-line; overflow-w
 .info-summary { margin: 12px 0; font-size: 13px; }
 .info-facts { padding-left: 20px; margin: 12px 0 16px; }
 .info-facts li { padding: 3px 0; }
+/* Native PC verification is offered only inside Android saved-PC IP details. */
+:root[data-gridlens-mobile="android"] .mobile-ip-check { margin: 16px 0; }
+:root[data-gridlens-mobile="android"] .mobile-ip-check-action { display: inline-flex; align-items: center; box-sizing: border-box; min-height: 36px; max-width: 100%; padding: 8px 12px; border: 1px solid var(--blue); border-radius: 4px; color: var(--blue); font-size: 13px; text-decoration: none; }
+:root[data-gridlens-mobile="android"] .mobile-ip-check-action:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
+:root[data-gridlens-mobile="android"] .mobile-ip-check p { margin: 8px 0 0; color: var(--muted); }
 .info-tone-positive { color: var(--nosana-green); }
 .info-tone-negative { color: #ff0000; }
 .info-tone-warning { color: var(--state-amber); }

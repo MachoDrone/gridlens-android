@@ -105,7 +105,7 @@ diff --git a/src/preview/main.ts b/src/preview/main.ts
 +import { rewardView, rewardAtoms, jobGpuConditions, networkView } from "../fleet/pc-observations.ts";
 +import { gpuRecordingFacts } from "./mobile-telemetry.ts";
  import "./sidebar.ts";
-+import { isSavedFleetScenario, readMobileScenarios, mobilePcAddresses, formatMobileIPDisplay, normalizeMobileIPMode, nextMobileIPMode, mobileIPModeLabel } from "./mobile-scenarios.ts";
++import { isSavedFleetScenario, readMobileScenarios, mobilePcAddresses, formatMobileIPDisplay, normalizeMobileIPMode, nextMobileIPMode, mobileIPModeLabel, mobilePcIpCheckHref } from "./mobile-scenarios.ts";
 +import type { MobileIPDisplayMode } from "./mobile-scenarios.ts";
  import { bindFleetViewport } from "./viewport.ts";
  import { bindFleetTableScroll } from "./table-scroll.ts";
@@ -179,7 +179,60 @@ diff --git a/src/preview/main.ts b/src/preview/main.ts
  } catch {
    // The display control remains usable when browser storage is unavailable.
  }
-@@ -368,7 +377,11 @@
+@@ -303,11 +312,31 @@
+ 
+ const dialog = element<HTMLDialogElement>("info-dialog");
+ let infoReturnTarget: HTMLElement | null = null;
+-function showInfo(title: string, content: InfoContent): void {
++interface PcIpCheckAction { readonly fleetId: string; readonly pcId: string }
++function showInfo(title: string, content: InfoContent, pcIpCheck?: PcIpCheckAction): void {
+   infoReturnTarget = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+   element("info-title").textContent = title;
+-  renderInfoContent(element("info-body"), content);
+-  element("info-body").scrollTop = 0;
++  const body = element("info-body");
++  renderInfoContent(body, content);
++  const href = mobileScenarios.enabled && pcIpCheck ? mobilePcIpCheckHref(pcIpCheck.fleetId, pcIpCheck.pcId) : null;
++  if (href) {
++    const action = document.createElement("div");
++    action.className = "mobile-ip-check";
++    const link = document.createElement("a");
++    link.className = "mobile-ip-check-action";
++    link.href = href;
++    link.textContent = "Check / repair this PC’s IP";
++    link.setAttribute("aria-describedby", "mobile-ip-check-description");
++    // Native Android intercepts only a real foreground user navigation. The
++    // browser receives no connection authority and performs no check itself.
++    link.addEventListener("click", () => dialog.close());
++    const description = document.createElement("p");
++    description.id = "mobile-ip-check-description";
++    description.textContent = "The app verifies the saved connection and shows the IP-check result. Restoring paused access requires confirmation.";
++    action.append(link, description);
++    body.insertBefore(action, body.querySelector(".info-facts") ?? body.querySelector(".info-source"));
++  }
++  body.scrollTop = 0;
+   dialog.showModal();
+ }
+ element("close-info").addEventListener("click", () => dialog.close());
+@@ -317,7 +346,7 @@
+   restoreSuppressedInfoTarget(opener);
+ });
+ 
+-interface CellInfo extends InfoContent { readonly checked?: InfoText }
++interface CellInfo extends InfoContent { readonly checked?: InfoText; readonly pcIpCheck?: PcIpCheckAction }
+ const cellInformation = new WeakMap<HTMLTableCellElement, CellInfo>();
+ const ink = (text: string, tone: InfoTone = "plain"): InfoPart => ({ text, tone });
+ const brief = (text: string, maximum = 200): string => {
+@@ -349,7 +378,7 @@
+ function openCellInfo(cell: HTMLTableCellElement, title: string): void {
+   if (!hasRowInformation(cell)) return;
+   const content = cellInformation.get(cell);
+-  if (content) showInfo(title, content);
++  if (content) showInfo(title, content, content.pcIpCheck);
+ }
+ 
+ function changeSort(next: FleetSort): void {
+@@ -368,7 +397,11 @@
  element("column-info").addEventListener("click", () => {
    const column = COLUMNS.find(([key]) => key === activeSort.column);
    if (column) showInfo(column[1], {
@@ -192,7 +245,7 @@ diff --git a/src/preview/main.ts b/src/preview/main.ts
      ...(LOCAL_SOURCE_NOTES[column[0]] ? { facts: [[ink("Local data or mapping is not connected yet.", "warning")]] } : {}),
      source: columnDescription(column[0], column[2]),
    });
-@@ -477,7 +490,7 @@
+@@ -477,7 +510,7 @@
    openCellInfo(cell, title);
  }
  
@@ -201,7 +254,7 @@ diff --git a/src/preview/main.ts b/src/preview/main.ts
    const heading = document.createElement("th");
    heading.scope = "col";
    heading.dataset.col = key;
-@@ -487,7 +500,7 @@
+@@ -487,7 +520,7 @@
    button.className = "column-label";
    button.textContent = label;
    button.setAttribute("aria-label", `Sort by ${label}`);
@@ -210,7 +263,7 @@ diff --git a/src/preview/main.ts b/src/preview/main.ts
    if (LOCAL_SOURCE_NOTES[key]) button.setAttribute("aria-describedby", "local-source-note");
    button.addEventListener("click", () => changeSort(nextFleetSort(activeSort, key)));
    heading.append(button);
-@@ -502,7 +515,7 @@
+@@ -502,7 +535,7 @@
      toggle.setAttribute("aria-describedby", `${key}-mode-status`);
      toggle.addEventListener("click", (event) => {
        event.stopPropagation();
@@ -219,7 +272,7 @@ diff --git a/src/preview/main.ts b/src/preview/main.ts
        else if (key === "hostAddress") hostAddressMode = hostAddressMode === "compact" ? "full" : "compact";
        else if (key === "duration") durationMode = nextDurationMode(durationMode);
        else if (key === "market") marketMode = nextMarketMode(marketMode);
-@@ -520,7 +533,8 @@
+@@ -520,7 +553,8 @@
        } catch {
          // Display changes are still retained in memory for this page session.
        }
@@ -229,7 +282,7 @@ diff --git a/src/preview/main.ts b/src/preview/main.ts
      });
      heading.append(toggle);
    }
-@@ -769,6 +783,26 @@
+@@ -769,6 +803,26 @@
  });
  
  const select = element<HTMLSelectElement>("scenario");
@@ -256,7 +309,7 @@ diff --git a/src/preview/main.ts b/src/preview/main.ts
  const suppliedOption = document.createElement("option");
  suppliedOption.value = "supplied";
  suppliedOption.textContent = "Supplied Host Addresses";
-@@ -802,7 +836,38 @@
+@@ -802,7 +856,38 @@
  // Switching live scenarios starts a new page. Only Online GPU Hosts maintains
  // membership dynamically, with each data read bound to a server-issued revision.
  const liveScenario = requestedScenario === "online-gpu-hosts" ? "online-gpu-hosts"
@@ -296,7 +349,7 @@ diff --git a/src/preview/main.ts b/src/preview/main.ts
  const onlineScenario = liveScenario === "online-gpu-hosts";
  let onlineStatus: OnlineRosterStatus | undefined;
  let onlineRosterError: string | null = null;
-@@ -886,12 +951,18 @@
+@@ -886,12 +971,18 @@
  let freshnessRenderPending = false;
  const progressRows = new Map<string, Set<ReadKind>>();
  let pageHidden = false;
@@ -315,7 +368,7 @@ diff --git a/src/preview/main.ts b/src/preview/main.ts
    currentJob: address => jobsError ? undefined : liveActivity(address, liveNow()).eligibleJob,
    read: (addresses, refresh, signal, apply) => fleetTransport.read("job-history", previewURL("job-history"), {
      addresses, hosts: addresses, refresh, signal, progressive: true,
-@@ -1965,7 +2036,8 @@
+@@ -1965,7 +2056,8 @@
          break;
        }
        case "ip": {
@@ -325,7 +378,7 @@ diff --git a/src/preview/main.ts b/src/preview/main.ts
          cell.textContent = display.text;
          cell.title = brief(display.description.replace(". Internal:", "; Internal:"));
          cell.setAttribute("aria-label", display.description);
-@@ -2074,9 +2146,12 @@
+@@ -2074,9 +2166,12 @@
    renderQueuedDurationHeader();
    const sortLabel = COLUMNS.find(([key]) => key === activeSort.column)?.[1] ?? "PC";
    setText(element("sort-status"), `${sortLabel} · ${activeSort.direction === "asc" ? "ascending" : "descending"}`);
@@ -339,7 +392,7 @@ diff --git a/src/preview/main.ts b/src/preview/main.ts
    setText(element("ip-mode-status"), ipDisplayStatus);
    const hostAddressStatus = `Host Address display: ${hostAddressMode === "compact" ? "first five characters" : "full address"}; next: ${hostAddressMode === "compact" ? "full address" : "first five characters"}.`;
    element("hostAddress-display-toggle").title = hostAddressStatus;
-@@ -2436,10 +2511,146 @@
+@@ -2436,10 +2531,151 @@
    setText(element("scenario-description"), fleetConfig.sourceMode === "snapshot"
      ? "The source supplies this fleet’s host list. Reload to read a changed roster; refreshing values preserves the current roster."
      : onlineScenario ? "Online GPU Hosts checks Explorer’s queued/running candidates and shows only hosts with a current, validated API Online result. Online proof expires after 30 seconds; offline, unknown and expired results are hidden while their checks continue. Discovery refreshes every minute while viewed; removal from its candidate list requires two complete checks. Diagnostics cover all Explorer candidates, including hidden hosts. Duration reuses cached timing collected for Supplied Host Addresses or Real200; this scenario starts no job lookups. API reachability does not establish GPU health or current job activity. Shared request limits can leave readings pending or stale. No host file or restart is required when membership changes."
@@ -410,19 +463,24 @@ diff --git a/src/preview/main.ts b/src/preview/main.ts
 +    ...(network?.privateFailure ? ["Private IP failure: interface read failed."] : []),
 +    ...(network?.retryAtMs ? [checkedFact(network.retryAtMs, "Public IP retry eligible")] : []),
 +  ];
-+  const monitoringFact = [record?.monitoring ? `PC monitoring: ${record.monitoring.status.replaceAll("-", " ")}.` : "No PC monitoring status is available yet.",
-+    ...failures,
++  const nodeMonitoringFact = record?.monitoring
++    ? `Saved node-monitoring status: ${record.monitoring.status.replaceAll("-", " ")}. ${checkedFact(record.monitoring.checkedAtMs, "Node status recorded")}`
++    : "No saved node-monitoring status is available.";
++  const ipOutcomeFact = [...failures,
 +    ...(network?.status === "unavailable" ? ["The public IP lookup did not succeed.", checkedFact(network.observedAtMs, "Public IP attempt"),
 +      "A failed lookup normally becomes eligible to retry after one minute. Provider-requested waits are honored. Enabled monitoring retries while this fleet is open; an offline PC or paused monitoring can delay it."] : [])].join(" ");
 +  const discoveryFact = pc ? `${checkedFact(pc.observedAtMs, "Discovered")} Discovered addresses: ${pc.ipAddresses.join(", ")}.`
 +    : "No saved PC discovery details are available.";
-+  const method = "Enabled monitoring checks this PC’s external/public IP directly with installed curl, independently of node containers, with or without NAT, preferring IPv4 with IPv6 fallback. Shared public addresses are valid for multiple PCs and hosts. A PC-side VPN can change the outward address.";
++  const method = "PC IP checks use this PC’s saved connection and installed curl, independently of node containers and GPU setup. They prefer IPv4 with IPv6 fallback. Shared public addresses are valid for multiple PCs and hosts. A PC-side VPN can change the outward address.";
 +  rememberInfo(cell, {
 +    summary: [ink(key === "ip" ? "Public and private IP observations." : pc ? `PC: ${pc.pcName ?? "name unavailable"}.` : "PC name unavailable.", pc || key === "ip" ? "plain" : "warning")],
 +    // The shared dialog shows four facts. Keep current IPs and failure/retry status
 +    // in those visible slots; full discovery inventory remains in source details.
-+    facts: key === "ip" ? [publicFact, privateFact, monitoringFact, method] : [discoveryFact, publicFact, privateFact, monitoringFact],
-+    source: [discoveryFact, ...(network ? [`Latest IP observation source: ${network.source}.`] : []),
++    facts: key === "ip" ? [publicFact, privateFact, ...(ipOutcomeFact ? [ipOutcomeFact] : []), method]
++      : [discoveryFact, publicFact, privateFact, nodeMonitoringFact],
++    ...(key === "ip" && pc && savedFleet && mobilePcIpCheckHref(savedFleet.id, pc.pcId)
++      ? { pcIpCheck: { fleetId: savedFleet.id, pcId: pc.pcId } } : {}),
++    source: [discoveryFact, nodeMonitoringFact, ...(network ? [`Latest IP observation source: ${network.source}.`] : []),
 +      ...(networkRecord?.lastGoodNetwork ? [`Retained successful IP source: ${networkRecord.lastGoodNetwork.source}.`] : []), "PC name and discovered addresses keep their original discovery time. Enabled monitoring refreshes IP checks separately while this fleet is open.", method,
 +      pc ? `Verified SSH identity digest: ${pc.pcId}\nObserved: ${new Date(pc.observedAtMs).toISOString()}` : "No saved machine-name observation is connected for this host.",
 +      ...(pc?.gpuTelemetry ? [`GPU recorder: ${pc.gpuTelemetry.collector.status}. Expand GPU conditions below Scenario for recorded signals.`] : [])].join("\n"),
@@ -486,7 +544,7 @@ diff --git a/src/preview/main.ts b/src/preview/main.ts
    const nodeProjectionTime = liveNow();
    if (onlineScenario) displayedOnlineHosts = new Map(suppliedAddresses.flatMap(address => {
      const deadline = onlineHostProof(address, nodeProjectionTime);
-@@ -2453,10 +2664,13 @@
+@@ -2453,10 +2689,13 @@
      .map(row => [row.dataset.host!, row]));
    const rows: HTMLTableRowElement[] = [];
    const sortableRows = displayedAddresses.map((address) => ({
@@ -501,7 +559,7 @@ diff --git a/src/preview/main.ts b/src/preview/main.ts
        latestJob: jobHistory.summary(address)?.job.address ?? null,
        duration: liveDuration(address, nodeProjectionTime).elapsedSeconds,
        queued: liveQueue(address, nodeProjectionTime).sortValue,
-@@ -2489,6 +2703,32 @@
+@@ -2489,6 +2728,32 @@
          else link.removeAttribute("title");
          link.setAttribute("aria-label", `Open ${address} in Nosana Explorer (new tab)`);
          if (!link.parentElement) cell.append(link);
@@ -534,7 +592,7 @@ diff --git a/src/preview/main.ts b/src/preview/main.ts
        } else if (key === "sol") {
          renderSolCell(cell, address, nodeProjectionTime);
        } else if (key === "nos") {
-@@ -2546,7 +2786,11 @@
+@@ -2546,7 +2811,11 @@
      cell.className = "empty-message";
      const message = document.createElement("span");
      message.className = "empty-content";
@@ -547,7 +605,7 @@ diff --git a/src/preview/main.ts b/src/preview/main.ts
        ? "Online GPU host discovery is unavailable. Retrying automatically."
        : suppliedAddresses.length === 0 ? "Nosana’s indexer currently reports no queued or running candidates. The list updates automatically."
          : "No Explorer candidates have a current API Online confirmation. Offline and unconfirmed hosts are hidden; checks continue automatically while viewed."
-@@ -2589,7 +2833,8 @@
+@@ -2589,7 +2858,8 @@
  function render(): void {
    renderDisplaySettings();
    setText(element("data-label"), fleetConfig.sourceMode === "snapshot" ? fleetConfig.sourceLabel
@@ -557,7 +615,7 @@ diff --git a/src/preview/main.ts b/src/preview/main.ts
    setText(element("connection-note"), fleetConfig.sourceMode === "snapshot" ? "Original observation times preserved"
      : supplied ? "Public Nosana metadata" : "No live connections");
    setText(element("fleet-caption"), fleetConfig.sourceMode === "snapshot"
-@@ -2617,7 +2862,7 @@
+@@ -2617,7 +2887,7 @@
    }
    setText(element("preview-description"), fleetConfig.sourceMode === "snapshot"
      ? `${fleetConfig.sourceLabel}. This view reads backend observations; opening or refreshing it does not establish new host evidence. Each value keeps its original source time and freshness deadline. Missing observations stay unknown; retained timings remain dimmed estimates. Host activity and API reachability are independent.` : supplied
@@ -566,7 +624,7 @@ diff --git a/src/preview/main.ts b/src/preview/main.ts
      : "Sample preview. Market names and hardware readings are synthetic; Job durations and Node states add separate synthetic examples. No live data sources are connected. A dash means unknown, not zero.");
    if (supplied) {
      renderSupplied();
-@@ -2716,8 +2961,15 @@
+@@ -2716,8 +2986,15 @@
  
  select.addEventListener("change", () => {
    const scenario = SCENARIOS.find((value) => value.id === select.value);
@@ -583,7 +641,7 @@ diff --git a/src/preview/main.ts b/src/preview/main.ts
    if (nextLive !== null && nextLive !== liveScenario) {
      pageHidden = true;
      resumeVisibleView();
-@@ -2742,7 +2994,7 @@
+@@ -2742,7 +3019,7 @@
      void loadHostRoster();
      return;
    }
@@ -592,7 +650,7 @@ diff --git a/src/preview/main.ts b/src/preview/main.ts
    else render();
  });
  element("reset-sample").addEventListener("click", () => {
-@@ -2751,12 +3003,15 @@
+@@ -2751,12 +3028,15 @@
    render();
  });
  document.addEventListener("visibilitychange", resumeVisibleView);
@@ -622,6 +680,18 @@ diff --git a/src/preview/styles.css b/src/preview/styles.css
  .host-address { color: #60a5fa; text-underline-offset: 3px; }
  .fresh { color: var(--green); }
  .stale { color: var(--amber); }
+@@ -383,6 +387,11 @@
+ .info-summary { margin: 12px 0; font-size: 13px; }
+ .info-facts { padding-left: 20px; margin: 12px 0 16px; }
+ .info-facts li { padding: 3px 0; }
++/* Native PC verification is offered only inside Android saved-PC IP details. */
++:root[data-gridlens-mobile="android"] .mobile-ip-check { margin: 16px 0; }
++:root[data-gridlens-mobile="android"] .mobile-ip-check-action { display: inline-flex; align-items: center; box-sizing: border-box; min-height: 36px; max-width: 100%; padding: 8px 12px; border: 1px solid var(--blue); border-radius: 4px; color: var(--blue); font-size: 13px; text-decoration: none; }
++:root[data-gridlens-mobile="android"] .mobile-ip-check-action:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
++:root[data-gridlens-mobile="android"] .mobile-ip-check p { margin: 8px 0 0; color: var(--muted); }
+ .info-tone-positive { color: var(--nosana-green); }
+ .info-tone-negative { color: #ff0000; }
+ .info-tone-warning { color: var(--state-amber); }
 diff --git a/src/server/browser-assets.ts b/src/server/browser-assets.ts
 --- a/src/server/browser-assets.ts
 +++ b/src/server/browser-assets.ts
@@ -786,7 +856,7 @@ diff --git a/test/preview-server.test.ts b/test/preview-server.test.ts
 diff --git a/src/preview/mobile-scenarios.ts b/src/preview/mobile-scenarios.ts
 --- /dev/null
 +++ b/src/preview/mobile-scenarios.ts
-@@ -0,0 +1,110 @@
+@@ -0,0 +1,116 @@
 +import { formatIPDisplay } from "../fleet/ip-display.ts";
 +import type { IPAddresses, IPDisplayMode } from "../fleet/ip-display.ts";
 +import { parseGpuTelemetry } from "./mobile-telemetry.ts";
@@ -833,6 +903,12 @@ diff --git a/src/preview/mobile-scenarios.ts b/src/preview/mobile-scenarios.ts
 +}
 +export function isSavedFleetScenario(value: string | null): value is `fleet:${string}` {
 +  return value !== null && /^fleet:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);
++}
++/** Only a saved fleet/PC identity may select the fixed native IP-check screen. */
++export function mobilePcIpCheckHref(fleetId: unknown, pcId: unknown): string | null {
++  if (typeof fleetId !== "string" || !isSavedFleetScenario(`fleet:${fleetId}`)
++    || typeof pcId !== "string" || !/^[a-f0-9]{64}$/.test(pcId)) return null;
++  return `/mobile/ip-check?fleet=${fleetId}&pc=${pcId}`;
 +}
 +export async function readMobileScenarios(document: Pick<Document, "querySelector">): Promise<MobileScenarios> {
 +  const result: MobileScenarios = { enabled: false, selectedScenario: "network-discovery", fleets: [], error: null };

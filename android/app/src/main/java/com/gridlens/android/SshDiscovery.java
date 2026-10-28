@@ -303,6 +303,34 @@ public final class SshDiscovery {
         final PublicIpReader.Observation observation;
         NetworkResult(String status, PublicIpReader.Observation observation) { this.status = status; this.observation = observation; }
     }
+    static NetworkResult verifyPcConnection(DiscoveryNetwork network, DiscoveryPolicy.Candidate candidate, Identity trusted,
+            Credential credential, java.util.function.BooleanSupplier permitted) {
+        return verifyPcConnection(transport(network), candidate, trusted, credential, permitted);
+    }
+    /** Pinned SSH authentication only; provider waits and cached IPs never trigger a curl probe. */
+    static NetworkResult verifyPcConnection(Transport network, DiscoveryPolicy.Candidate candidate, Identity trusted,
+            Credential credential, java.util.function.BooleanSupplier permitted) {
+        if (trusted == null || credential == null || permitted == null) throw new IllegalArgumentException("Approved PC required");
+        configureCryptoForAndroid(); JSch jsch = new JSch(); Session session = null; ScheduledFuture<?> timeout = null;
+        PinnedRepository repository = new PinnedRepository(trusted);
+        try {
+            if (!permitted.getAsBoolean()) return new NetworkResult("cancelled", null);
+            session = session(jsch, network, candidate, credential.username, repository);
+            if (credential.privateKey != null && credential.privateKey.length > 0) {
+                jsch.addIdentity("native-import", credential.privateKey.clone(), null, copy(credential.passphrase));
+                session.setConfig("PreferredAuthentications", "publickey");
+            } else { session.setPassword(credential.password.clone()); session.setConfig("PreferredAuthentications", "password"); }
+            timeout = limit(session, CONNECT_MS); session.connect(CONNECT_MS);
+            network.ensureActive();
+            return new NetworkResult(permitted.getAsBoolean() ? "active" : "cancelled", null);
+        } catch (Exception failure) {
+            boolean cancelled = network.isCancelled() || Thread.currentThread().isInterrupted() || !permitted.getAsBoolean();
+            String status = cancelled ? "cancelled" : repository.changed ? "identity-changed"
+                    : failure instanceof JSchException && failure.getMessage() != null
+                    && (failure.getMessage().startsWith("Auth fail") || failure.getMessage().startsWith("Auth cancel")) ? "credentials-required" : "unreachable";
+            return new NetworkResult(status, null);
+        } finally { if (timeout != null) timeout.cancel(false); if (session != null) session.disconnect(); try { jsch.removeAllIdentity(); } catch (JSchException ignored) { } }
+    }
     static NetworkResult readNetwork(DiscoveryNetwork network, DiscoveryPolicy.Candidate candidate, Identity trusted,
             Credential credential, java.util.function.BooleanSupplier permitted) {
         return readNetwork(transport(network), candidate, trusted, credential, permitted);
@@ -416,7 +444,19 @@ public final class SshDiscovery {
         session.setHostKeyRepository(repository);
         session.setConfig("StrictHostKeyChecking", "yes");
         session.setConfig("MaxAuthTries", "1");
-        session.setConfig("server_host_key", "ssh-ed25519,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,rsa-sha2-512,rsa-sha2-256");
+        // Negotiate the saved key's algorithm first. A server may legitimately offer
+        // several keys; selecting a different one must not make an unchanged pin
+        // appear replaced. Keep the existing alternatives so a genuinely missing
+        // or changed pin is still rejected by PinnedRepository before authentication.
+        LinkedHashSet<String> algorithms = new LinkedHashSet<>();
+        if (repository.expected != null) {
+            if (repository.expected.algorithm.equals("ssh-rsa")) {
+                algorithms.add("rsa-sha2-512"); algorithms.add("rsa-sha2-256");
+            } else algorithms.add(repository.expected.algorithm);
+        }
+        algorithms.addAll(Arrays.asList("ssh-ed25519", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384",
+                "ecdsa-sha2-nistp521", "rsa-sha2-512", "rsa-sha2-256"));
+        session.setConfig("server_host_key", String.join(",", algorithms));
         // Android does not load multi-release Java 15 classes. BC uses its lightweight APIs.
         session.setConfig("ssh-ed25519", "com.jcraft.jsch.bc.SignatureEd25519");
         session.setConfig("xdh", "com.jcraft.jsch.bc.XDH");

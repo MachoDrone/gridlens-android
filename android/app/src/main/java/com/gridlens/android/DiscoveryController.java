@@ -54,6 +54,10 @@ final class DiscoveryController {
     private List<SshDiscovery.BatchRequest> lastRequests = new ArrayList<>();
     private boolean enableMonitoringForBatch, monitoringIntent, foreground;
     private volatile boolean recoveringConnections;
+    private volatile boolean directPcChecking;
+    private boolean directPcCredentialEntry;
+    private AlertDialog directPcDialog;
+    private String directPcFleet;
 
     DiscoveryController(Activity activity, String origin, String token, Navigation navigation) throws Exception {
         this.activity = activity; this.origin = origin; this.token = token; this.navigation = navigation;
@@ -262,7 +266,7 @@ final class DiscoveryController {
             .setMessage("GridLens will remember the selected SSH credentials encrypted on this phone and reconnect only to these verified PCs over your Wi-Fi or VPN while this fleet is open. No further network searches are needed.\n\n"
                 + "Rewards: verify each node inside its existing container, then use its existing node identity there for the fixed Nosana rewards GET. Private keys stay inside that container. Its authorization is sent only to Nosana; the signature has broader authority, while this helper permits only the rewards GET and exposes no claim or transfer action. Only the public address, amount, time and status return to your phone. Reads run at most every five minutes, honoring provider delays; denied authorization pauses that node.\n\n"
                 + "GPU: create labeled GridLens Docker recorders and named volumes using a pinned image. They keep bounded history while the phone is closed. Read recordings every 30 seconds while viewing the fleet. GridLens may repair its own recorder connection after a node restarts. No host installation, host networking changes or node workload restarts. Docker/NVIDIA support must already exist.\n\n"
-                + "IP addresses: read the PC’s interfaces and check public egress from one verified node using ipify. This sends no keys or credentials to that service. Checks are shared across this PC’s hosts and cached for 30 minutes.\n\n"
+                + "IP addresses: read the PC’s interfaces and check public egress directly on that PC with installed curl using ipify. This sends no keys or credentials to that service. Checks are shared across this PC’s hosts and cached for 30 minutes.\n\n"
                 + "Changed identities or credentials pause the affected PC. Missing data remains unknown; public Fleet data continues independently.")
             .setPositiveButton("Enable monitoring", (d, w) -> collect(requests, true))
             .setNegativeButton("Back", (d, w) -> reviewRequests(hosts, requests))
@@ -669,6 +673,161 @@ final class DiscoveryController {
                     }).setNegativeButton("Cancel", (dialog, which) -> cancel()).setOnCancelListener(dialog -> cancel()).show();
         } catch (Exception error) { storageError(); cancel(); }
     }
+    /** Fixed native action for one saved PC. It never enters node discovery/setup. */
+    void checkPcIp(String id, String pcId) {
+        if (working) { if (progress != null) progress.show(); return; }
+        if (store == null || monitoring == null || !PcIpRepair.validScope(id, pcId)) { storageError(); return; }
+        cancel(); monitoring.pause(); directPcChecking = true; working = true; directPcFleet = id;
+        int run = generation;
+        PcIpRepair repair = new PcIpRepair(activity, store, monitoring, origin, token);
+        busy("Checking saved PC", "Reading the saved PC association, trusted SSH connection and IP policy.");
+        io.execute(() -> {
+            try {
+                PcIpRepair.Plan plan = repair.inspect(id, pcId);
+                ui(run, () -> { dismissProgress(); choosePcIpEndpoint(run, repair, plan); });
+            } catch (PcIpRepair.Failure failure) { ui(run, () -> finishPcIpFailure(failure.status)); }
+            catch (Exception failure) { ui(run, () -> finishPcIpFailure("saved-connection-unavailable")); }
+        });
+    }
+    private void choosePcIpEndpoint(int run, PcIpRepair repair, PcIpRepair.Plan plan) {
+        if (!currentPcIp(run)) return;
+        if (plan.endpoints.size() == 1) { choosePcIpCredential(run, repair, plan, plan.endpoints.get(0)); return; }
+        String[] labels = new String[plan.endpoints.size()];
+        for (int i = 0; i < labels.length; i++) labels[i] = plan.endpoints.get(i).label();
+        showPcIpDialog(new AlertDialog.Builder(activity).setTitle("Saved connection for " + plan.pcName)
+                .setItems(labels, (dialog, index) -> choosePcIpCredential(run, repair, plan, plan.endpoints.get(index)))
+                .setNegativeButton("Cancel", (dialog, which) -> cancel()).setOnCancelListener(dialog -> cancel()));
+    }
+    private void choosePcIpCredential(int run, PcIpRepair repair, PcIpRepair.Plan plan, PcIpRepair.Endpoint endpoint) {
+        if (!currentPcIp(run)) return;
+        if (endpoint.credentialId != null) { confirmPcIp(run, repair, plan, endpoint, endpoint.credentialId); return; }
+        try {
+            JSONArray profiles = store.credentialProfiles(); String[] choices = new String[profiles.length() + 1]; choices[0] = "Enter / import SSH credentials";
+            for (int i = 0; i < profiles.length(); i++) choices[i + 1] = profiles.getJSONObject(i).getString("name") + " (" + profiles.getJSONObject(i).getString("username") + ")";
+            showPcIpDialog(new AlertDialog.Builder(activity).setTitle("SSH credentials for " + plan.pcName).setItems(choices, (dialog, index) -> {
+                if (!currentPcIp(run)) return;
+                if (index > 0) {
+                    try { confirmPcIp(run, repair, plan, endpoint, profiles.getJSONObject(index - 1).getString("id")); }
+                    catch (Exception unavailable) { finishPcIpFailure("credentials-required"); }
+                } else {
+                    try {
+                        Trusted trusted = new Trusted(new DiscoveryPolicy.Candidate(endpoint.endpoint.getString("address"), endpoint.endpoint.getInt("port"), ""),
+                                new SshDiscovery.Identity(endpoint.endpoint.getString("keyBase64"), endpoint.endpoint.getString("algorithm")));
+                        // No connection is active while Android's protected credential picker is open.
+                        directPcChecking = false; directPcCredentialEntry = true; working = false;
+                        newCredential(trusted, false, (value, shared) -> {
+                            directPcCredentialEntry = false;
+                            if (destroyed || !foreground) { cancel(); return; }
+                            if (!value.has("id")) { finishPcIpFailure("remembered-credentials-required"); return; }
+                            monitoring.pause(); directPcChecking = true; working = true; directPcFleet = plan.fleetId;
+                            confirmPcIp(generation, repair, plan, endpoint, value.optString("id"));
+                        });
+                    } catch (Exception unavailable) { finishPcIpFailure("credentials-required"); }
+                }
+            }).setNegativeButton("Cancel", (dialog, which) -> cancel()).setOnCancelListener(dialog -> cancel()));
+        } catch (Exception unavailable) { finishPcIpFailure("credentials-required"); }
+    }
+    private void confirmPcIp(int run, PcIpRepair repair, PcIpRepair.Plan plan, PcIpRepair.Endpoint endpoint, String credentialId) {
+        if (!currentPcIp(run)) return;
+        boolean approval = endpoint.needsApproval || !java.util.Objects.equals(endpoint.credentialId, credentialId);
+        if (!approval) { runPcIp(run, repair, plan, endpoint, credentialId, false); return; }
+        boolean oneTime = PcIpRepair.oneTimeConnection(endpoint, credentialId);
+        showPcIpDialog(new AlertDialog.Builder(activity).setTitle(oneTime ? "Check this saved connection once?" : "Allow IP checks for " + plan.pcName + "?")
+                .setMessage("Verify the saved SSH identity at " + endpoint.label() + " using the selected encrypted credential. Then read this PC's interfaces and public IP with installed curl.\n\n"
+                        + (oneTime ? "This is one IP check through the selected connection. It will not replace the saved automatic connection or grant node permissions. "
+                            : "This restores IP checks for this PC only while its saved fleet is open. Node monitoring stays paused. ")
+                        + "No Docker, rewards, GPU, sudo or network-configuration commands run. Existing provider waits are honored.\n\n"
+                        + "A changed SSH identity stays blocked. A real rejection of shared SSH credentials pauses the affected connections. Cancel preserves the current permissions.")
+                .setPositiveButton(oneTime ? "Verify and check IP" : "Verify and allow IP", (dialog, which) -> runPcIp(run, repair, plan, endpoint, credentialId, true))
+                .setNegativeButton("Cancel", (dialog, which) -> cancel()).setOnCancelListener(dialog -> cancel()));
+    }
+    private boolean currentPcIp(int run) { return run == generation && !destroyed && foreground && directPcChecking; }
+    private void showPcIpDialog(AlertDialog.Builder builder) {
+        if (directPcDialog != null) directPcDialog.dismiss();
+        AlertDialog dialog = builder.create(); directPcDialog = dialog;
+        dialog.setOnDismissListener(ignored -> { if (directPcDialog == dialog) directPcDialog = null; });
+        dialog.show();
+    }
+    private void runPcIp(int run, PcIpRepair repair, PcIpRepair.Plan plan, PcIpRepair.Endpoint endpoint, String credentialId, boolean approval) {
+        if (!currentPcIp(run)) return;
+        busy("Checking " + plan.pcName + " IP", "Checking the saved PC connection and IP cache. Node containers are not queried.");
+        monitoring.enqueueDirectPcIp(() -> {
+            DiscoveryNetwork captured = null;
+            try {
+                if (run != generation || destroyed || !foreground) return;
+                captured = DiscoveryNetwork.capture(activity); network = captured;
+                if (run != generation || destroyed || !foreground) { captured.cancel(); return; }
+                PcIpRepair.Result result = repair.execute(plan, endpoint, credentialId, approval, captured,
+                        () -> run == generation && !destroyed && foreground && directPcChecking);
+                ui(run, () -> {
+                    dismissProgress(); working = false; directPcChecking = false; cancel();
+                    if (result.delivered) navigation.open("fleet:" + plan.fleetId);
+                    message("IP check: " + plan.pcName, pcIpResult(result) + (PcIpRepair.oneTimeConnection(endpoint, credentialId)
+                            ? "\nThis check did not replace the saved automatic monitoring connection or grant node permissions." : ""));
+                });
+            } catch (Exception failure) { ui(run, () -> finishPcIpFailure("network-unavailable")); }
+            finally { if (captured != null) { captured.close(); if (network == captured) network = null; } }
+        });
+    }
+    private void finishPcIpFailure(String status) {
+        dismissProgress(); working = false; directPcChecking = false; cancel();
+        message("PC IP check", pcIpFailure(status));
+    }
+    private static String pcIpResult(PcIpRepair.Result result) {
+        PublicIpReader.Observation value = result.observation;
+        String text;
+        if ("measured".equals(result.status)) text = "Public IP: " + value.publicIp + ". The result was delivered to this PC's saved host rows.";
+        else if ("cached".equals(result.status)) text = "Cached public IP: " + value.publicIp + (result.measured
+                ? ". A public lookup completed, but the dashboard retained its newer existing reading."
+                : ". The original reading was delivered without another public lookup.");
+        else if ("lookup-failed".equals(result.status)) text = (result.connectionVerified
+                ? "The PC connection was verified, but the public IP lookup failed: " : "The previously saved IP attempt failed: ")
+                + pcIpLookupFailure(value.publicFailure) + (value.httpStatus == null ? "." : " (HTTP " + value.httpStatus + ").")
+                + (result.measured ? "" : " No new public lookup was made.");
+        else text = pcIpFailure(result.status);
+        if (result.connectionVerified) text += "\nSaved SSH identity and login verified in this check.";
+        if (value != null) {
+            if (value.publicObservedAtMs != null) text += "\nPublic IP last measured: " + java.time.Instant.ofEpochMilli(value.publicObservedAtMs) + ".";
+            else text += "\nOriginal IP attempt: " + java.time.Instant.ofEpochMilli(value.observedAtMs) + ".";
+            if (value.privateIp != null) text += "\nPrivate IP: " + value.privateIp + ".";
+        }
+        if (result.retryAtMs > System.currentTimeMillis()) text += "\nNext eligible IP attempt: " + java.time.Instant.ofEpochMilli(result.retryAtMs) + ". This is not a recovery forecast.";
+        return text;
+    }
+    private static String pcIpLookupFailure(String failure) {
+        if (failure == null) return "no public address was returned";
+        switch (failure) {
+            case "missing-curl": return "curl is not installed on this PC";
+            case "dns": return "DNS lookup failed";
+            case "connection": return "connection failed";
+            case "timeout": return "request timed out";
+            case "tls": return "TLS connection or verification failed";
+            case "http-refusal": return "the provider refused the request";
+            default: return "the provider returned an invalid response";
+        }
+    }
+    private static String pcIpFailure(String status) {
+        switch (status) {
+            case "confirmation-required": return "IP checks need native approval for this PC. No connection was started.";
+            case "unknown-pc": case "invalid-scope": return "This PC is no longer associated with the selected saved fleet. No connection was started.";
+            case "saved-endpoint-missing": return "No saved trusted SSH endpoint matches this PC. Its identity must be verified through native discovery before IP checks can run.";
+            case "credentials-required": return "The saved SSH credential is missing or was rejected. Select or enter the correct SSH credential for this PC; rejected shared credentials remain paused.";
+            case "remembered-credentials-required": return "IP repair needs a remembered SSH connection. Save the credential with Remember encrypted credentials selected; no credential was saved by this check.";
+            case "identity-changed": return "The PC did not present its saved SSH identity. The check stopped; review this PC's SSH identity in Fleets before changing trust.";
+            case "provider-wait": return "The public IP provider requested a wait. No public lookup was repeated.";
+            case "retry-wait": return "A previous IP attempt is still within its retry allowance. No public lookup was repeated.";
+            case "delivery-wait": return "An IP observation is saved on this phone and waiting for its local delivery retry. No public lookup was repeated.";
+            case "cancelled": return "The IP check was cancelled. Existing observations and permissions were preserved.";
+            case "connection-changed": return "Saved connection or permission changed during this check. No new approval was granted; open the IP check again.";
+            case "network-unavailable": case "unreachable": return "This phone could not connect to the saved PC over the current Wi-Fi or VPN. This does not establish that the PC is offline.";
+            case "clock-untrusted": return "The saved observation is ahead of the phone clock. Its original time and retry allowance were preserved.";
+            case "permission-storage-failed": return "The phone could not save a required access restriction. Monitoring remains stopped until native storage is repaired.";
+            case "saved-fleet-unavailable": return "The phone could not confirm this PC's current saved-fleet association. Existing readings were preserved.";
+            case "local-delivery-rejected": return "The dashboard rejected local IP delivery. The observation remains cached with its original time.";
+            case "delivery-unconfirmed": return "The IP was saved on this phone, but the dashboard did not return the matching reading. Its original observation is retained for delivery retry.";
+            default: return "The phone could not complete saved-connection access or local IP delivery. Existing observations were preserved; no raw command output or credentials are exposed.";
+        }
+    }
     private void monitoringStatus(String id) {
         try {
             JSONArray targets = store.monitoringTargets(); StringBuilder text = new StringBuilder();
@@ -742,13 +901,18 @@ final class DiscoveryController {
             .setPositiveButton("Forget credentials", (d, w) -> { try { if (monitoring != null) monitoring.pause(); store.forgetCredentials(); Toast.makeText(activity, "Credentials and monitoring permissions forgotten. Saved fleets remain.", Toast.LENGTH_LONG).show(); } catch (Exception error) { credentialError(); } })
             .setNegativeButton("Cancel", null).show();
     }
-    void selectedScenario(String scenario) { if (monitoring != null) monitoring.selectedScenario(scenario); }
-    void resumed() { foreground = true; if (monitoring != null && !working && network == null) monitoring.resume(); }
-    void paused() { foreground = false; if (monitoring != null) monitoring.pause(); if (recoveringConnections) cancel(); }
+    void selectedScenario(String scenario) {
+        if (directPcChecking && !("fleet:" + directPcFleet).equals(scenario)) cancel();
+        if (monitoring != null) monitoring.selectedScenario(scenario);
+    }
+    void resumed() { foreground = true; if (monitoring != null && !working && network == null && !directPcCredentialEntry) monitoring.resume(); }
+    void paused() { foreground = false; if (monitoring != null) monitoring.pause(); if (recoveringConnections || directPcChecking) cancel(); }
     void stopped() { paused(); if (working) cancel(); if (store != null) store.lock(); }
     void destroy() { destroyed = true; if (monitoring != null) monitoring.destroy(); cancel(); if (keyForm != null) keyForm.clear(); io.shutdownNow(); if (store != null) store.lock(); }
     private void cancel() {
-        generation++; working = false; recoveringConnections = false; if (network != null) { network.cancel(); try { network.close(); } catch (Exception ignored) {} network = null; }
+        generation++; working = false; recoveringConnections = false; directPcChecking = false; directPcCredentialEntry = false; directPcFleet = null;
+        if (directPcDialog != null) { directPcDialog.dismiss(); directPcDialog = null; }
+        if (network != null) { network.cancel(); try { network.close(); } catch (Exception ignored) {} network = null; }
         dismissProgress(); for (SshDiscovery.Credential credential : openCredentials) credential.close(); openCredentials.clear(); if (store != null) store.lock();
         credentialIds.clear(); lastRequests = new ArrayList<>();
         for (byte[] password : monitoringSudo.values()) Arrays.fill(password, (byte) 0);

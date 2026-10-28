@@ -8,6 +8,18 @@ continues independently.
 
 **[Download the signed Android APK](https://github.com/MachoDrone/gridlens-android-releases/releases/latest/download/gridlens-android.apk)**
 
+**Version 0.2.11** adds a direct PC-only IP check. Tap a PC’s IP value, then
+**Check / repair this PC’s IP**. The native screen verifies its saved SSH connection
+and checks installed host curl without inspecting node containers. If PC-IP access
+is missing or paused, native confirmation and verification of the saved SSH key
+are required before it can resume. Existing node monitoring and wallet permissions
+are preserved. The result screen reports the actual IP outcome or bounded failure.
+
+SSH now prefers the already pinned host-key type when a server offers multiple
+keys. A different offered key no longer causes a false identity-change pause when
+the original saved key is still available. Genuinely changed keys remain rejected.
+Provider waits, cache source times and explicit pause/revocation controls remain.
+
 **Version 0.2.10** repairs PC IP scheduling and cached delivery. Unsupported or
 malformed saved node information can no longer prevent an independently approved
 PC IP check. The app also restores a missing received IP observation from its

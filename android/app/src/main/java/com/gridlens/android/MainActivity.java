@@ -209,9 +209,17 @@ public final class MainActivity extends Activity {
                 if (local(request.getUrl())) {
                     Uri destination = request.getUrl();
                     if ("/mobile/discovery".equals(destination.getPath()) || "/mobile/select".equals(destination.getPath())
-                            || "/mobile/monitoring".equals(destination.getPath()) || "/mobile/monitoring-retry".equals(destination.getPath())) {
+                            || "/mobile/monitoring".equals(destination.getPath()) || "/mobile/monitoring-retry".equals(destination.getPath())
+                            || "/mobile/ip-check".equals(destination.getPath())) {
                         if (request.isForMainFrame() && request.hasGesture() && discovery != null) {
-                            if ("/mobile/monitoring-retry".equals(destination.getPath())) {
+                            if ("/mobile/ip-check".equals(destination.getPath())) {
+                                String fleet = destination.getQueryParameter("fleet"), pc = destination.getQueryParameter("pc");
+                                if (destination.getFragment() == null
+                                        && destination.getQueryParameterNames().equals(new java.util.HashSet<>(java.util.Arrays.asList("fleet", "pc")))
+                                        && destination.getQueryParameters("fleet").size() == 1 && destination.getQueryParameters("pc").size() == 1
+                                        && fleet != null && fleet.matches("[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}")
+                                        && pc != null && pc.matches("[a-f0-9]{64}")) discovery.checkPcIp(fleet, pc);
+                            } else if ("/mobile/monitoring-retry".equals(destination.getPath())) {
                                 String fleet = destination.getQueryParameter("fleet");
                                 if (fleet != null && fleet.matches("[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}")) discovery.checkSavedConnections(fleet);
                             } else if ("/mobile/monitoring".equals(destination.getPath())) {

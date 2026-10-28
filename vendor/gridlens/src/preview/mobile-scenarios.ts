@@ -45,6 +45,12 @@ export interface MobileScenarios {
 export function isSavedFleetScenario(value: string | null): value is `fleet:${string}` {
   return value !== null && /^fleet:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);
 }
+/** Only a saved fleet/PC identity may select the fixed native IP-check screen. */
+export function mobilePcIpCheckHref(fleetId: unknown, pcId: unknown): string | null {
+  if (typeof fleetId !== "string" || !isSavedFleetScenario(`fleet:${fleetId}`)
+    || typeof pcId !== "string" || !/^[a-f0-9]{64}$/.test(pcId)) return null;
+  return `/mobile/ip-check?fleet=${fleetId}&pc=${pcId}`;
+}
 export async function readMobileScenarios(document: Pick<Document, "querySelector">): Promise<MobileScenarios> {
   const result: MobileScenarios = { enabled: false, selectedScenario: "network-discovery", fleets: [], error: null };
   if (document.querySelector<HTMLMetaElement>('meta[name="gridlens-mobile"]')?.content !== "android") return result;

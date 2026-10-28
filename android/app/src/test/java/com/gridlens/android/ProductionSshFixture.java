@@ -22,7 +22,11 @@ public final class ProductionSshFixture {
         server.setHost("127.0.0.1"); server.setPort(0);
         KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA"); generator.initialize(2048);
         java.security.KeyPair key = generator.generateKeyPair();
-        server.setKeyPairProvider(KeyPairProvider.wrap(key));
+        KeyPairGenerator ec = KeyPairGenerator.getInstance("EC");
+        ec.initialize(new java.security.spec.ECGenParameterSpec("secp256r1"));
+        // Keep the advertised RSA pin while also offering an earlier default-choice
+        // algorithm. Production must negotiate the saved key before alternatives.
+        server.setKeyPairProvider(KeyPairProvider.wrap(java.util.List.of(key, ec.generateKeyPair())));
         server.setPasswordAuthenticator((user, password, session) -> user.equals("fixture") && password.equals("isolated-ssh-password"));
         Map<String,String> replies = new HashMap<>();
         replies.put(PcMetadata.ADDRESSES_COMMAND, "192.168.10.101 172.17.0.1 172.18.0.1\n");

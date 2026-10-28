@@ -64,6 +64,17 @@ final class MonitoringController {
             public boolean write(String pcId, String value) { return observations.edit().putString(pcId, value).commit(); }
         }, System::currentTimeMillis);
     }
+    PublicNetworkCache pcIpCache() { return networkCache; }
+    void enqueueDirectPcIp(Runnable operation) { ipWorker.execute(operation); }
+    void acceptDirectPcIpApproval(JSONObject target) {
+        blockedCredentialProfiles.remove(target.optString("credentialId"));
+    }
+    void rejectDirectPcCredential(String credentialId) {
+        blockedCredentialProfiles.add(credentialId);
+        for (Map.Entry<DiscoveryNetwork, String> connection : networkCredentials.entrySet())
+            if (credentialId.equals(connection.getValue())) connection.getKey().cancel();
+    }
+    void failDirectPcPermissionStorage() { storageBlocked = true; cancelActive(); }
     static void validateTarget(JSONObject target) throws Exception {
         validatePcTarget(target);
         validateNodeTarget(target);
