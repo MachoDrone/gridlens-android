@@ -108,3 +108,36 @@ percentage, explicit cancellation, per-job file ownership and verification befor
 readiness. Notifications open the app without installing. Notification permission
 denial cannot block the transfer. No background PC collection, boot restart or
 automatic installation is implied by this service.
+
+## Development loop and release discipline
+
+- Start with the user's exact visible outcome and normal workflow. For bugs, find
+  the first failing boundary (selection/approval, connection, collection, storage,
+  or rendering). A passing isolated reader or seeded approved target does not
+  establish that ordinary discovery/save, reopening, or upgrade works.
+- Distinguish a reproduced code defect from the demonstrated cause of the user's
+  incident. Do not publish a speculative fix as a verified resolution. Keep
+  unknown causes explicit; ask for one precise missing diagnostic when necessary.
+- If roughly 10–15 minutes of diagnosis produces no reproduced failure or useful
+  narrowing, report the actual unknown and change the evidence-gathering approach.
+  Do not keep stacking plausible patches or requesting the same cached screenshot.
+- Keep small text/layout edits small. Do not expand them into architecture work,
+  unrelated cleanup or a new test framework. Batch related changes in the request
+  into one candidate release rather than a separate APK for each adjustment.
+- Use independent agents for diagnosis, implementation and verification when that
+  helps. Assign file ownership and one build owner. Freeze relevant source before
+  building; do not let parallel edits mix new tests with stale compiled classes.
+  Take over or reassign failed agent tasks promptly instead of waiting indefinitely.
+- Iterate with the smallest meaningful tests. Reuse an owned disposable emulator
+  and fixture namespaces when safe; never reuse or reset operator data. Repair
+  fixture timing/threading problems separately from product changes. Do not rerun
+  unrelated suites or rebuild the application for test-harness-only corrections.
+- Run all required release checks against the final candidate once. After a later
+  change, repeat the checks affected by that change; broaden only for new failures
+  or unresolved concerns. These rules do not waive existing release requirements.
+- Exercise the actual affected user journey before publication, including relevant
+  saved-state, cancellation and permission cases. Preserve source timestamps,
+  provider waits, credentials and real denials throughout diagnosis and repair.
+- Progress updates must name the concrete result, running check or blocker. Keep
+  implementation, automated verification, publication and operator confirmation
+  separate. Never describe passing fixtures alone as a confirmed phone-side fix.
