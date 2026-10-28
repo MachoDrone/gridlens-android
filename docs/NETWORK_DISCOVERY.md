@@ -25,8 +25,8 @@ services, external input files and VPN configuration are unchanged.
    it never sweeps an IPv6 subnet. The profile is independent of VPN brand, phone
    VPN address and VPN server public endpoint. Use separate profiles for different
    destination mappings or overlapping networks.
-3. Choose the computers to inspect. Tap **Search name or address** to type, then
-   filter by **Saved SSH identities** or **No saved SSH identity** if useful.
+3. Choose the computers to inspect once. Tap **Search name or address** to type,
+   then filter by **Saved SSH identities** or **No saved SSH identity** if useful.
    Results have their own scrolling area. The count includes all matches for the
    current search and filter, not just rows visible on screen; **Scroll for more
    results** appears when more rows are below. **Select all results** selects every
@@ -35,11 +35,12 @@ services, external input files and VPN configuration are unchanged.
    requires 1–512 selected computers. No result is selected automatically at this
    step. SSH reachability alone cannot determine which computers run Nosana, so
    choosing computers still precedes sign-in and inventory.
-4. Review the selected computers' identities together. Matching saved identities
-   are selected; new identities start unchecked and require explicit approval
-   after comparison with a trusted source. Fingerprints remain visible. Changed
-   or unavailable identities cannot be selected and receive no credentials. An
-   open port, IP or advertised name is not identity proof.
+4. Review the chosen computers' SSH identities together. The initial computer
+   choices carry forward, with no second checkbox list. Matching saved identities
+   can continue; new identities require explicit approval after comparison with a
+   trusted source. Fingerprints remain visible. Changed or unavailable identities
+   are excluded and receive no credentials. Cancel if a new identity cannot be
+   verified. An open port, IP or advertised name is not identity proof.
 5. Enter or choose native SSH credential profiles. If none are saved, the sign-in
    form opens directly. **SSH key** is offered first for an existing key already
    authorized on the computers; **Password** shows a separate password field.
@@ -60,16 +61,18 @@ services, external input files and VPN configuration are unchanged.
    from automatic IP collection. Existing protected pauses and denials remain;
    the save result reports exclusions. The prominent **→ Enable full monitoring…**
    action separately explains and approves rewards, GPU recorders and IP checks.
-7. **Choose Nosana hosts to save** shows verified hosts with their PC names and
-   addresses, sorted by computer name. Search and bulk selection work here too;
-   no hosts start selected. **Inspection details** shows incomplete checks and
-   computers without verified hosts. Select the hosts to save, then create or
-   merge the fleet. Empty selection cannot save or grant monitoring. Rescans keep
-   existing saved hosts, including hosts left unselected. New monitoring is
-   limited to the selected hosts and their verified PC associations. If a partial
-   selection cannot safely update an existing PC monitoring record, its settings
-   remain unchanged and setup is deferred to **Enable / repair monitoring**.
-8. **Fleet saved** reports selected host/PC counts and the actual approval/setup
+7. After inspection, GridLens automatically creates or merges the fleet with all
+   verified Nosana host addresses found on the chosen computers. Multiple verified
+   hosts on one PC are all included; there is no additional host-selection page.
+   Computers without verified hosts and unresolved observations remain in the
+   inspection details. No empty fleet is created when no host identities were
+   verified. Rescans keep existing saved hosts, including those on computers not
+   chosen or reached during this inspection. New monitoring is limited to the
+   verified hosts saved from this inspection and their verified PC associations.
+   If incomplete evidence cannot safely update an existing PC monitoring record,
+   its settings remain unchanged and setup is deferred to
+   **Enable / repair monitoring**.
+8. **Fleet saved** reports verified host/PC counts and the actual approval/setup
    outcome. Incomplete checks and automatic-IP exclusions remain visible as
    counts, with per-PC reasons under **View inspection details**. Monitoring setup
    in progress is not reported as successful collection. **View fleet** closes

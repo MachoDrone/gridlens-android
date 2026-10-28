@@ -467,20 +467,23 @@ description as well as a node's text.
 
 Normal discovery skips empty profile/credential chooser screens. It still
 requires computer selection before inspection, and reads SSH identities with
-bounded concurrency before a consolidated trust review. Matching saved keys are
-selected; new keys require selection and explicit trust; changed/unavailable keys
+bounded concurrency before a consolidated trust review. In 0.2.13–0.2.14 that
+review used another checkbox list: matching saved keys were selected, while new
+keys required selection and explicit trust. Version 0.2.15 carries the original
+computer choices into approval without reselection. Changed/unavailable keys
 cannot proceed. The SSH form starts with an existing-key method and provides a
 separate password method. Changing methods clears the previous secret fields;
 remembering, sharing and per-PC overrides retain their existing authority.
 
-Inspection now leads to a second, initially empty selection of verified Nosana
-hosts before fleet persistence. Selected public addresses and metadata form the
-save request, while complete inspection results retain authentication failures,
-unresolved observations and shared-credential restrictions. Monitoring
-registration receives the explicit host selection. New grants must fit those
-verified host/PC associations; partial selections that cannot safely update an
-existing PC-wide record are deferred without rewriting its prior permissions.
-The existing explicit saved-PC repair path remains separate.
+Versions 0.2.13–0.2.14 also presented an initially empty selection of verified
+Nosana hosts after inspection. Version 0.2.15 removes that picker and saves all
+verified host addresses from the chosen computers. The native enrollment-scope
+model remains: public addresses and metadata form the save request, while
+complete inspection results retain authentication failures, unresolved
+observations and shared-credential restrictions. New grants must fit the verified
+host/PC associations. Incomplete discovery that cannot safely update an existing
+PC-wide record is deferred without rewriting its prior permissions. The explicit
+saved-PC repair path remains separate.
 
 The completion dialog separates host/PC counts, approval/setup status and issue
 counts from expandable inspection details. **View fleet** replaces its generic
@@ -489,13 +492,13 @@ monitoring setup must retain their actual meanings in both views.
 
 Candidate acceptance must exercise the normal native journey, existing SSH-key
 and password modes, remembered/ephemeral credentials, shared and per-PC sign-in,
-large result sets, search/filter selection, blocked identities, selected-host
+large result sets, search/filter selection, blocked identities, verified-host
 monitoring scope, partial rescans, cancellation and narrow/large-font layouts.
 Use the existing isolated instrumentation and generated SSH fixtures; record
 actual results separately in `VERIFICATION.md`.
 
-Genuine SSH rejection is persisted as inspection returns, before the host picker
-can be cancelled. Native-only snapshots bind that result to the exact remembered
+Genuine SSH rejection is persisted as inspection returns, before advancing to
+saving. Native-only snapshots bind that result to the exact remembered
 credential used by inspection even after cancellation clears the SSH buffers. A
 changed credential does not inherit an old rejection. Storage failure blocks
 automatic collection; choosing fewer hosts cannot discard a denial.
@@ -529,3 +532,43 @@ Record candidate test results, publication and physical-phone confirmation
 separately in `VERIFICATION.md`. Acceptance should cover tap-to-type search,
 keyboard dismissal, scrolling through all matching rows, selections surviving
 filter changes, narrow/large-font layouts and the profile-specific identity labels.
+
+## One computer selection per discovery (0.2.15, versionCode 18)
+
+The normal journey has exactly one computer checkbox list, before SSH identity
+review. Identity review displays those computers and their fingerprints, retaining
+explicit approval for new keys without asking the operator to choose the same
+computers again. Changed or unavailable identities remain excluded from
+authentication. A network response or prior computer selection never substitutes
+for identity approval.
+
+After inspection, `saveResults` snapshots the complete result map and forms the
+deduplicated union of verified public host addresses. For ordinary discovery with
+at least one verified address, it creates `InspectionSelection` from that entire
+union and saves immediately. The type now expresses the scope derived from the
+chosen computers; it does not imply a second user selection. All verified hosts
+on each chosen PC are included. Results with partial inventory may still contain
+valid addresses, so saving must not discard them merely because the overall PC
+status is incomplete. Unresolved addresses are never invented or added.
+
+Complete evidence remains separate from the save/enrollment scope. Credential
+rejections are persisted as results arrive; PC or node-binding conflicts still
+prevent new monitoring authority. Existing protected permissions, source waits
+and bindings remain intact when fresh evidence cannot safely replace them.
+Rescans merge verified discoveries without removing hosts from other PCs. Explicit
+saved-PC repair retains its existing null-scope and empty-merge behavior; a new
+empty fleet is still rejected.
+
+Automatic saving must recheck the current discovery generation, foreground state
+and captured network before starting the save. Removing the host picker must not
+remove its cancellation/network checks. An already submitted save can complete
+despite later cancellation; monitoring registration still requires active consent
+and a current network. Preserve honest uncertain-save reporting and never claim
+that cancellation rolled back a completed write.
+
+Acceptance should exercise the initial selection followed by identity approval,
+key/password entry and direct automatic saving, including a PC with several
+Nosana hosts. Cover mixed usable/blocked identities, partial inventory, no verified
+hosts, conflicting PC associations, shared credential rejection, cancellation and
+saved-fleet repair. Record actual checks, publication and phone acceptance in
+`VERIFICATION.md`; source behavior alone does not establish those outcomes.

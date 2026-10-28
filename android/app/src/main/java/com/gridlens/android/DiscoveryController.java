@@ -45,6 +45,9 @@ final class DiscoveryController {
     private volatile DiscoveryNetwork network;
     private AlertDialog progress;
     private AlertDialog selectionDialog;
+    private List<DiscoveryPolicy.Candidate> candidateChoices = new ArrayList<>();
+    private final Set<String> chosenEndpoints = new LinkedHashSet<>();
+    private final List<String> identityExclusions = new ArrayList<>();
     private TextView progressText;
     private JSONObject profile;
     private String fleetId;
@@ -174,6 +177,7 @@ final class DiscoveryController {
     }
     private void selectCandidates(List<DiscoveryPolicy.Candidate> candidates) {
         if (candidates.isEmpty()) { message("No SSH candidates found", "No reachable SSH services answered this search. Computers may be inaccessible, use other ports, or require a different network profile."); cancel(); return; }
+        candidateChoices = new ArrayList<>(candidates);
         List<DiscoveryUi.Row> rows = new ArrayList<>();
         try {
             for (DiscoveryPolicy.Candidate candidate : candidates) {
@@ -184,12 +188,14 @@ final class DiscoveryController {
         } catch (Exception error) { storageError(); cancel(); return; }
         int run = generation;
         selectionDialog = presentation.select("Select computers to inspect",
-                "Network profile: " + profile.optString("name") + ". Select computers to check for Nosana. SSH approvals are saved separately for each network profile.",
+                "Network profile: " + profile.optString("name") + ". Nosana hosts are identified after sign-in.",
+                "Filter by part of a name or IP address, such as .105 or 192.0.2. Checked computers stay selected across filters.",
                 rows, Arrays.asList(new DiscoveryUi.Filter("All computers", row -> true),
                         new DiscoveryUi.Filter("Saved SSH identities", row -> "saved".equals(row.group)),
                         new DiscoveryUi.Filter("No saved SSH identity", row -> "new".equals(row.group))),
-                java.util.Collections.emptySet(), 512, "Review SSH identities", ids -> {
+                new LinkedHashSet<>(chosenEndpoints), 512, "Selection complete", ids -> {
                     if (run != generation || destroyed) return;
+                    chosenEndpoints.clear(); chosenEndpoints.addAll(ids); identityExclusions.clear();
                     List<DiscoveryPolicy.Candidate> selected = new ArrayList<>();
                     for (DiscoveryPolicy.Candidate candidate : candidates) if (ids.contains(candidate.endpointKey())) selected.add(candidate);
                     reviewIdentities(selected);
@@ -235,33 +241,45 @@ final class DiscoveryController {
         });
     }
     private void showIdentities(List<IdentityReview> reviews, int run, String selectedProfile) {
-        List<DiscoveryUi.Row> rows = new ArrayList<>(); Set<String> selected = new LinkedHashSet<>(); boolean hasNew = false;
+        List<DiscoveryUi.Row> rows = new ArrayList<>(); int knownCount = 0, newCount = 0;
+        identityExclusions.clear();
         for (IdentityReview review : reviews) {
             boolean saved = "saved".equals(review.state), unknown = "new".equals(review.state);
-            if (saved) selected.add(review.candidate.endpointKey());
-            hasNew |= unknown;
+            if (saved) knownCount++;
+            if (unknown) newCount++;
             String description = saved ? "Matches saved identity" : unknown ? "New identity — compare this fingerprint with a trusted source" :
                     "changed".equals(review.state) ? "Identity changed — blocked. Verify the computer or network profile. No credentials sent." : "Could not verify identity — not checked for Nosana";
             if (review.identity != null) description += "\n" + review.identity.algorithm + "\n" + review.identity.fingerprint;
-            rows.add(new DiscoveryUi.Row(review.candidate.endpointKey(), display(review.candidate), description, review.state, saved || unknown));
+            if (!saved && !unknown) identityExclusions.add(display(review.candidate) + ": " + description);
+            rows.add(new DiscoveryUi.Row(review.candidate.endpointKey(), display(review.candidate), description));
         }
-        selectionDialog = presentation.select("Review SSH identities",
-                "Saved identities are selected when they still match. Select new computers only after comparing their fingerprints with a trusted source. Names and IP addresses alone are not identity proof.",
-                rows, Arrays.asList(new DiscoveryUi.Filter("All identities", row -> true),
-                        new DiscoveryUi.Filter("New identities", row -> "new".equals(row.group)),
-                        new DiscoveryUi.Filter("Needs attention", row -> !row.selectable)),
-                selected, 512, hasNew ? "Trust selected computers" : "Continue", ids -> {
-                    if (run != generation || destroyed) return;
-                    try {
-                        network.ensureActive(); List<Trusted> trusted = new ArrayList<>();
-                        for (IdentityReview review : reviews) if (ids.contains(review.candidate.endpointKey())) {
-                            if (!"saved".equals(review.state) && !"new".equals(review.state)) continue;
-                            if ("new".equals(review.state)) store.trust(selectedProfile, review.candidate.endpointKey(), review.identity.keyBase64);
-                            trusted.add(new Trusted(review.candidate, review.identity));
-                        }
-                        credentials(trusted, 0, new ArrayList<>(), null);
-                    } catch (Exception error) { cancel(); message("Identity approval stopped", "The current network or saved identities could not be confirmed. Search again before signing in."); }
-                }, this::cancel);
+        int eligible = knownCount + newCount;
+        if (newCount == 0 && identityExclusions.isEmpty() && eligible > 0) {
+            continueIdentities(reviews, run, selectedProfile); return;
+        }
+        String explanation = reviews.size() + " computers already selected. " + knownCount + " identities match saved approvals."
+                + (newCount == 0 ? "" : "\n" + newCount + " new SSH identities need approval. Compare their fingerprints below with a trusted source before continuing.")
+                + (identityExclusions.isEmpty() ? "" : "\n" + identityExclusions.size() + " selected computers cannot be verified and will be skipped. No credentials will be sent to them.");
+        selectionDialog = presentation.confirmRows("Review SSH identities", explanation, rows,
+                eligible == 0 ? null : newCount > 0 ? "Trust and continue" : "Continue with " + eligible + " computers",
+                () -> continueIdentities(reviews, run, selectedProfile), candidateChoices.isEmpty() ? null : "Change selection",
+                () -> { if (run == generation && !destroyed) selectCandidates(new ArrayList<>(candidateChoices)); }, this::cancel);
+    }
+    private void continueIdentities(List<IdentityReview> reviews, int run, String selectedProfile) {
+        if (run != generation || destroyed) return;
+        if (!foreground) { cancel(); return; }
+        try {
+            network.ensureActive(); List<Trusted> trusted = new ArrayList<>();
+            for (IdentityReview review : reviews) {
+                if (!"saved".equals(review.state) && !"new".equals(review.state)) continue;
+                if ("new".equals(review.state)) store.trust(selectedProfile, review.candidate.endpointKey(), review.identity.keyBase64);
+                else if (!review.identity.keyBase64.equals(store.trustedKey(selectedProfile, review.candidate.endpointKey())))
+                    throw new SecurityException("Saved SSH identity changed");
+                trusted.add(new Trusted(review.candidate, review.identity));
+            }
+            if (trusted.isEmpty()) { cancel(); return; }
+            credentials(trusted, 0, new ArrayList<>(), null);
+        } catch (Exception error) { cancel(); message("Identity approval stopped", "The current network or saved identities could not be confirmed. Search again before signing in."); }
     }
     private void credentials(List<Trusted> hosts, int index, List<SshDiscovery.BatchRequest> requests, JSONObject shared) {
         if (index == hosts.size()) { reviewRequests(hosts, requests); return; }
@@ -304,6 +322,7 @@ final class DiscoveryController {
         AlertDialog[] review = new AlertDialog[1];
         if (!monitoringIntent) {
             explanation.addView(presentation.action("→ Enable full monitoring…", "Set up rewards, GPU history and automatic IP checks for the hosts you save.", () -> { review[0].dismiss(); approveGpuRecording(hosts, requests); }));
+            label(explanation, "All verified Nosana hosts found on these computers will be saved automatically.");
             label(explanation, "Inspect + automatic IP keeps IP addresses current while this saved fleet is open. It uses sign-ins you chose to remember, reads PC interfaces and checks public IP with installed curl using ipify. Successful checks are cached for 30 minutes.");
             label(explanation, "Sign-ins not remembered are used once. Existing pauses and restrictions remain. Rewards, GPU setup and sudo need separate approval. Inspect only adds no automatic access.");
         }
@@ -329,15 +348,17 @@ final class DiscoveryController {
             })
             .setNeutralButton("Inspect only", (d, w) -> collect(requests, false))
             .setNegativeButton("Cancel", (d, w) -> cancel()).setOnCancelListener(d -> cancel()));
+        selectionDialog = review[0];
+        if (!monitoringIntent) presentation.highlightPrimary(review[0]);
     }
     private void approveGpuRecording(List<Trusted> hosts, List<SshDiscovery.BatchRequest> requests) {
         LinearLayout form = form();
-        label(form, monitoringIntent ? "Enable monitoring for these saved computers." : "After inspection, choose which Nosana hosts to save. New monitoring applies only to those hosts and their computers.");
+        label(form, monitoringIntent ? "Enable monitoring for these saved computers." : "All verified Nosana hosts found on your selected computers will be saved. New monitoring applies only to those saved hosts and their verified computers.");
         label(form, "Saved sign-in\nSelected SSH credentials are remembered encrypted on this phone. Connections run over your Wi-Fi or VPN while the fleet is open, without another network search.");
         label(form, "Rewards\nRead each verified node's claimable rewards using its existing identity inside its container. Private keys stay there. Authorization goes only to Nosana. The signature has broader authority, but this helper allows only the fixed rewards GET, never claims or transfers. Only public address, amount, time and status return. Reads run at most every five minutes and honor provider delays; denied authorization pauses that node.");
         label(form, "GPU history\nCreate labeled GridLens Docker recorders and named volumes using a pinned image. Recording continues while the phone is closed; readings refresh every 30 seconds while viewing. GridLens may repair its own recorder connection after a node restarts. Docker/NVIDIA support must already exist. No host installation, networking changes or workload restarts.");
         label(form, "IP addresses\nRead PC interfaces and check public IP with installed curl using ipify. No keys or credentials go to that service. Checks are shared across the PC's hosts and cached for 30 minutes.");
-        label(form, "Changed identities or rejected credentials pause access. Missing readings stay unknown. Existing PCs that cannot be safely updated for only the selected hosts keep their monitoring settings; use Enable / repair monitoring separately.");
+        label(form, "Changed identities or rejected credentials pause access. Missing readings stay unknown. Existing monitoring restrictions remain. PCs that cannot be safely updated keep their settings; use Enable / repair monitoring separately.");
         presentation.show(presentation.builder("Enable monitoring on " + hosts.size() + " trusted PCs?")
             .setView(scroll(form))
             .setPositiveButton("Enable monitoring", (d, w) -> collect(requests, true))
@@ -574,39 +595,19 @@ final class DiscoveryController {
         java.util.Map<String, SshDiscovery.Result> complete = java.util.Collections.unmodifiableMap(new java.util.LinkedHashMap<>(results));
         LinkedHashSet<String> found = new LinkedHashSet<>();
         for (SshDiscovery.Result result : complete.values()) found.addAll(result.addresses);
-        // Explicit saved-PC recovery retains its existing zero-host merge semantics.
-        // An empty user selection below can never enter that repair path.
-        if (monitoringIntent || found.isEmpty()) { saveSelectedResults(complete, expected, null); return; }
-        java.util.Map<String, PcMetadata> metadata = InspectionResults.metadataByAddress(complete.values());
-        List<DiscoveryUi.Row> rows = new ArrayList<>();
-        for (String address : found) {
-            PcMetadata pc = metadata.get(address);
-            String name = pc == null || pc.pcName == null ? "Computer name unavailable" : pc.pcName;
-            String details = "Host: " + address + (pc == null || pc.ipAddresses.isEmpty() ? "" : "\nPC addresses: " + String.join(", ", pc.ipAddresses))
-                    + (pc == null || pc.pcId == null ? "\nPC association is unknown; this host cannot authorize PC monitoring." : "");
-            rows.add(new DiscoveryUi.Row(address, name, details, "hosts", true));
+        // The initial PC selection is the only roster choice. Retain all verified
+        // addresses and complete failure evidence; unverified observations stay out.
+        if (destroyed || !foreground || network == null || network.isCancelled()) {
+            cancel(); return;
         }
-        rows.sort(java.util.Comparator.comparing((DiscoveryUi.Row row) -> row.title).thenComparing(row -> row.id));
-        int attention = 0;
-        for (java.util.Map.Entry<String, SshDiscovery.Result> entry : complete.entrySet()) {
-            SshDiscovery.Result result = entry.getValue();
-            if (result.status != SshDiscovery.Status.SUCCESS || result.unresolved > 0) attention++;
-            if (result.status != SshDiscovery.Status.SUCCESS || result.unresolved > 0 || result.addresses.isEmpty()) {
-                rows.add(new DiscoveryUi.Row("inspection:" + entry.getKey(), entry.getKey(), inspectionStatus(result)
-                        + (result.unresolved == 0 ? "" : "\n" + result.unresolved + " unresolved Nosana observations"), "details", false));
-            }
+        try {
+            network.ensureActive();
+        } catch (Exception error) {
+            cancel(); message("Inspection stopped", "The active connection could not be confirmed before saving. Existing saved fleets remain unchanged.");
+            return;
         }
-        int run = generation;
-        selectionDialog = presentation.select("Choose Nosana hosts to save", found.size() + " verified Nosana hosts found. "
-                + attention + " computers need attention; use Inspection details to review incomplete checks. "
-                + (fleetId == null ? "Select the hosts to save." : "Select hosts to add or update. Existing saved hosts are kept, including those you leave unselected."),
-                rows, Arrays.asList(new DiscoveryUi.Filter("Verified Nosana hosts", row -> row.selectable),
-                        new DiscoveryUi.Filter("Inspection details", row -> !row.selectable), new DiscoveryUi.Filter("All results", row -> true)),
-                java.util.Collections.emptySet(), Integer.MAX_VALUE, fleetId == null ? "Save selected hosts" : "Add / update selected hosts", ids -> {
-                    if (run != generation || destroyed || ids.isEmpty()) return;
-                    try { network.ensureActive(); saveSelectedResults(complete, expected, InspectionSelection.from(complete, ids)); }
-                    catch (Exception error) { cancel(); storageError(); }
-                }, this::cancel);
+        try { saveSelectedResults(complete, expected, monitoringIntent || found.isEmpty() ? null : InspectionSelection.from(complete, found)); }
+        catch (Exception error) { cancel(); storageError(); }
     }
     private static String inspectionStatus(SshDiscovery.Result result) {
         switch (result.status) {
@@ -626,7 +627,6 @@ final class DiscoveryController {
             if (result.status != SshDiscovery.Status.SUCCESS) inaccessible++;
             if (result.status == SshDiscovery.Status.AUTH_FAILED) authFailed = true;
         }
-        int foundCount = addresses.size();
         if (selection != null) { addresses.clear(); addresses.addAll(selection.addresses); }
         StringBuilder pcDetails = new StringBuilder();
         for (java.util.Map.Entry<String, SshDiscovery.Result> result : results.entrySet())
@@ -635,11 +635,13 @@ final class DiscoveryController {
                 .append(result.getValue().gpuCollectorStatus == null ? "" : "; " + result.getValue().gpuCollectorStatus.label);
         java.util.Map<String, PcMetadata> pcMetadata = selection == null ? InspectionResults.metadataByAddress(results.values()) : selection.metadata;
         long pcConflicts = pcMetadata.values().stream().filter(pc -> pc.pcId == null).count();
-        String summary = addresses.size() + " of " + foundCount + " verified Nosana hosts selected. " + unresolved + " unresolved Nosana observations. " + inaccessible + " incomplete or unattempted PC inspections."
+        final int skippedIdentities = identityExclusions.size();
+        String summary = addresses.size() + " verified Nosana hosts found on the selected computers. " + unresolved + " unresolved Nosana observations. " + inaccessible + " incomplete or unattempted PC inspections."
             + (authFailed ? " The credential batch stopped after an authentication failure; remaining PCs were not tried." : "")
             + (results.size() < expected ? " Some selected PCs were not inspected." : "")
             + (unresolved > 0 ? " Normal and elevated inventory observations may refer to the same unresolved instance." : "")
-            + (pcConflicts > 0 ? " " + pcConflicts + " host addresses appeared on conflicting PC identities; their PC name and IP addresses remain unknown." : "") + pcDetails;
+            + (pcConflicts > 0 ? " " + pcConflicts + " host addresses appeared on conflicting PC identities; their PC name and IP addresses remain unknown." : "")
+            + (identityExclusions.isEmpty() ? "" : "\nSSH identity exclusions:\n" + String.join("\n", identityExclusions)) + pcDetails;
         if (addresses.isEmpty() && (selection != null || !allowsEmptyMonitoringMerge(fleetId, enableMonitoringForBatch || enableAutomaticIpForBatch, lastRequests, results))) {
             message("No verified host identities", summary + " Existing saved fleets remain unchanged."); cancel(); return;
         }
@@ -666,9 +668,16 @@ final class DiscoveryController {
         DiscoveryNetwork approvedNetwork = network;
         final int selectedCount = addresses.size(), issues = inaccessible, unresolvedCount = unresolved;
         int selectedPcs = (int) pcMetadata.values().stream().filter(pc -> pc.pcId != null).map(pc -> pc.pcId).distinct().count();
-        working = true; busy("Saving discovered fleet", "Saving " + selectedCount + " selected hosts…");
+        working = true; busy("Saving discovered fleet", "Saving " + selectedCount + " verified hosts…");
         io.execute(() -> {
+            boolean saveStarted = false;
             try {
+                if (run != generation || !foreground || destroyed || approvedNetwork == null || approvedNetwork.isCancelled()) {
+                    ui(run, () -> { cancel(); message("Inspection stopped", "The connection or app session changed before saving. Existing saved fleets remain unchanged."); });
+                    return;
+                }
+                approvedNetwork.ensureActive();
+                saveStarted = true;
                 JSONObject response = api(operation);
                 String id = response.getString("fleetId");
                 List<JSONObject> setup;
@@ -724,13 +733,21 @@ final class DiscoveryController {
                     if (deferredSummary != null && !deferredSummary.isEmpty()) monitoringStatus += "\n" + deferredSummary;
                     String completion = selectedCount + " Nosana hosts " + (savedFleet == null ? "saved" : "added / updated") + " from " + selectedPcs + " verified computers."
                             + (pcConflicts > 0 ? "\n" + pcConflicts + " selected hosts have conflicting PC associations." : "")
+                            + (skippedIdentities == 0 ? "" : "\n" + skippedIdentities + " selected computers were skipped before sign-in; view inspection details.")
                             + "\n\n" + monitoringStatus
                             + (issues == 0 && unresolvedCount == 0 ? "" : "\n\n" + issues + " computer inspections incomplete or unattempted; " + unresolvedCount + " unresolved Nosana observations. View inspection details.");
                     presentation.result("Fleet saved", completion, summary
                             + (enrollmentDetails == null ? "" : "\n\n" + enrollmentDetails)
                             + (registrationDetails == null ? "" : "\n\n" + registrationDetails), "View fleet", null);
                 });
-            } catch (Exception error) { ui(run, () -> { dismissProgress(); working = false; message("Fleet could not be saved", "The save could not be confirmed. Check Saved fleets before retrying; the request may have completed."); cancel(); }); }
+            } catch (Exception error) {
+                boolean attempted = saveStarted;
+                ui(run, () -> { dismissProgress(); working = false;
+                    message(attempted ? "Fleet could not be saved" : "Inspection stopped", attempted
+                            ? "The save could not be confirmed. Check Saved fleets before retrying; the request may have completed."
+                            : "The active connection could not be confirmed before saving. Existing saved fleets remain unchanged.");
+                    cancel(); });
+            }
         });
     }
     /** An explicitly approved saved-PC repair may keep the roster when node discovery is unavailable. */
@@ -1133,6 +1150,7 @@ final class DiscoveryController {
         if (network != null) { network.cancel(); try { network.close(); } catch (Exception ignored) {} network = null; }
         dismissProgress(); for (SshDiscovery.Credential credential : openCredentials) credential.close(); openCredentials.clear(); if (store != null) store.lock();
         credentialIds.clear(); lastRequests = new ArrayList<>();
+        candidateChoices = new ArrayList<>(); chosenEndpoints.clear(); identityExclusions.clear();
         enableAutomaticIpForBatch = false; enableMonitoringForBatch = false;
         for (byte[] password : monitoringSudo.values()) Arrays.fill(password, (byte) 0);
         monitoringSudo.clear();

@@ -903,3 +903,60 @@ was accessed. Physical-phone confirmation remains separate from emulator proof.
 
 Signed APK size: 197386852 bytes. SHA-256:
 `b43e5d396aa9cedb4903cd3a59fd8023eea6e06306653afc219b208fdbb3ca6f`.
+
+
+## Android 0.2.15 — select computers once, October 28, 2026
+
+Version code 18 replaces the repeated computer/host checkbox workflow. The initial
+Select computers to inspect screen explains partial-IP/name filtering, keeps a
+prominent live selected count across filters, and ends with Selection complete.
+New SSH identities receive one read-only approval with Trust and continue;
+matching saved identities bypass that review. Changed/unavailable identities
+remain excluded, and Change selection returns to the original checked choices.
+The normal review highlights Inspect + automatic IP with green fill and bold
+contrasting text. All verified Nosana hosts from the chosen computers are saved
+automatically after inspection; there is no Choose Nosana hosts to save screen.
+
+The complete inspection evidence still supplies conflict and credential-denial
+checks. Automatic saving uses the verified address union and its existing scoped
+enrollment rules, rather than adding unverified computers or broadening monitoring
+permissions. Network/foreground checks guard automatic saving and queued writes.
+A save already submitted may complete after cancellation; its outcome is not
+claimed rolled back. Pausing just before the saved-identity automatic continuation
+cancels that discovery so it cannot leave a stranded captured network.
+
+Completed verification:
+
+- `npm run check`: 117 Android runtime/helper tests, 27 Python tests, 816 inherited
+  Node tests and all 332 browser tests passed (12.6-minute browser portion).
+- All 177 Android unit tests passed in both debug and release builds. Release
+  lint and debug/instrumentation/signed release APK builds passed.
+- API 36 native UI checks passed with 56 selected computers retained across
+  partial-IP filters, visible filtering help, the Selection complete label and
+  prominent count. Read-only identity review contains no checkboxes or bulk
+  selection; explicit approval saves only new eligible pins and leaves changed
+  pins blocked. Matching saved keys go directly to credentials. The highlighted
+  normal inspection action is verified on the actual controller dialog.
+- The foreground-boundary fixture confirms that automatic identity continuation
+  cancels an inactive session without credential presentation, trust mutation or
+  any native probe. Existing physical-tap keyboard tests, all-eight-row scrolling,
+  320dp enlarged-text/footer checks, 200-row virtualization, the 512-PC cap,
+  credential modes and final-summary details continue to pass.
+- Generated-SSH normal onboarding passed on the final app: one computer selection
+  → read-only trust approval → credentials → highlighted inspection → automatic
+  saving of three verified Nosana hosts → three rendered PC-IP cells. The fixture
+  explicitly rejects a second computer/host picker after inspection. Existing
+  enrollment/denial/recovery policy fixtures also passed.
+- A separate Remember-unchecked run automatically saved all three verified hosts
+  without persisting credentials, monitoring targets or PC-IP observations.
+- The release is `com.gridlens.android`, 0.2.15/code 18, signed with the pinned
+  existing certificate. ZIP and 16 KiB ELF LOAD alignment for six native libraries
+  verify. Packaged strings include Selection complete and Trust and continue;
+  the removed host-picker title and native instrumentation classes are absent.
+
+All credentials, PCs and responses in these checks were generated fixtures. No
+operator PC, physical phone, existing WireGuard setup or Nosana/Solana key was
+accessed. Physical-phone confirmation remains separate from emulator results.
+
+Signed APK size: 197386852 bytes. SHA-256:
+`6f7baafb03256e91ccbe404123c7a8ad986d0183707d69a9ec67139258da498e`.

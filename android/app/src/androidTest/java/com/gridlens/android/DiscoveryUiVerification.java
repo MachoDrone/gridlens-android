@@ -49,7 +49,8 @@ final class DiscoveryUiVerification {
             verifySearchInput(driver, screen);
             verifySelectionFooterWithKeyboard(driver, screen);
             verifySelection(driver, screen);
-            verifyLimitsAndTrust(driver, screen);
+            verifyLimits(driver, screen);
+            verifyIdentityReviews(driver, screen, controller);
             verifyResult(driver, screen);
             verifyEmptyProfileShortcut(driver, controller);
             verifyCredentialMethods(driver, screen, controller);
@@ -61,8 +62,8 @@ final class DiscoveryUiVerification {
                     "UI-only actions started discovery or SSH connections");
             result.putString("stream", "PASS (discovery UI): physical Search tap opens the Android keyboard, injected typing filters eight computers, selection survives keyboard dismissal and clearing search, and all eight rows are reachable by touch scrolling at 360dp; "
                     + "both selection actions fully visible at 320dp with 1.6× text and the keyboard open/closed; "
-                    + "200 virtualized candidates, search/filter preservation and explicit selection of 50 hosts; "
-                    + "512-PC limit, blocked identity rows, empty-profile and empty-credential shortcuts, key/password visibility and secret clearing, "
+                    + "200 virtualized candidates, prominent live count of 56 selected across partial-IP searches; "
+                    + "512-PC limit, read-only identity review with changed keys blocked and saved keys bypassing review, highlighted inspection action, empty-profile and empty-credential shortcuts, key/password visibility and secret clearing, "
                     + "cancelled document picker, secure credential dialog, compact 320dp layout with enlarged text, and expandable Fleet saved details. "
                     + "No network discovery, SSH connection, operator roster, persistent credential, or monitoring grant. Physical-device acceptance remains separate.\n");
             outcome = Activity.RESULT_OK;
@@ -92,7 +93,7 @@ final class DiscoveryUiVerification {
                     "These computers answered SSH. Sign-in and inspection are needed to confirm Nosana. Select the computers you want to check.",
                     rows, Arrays.asList(new DiscoveryUi.Filter("All computers", row -> true),
                             new DiscoveryUi.Filter("Identity not saved", row -> "new".equals(row.group))),
-                    Collections.emptySet(), 512, "Review SSH identities", chosen::set, () -> {});
+                    Collections.emptySet(), 512, "Selection complete", chosen::set, () -> {});
             dialog.getWindow().setLayout(Math.round(360 * activity.getResources().getDisplayMetrics().density), WindowManager.LayoutParams.WRAP_CONTENT);
             shown.set(dialog);
         });
@@ -188,7 +189,7 @@ final class DiscoveryUiVerification {
         ui(driver, () -> {
             AlertDialog dialog = new DiscoveryUi(activity).select("Select computers to inspect",
                     "These computers answered SSH. Sign-in and inspection are needed to confirm Nosana.", rows,
-                    Collections.emptyList(), Collections.singleton("compact-0"), 512, "Review SSH identities", ignored -> {}, () -> {});
+                    Collections.emptyList(), Collections.singleton("compact-0"), 512, "Selection complete", ignored -> {}, () -> {});
             dialog.getWindow().setLayout(Math.round(320 * activity.getResources().getDisplayMetrics().density), WindowManager.LayoutParams.MATCH_PARENT);
             scaleText(dialog.getWindow().getDecorView(), 1.6f);
             shown.set(dialog);
@@ -403,15 +404,19 @@ final class DiscoveryUiVerification {
         List<DiscoveryUi.Row> candidates = new ArrayList<>();
         for (int i = 0; i < 200; i++) candidates.add(new DiscoveryUi.Row("pc-" + i,
                 (i < 50 ? "Rack A " : "Rack B ") + String.format(java.util.Locale.ROOT, "%03d", i),
-                "192.0.2." + (i + 1) + ":22 · SSH computer; Nosana not checked", i < 100 ? "saved" : "new", true));
+                (i >= 50 && i < 56 ? "198.51.100." + (100 + i - 50) : "192.0.2." + (i + 1)) + ":22 · SSH computer; Nosana not checked", i < 100 ? "saved" : "new", true));
         List<DiscoveryUi.Filter> filters = Arrays.asList(new DiscoveryUi.Filter("All computers", row -> true),
                 new DiscoveryUi.Filter("Saved identities", row -> row.group.equals("saved")),
-                new DiscoveryUi.Filter("Unfamiliar computers", row -> row.group.equals("new")));
+                new DiscoveryUi.Filter("No saved SSH identity", row -> row.group.equals("new")));
         AtomicReference<Set<String>> chosen = new AtomicReference<>();
         AlertDialog dialog = showSelection(driver, activity, "Select computers to inspect", candidates, filters, Collections.emptySet(), 512, chosen);
         try {
             ui(driver, () -> {
                 require(!dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled(), "An empty candidate selection can continue");
+                TextView help = tag(dialog, "discovery-search-help");
+                android.graphics.Rect helpBounds = new android.graphics.Rect();
+                require(help.getGlobalVisibleRect(helpBounds) && helpBounds.height() > 0 && help.getText().toString().contains("part of an IP"),
+                        "Partial-IP search instructions are not visible");
                 ListView list = tag(dialog, "discovery-list");
                 require(list.getAdapter().getCount() == 200 + list.getHeaderViewsCount() && list.getChildCount() < 200,
                         "Large candidate list was truncated or is not virtualized");
@@ -422,46 +427,36 @@ final class DiscoveryUiVerification {
                 ((EditText) tag(dialog, "discovery-search")).setText("rack a");
                 tag(dialog, "discovery-select-all").performClick();
                 require(count(dialog).startsWith("50 selected · 50 results"), "Search and identity filter did not select the matching 50 PCs");
+                ((EditText) tag(dialog, "discovery-search")).setText("198.51.100.10");
+                require(count(dialog).startsWith("50 selected · 6 results"), "Partial IP search lost the existing selection");
+                tag(dialog, "discovery-select-all").performClick();
+                require(count(dialog).startsWith("56 selected · 6 results"), "Partial IP selection did not add six computers to the existing fifty");
+                TextView total = tag(dialog, "discovery-count");
+                require(total.getTypeface() != null && total.getTypeface().isBold() && total.getCurrentTextColor() == DiscoveryUi.GREEN
+                                && total.getTextSize() >= 18 * activity.getResources().getDisplayMetrics().scaledDensity - 1,
+                        "Live selected count is not prominent");
                 ((EditText) tag(dialog, "discovery-search")).setText("");
-                require(count(dialog).startsWith("50 selected · 100 results"), "Clearing search lost selections");
+                require(count(dialog).startsWith("56 selected · 100 results"), "Clearing search lost selections");
                 ((Spinner) tag(dialog, "discovery-filter")).setSelection(2);
             });
             driver.waitForIdleSync();
             ui(driver, () -> {
-                require(count(dialog).startsWith("50 selected · 100 results"), "Changing filters discarded hidden selections");
+                require(count(dialog).startsWith("56 selected · 100 results"), "Changing filters discarded hidden selections");
                 ((Spinner) tag(dialog, "discovery-filter")).setSelection(0);
             });
             driver.waitForIdleSync();
             ui(driver, () -> {
-                require(count(dialog).startsWith("50 selected · 200 results"), "Restoring all candidates changed the selection");
+                require(count(dialog).startsWith("56 selected · 200 results"), "Restoring all candidates changed the selection");
                 dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick();
             });
             driver.waitForIdleSync();
-            require(chosen.get() != null && chosen.get().size() == 50 && chosen.get().contains("pc-0") && chosen.get().contains("pc-49")
-                    && !chosen.get().contains("pc-50"), "Candidate callback included unselected PCs");
+            require(chosen.get() != null && chosen.get().size() == 56 && chosen.get().contains("pc-0") && chosen.get().contains("pc-55")
+                    && !chosen.get().contains("pc-56"), "Candidate callback included unselected PCs");
         } finally { ui(driver, dialog::dismiss); }
 
-        List<DiscoveryUi.Row> hosts = new ArrayList<>();
-        for (int i = 0; i < 50; i++) hosts.add(new DiscoveryUi.Row("host-" + i, "Verified Nosana host " + i,
-                "Computer " + (i / 2) + " · 192.0.2." + (i / 2 + 1) + " · public identity " + i));
-        chosen.set(null);
-        AlertDialog found = showSelection(driver, activity, "Choose Nosana hosts to save", hosts, Collections.emptyList(), Collections.emptySet(), 512, chosen);
-        try {
-            ui(driver, () -> {
-                tag(found, "discovery-select-all").performClick();
-                require(count(found).startsWith("50 selected · 50 results"), "Verified host select-all lost hosts on shared PCs");
-                tag(found, "discovery-clear").performClick();
-                require(count(found).startsWith("0 selected") && !found.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled(),
-                        "Clearing verified hosts still permits an empty save");
-                tag(found, "discovery-select-all").performClick();
-                found.getButton(AlertDialog.BUTTON_POSITIVE).performClick();
-            });
-            driver.waitForIdleSync();
-            require(chosen.get() != null && chosen.get().size() == 50, "Verified-host selection collapsed hosts sharing a PC");
-        } finally { ui(driver, found::dismiss); }
     }
 
-    private static void verifyLimitsAndTrust(Instrumentation driver, Activity activity) {
+    private static void verifyLimits(Instrumentation driver, Activity activity) {
         List<DiscoveryUi.Row> candidates = new ArrayList<>();
         for (int i = 0; i < 600; i++) candidates.add(new DiscoveryUi.Row("bounded-" + i, "Computer " + i, "Unfamiliar SSH computer"));
         AtomicReference<Set<String>> selected = new AtomicReference<>();
@@ -475,20 +470,144 @@ final class DiscoveryUiVerification {
                 require(count(limitDialog).startsWith("0 selected"), "Clear did not remove the whole selection");
             });
         } finally { ui(driver, limitDialog::dismiss); }
-        List<DiscoveryUi.Row> trust = Arrays.asList(new DiscoveryUi.Row("new", "192.0.2.1:22", "New identity · SHA256:fixture-first-use", "new", true),
-                new DiscoveryUi.Row("changed", "192.0.2.2:22", "Changed identity — blocked. No credentials will be sent.", "blocked", false));
-        AlertDialog trustDialog = showSelection(driver, activity, "Review SSH identities", trust, Collections.emptyList(),
-                new LinkedHashSet<>(Collections.singletonList("changed")), 512, selected);
+    }
+
+    /** Exercise the actual controller's trust transitions without probing or signing in to a PC. */
+    private static void verifyIdentityReviews(Instrumentation driver, Activity activity, DiscoveryController controller) throws Exception {
+        DiscoveryStore store = (DiscoveryStore) field(controller, "store");
+        SshDiscovery.Identity original = generatedIdentity(), replacement = generatedIdentity(), newlySeen = generatedIdentity();
+        DiscoveryPolicy.Candidate saved = new DiscoveryPolicy.Candidate("192.0.2.1", 22, "Previously approved fixture");
+        DiscoveryPolicy.Candidate changed = new DiscoveryPolicy.Candidate("192.0.2.2", 22, "Changed identity fixture");
+        DiscoveryPolicy.Candidate added = new DiscoveryPolicy.Candidate("192.0.2.3", 22, "New identity fixture");
+        String profile = store.saveProfile(null, "Read-only identity UI fixture", new org.json.JSONArray().put("192.0.2.0/24"), new org.json.JSONArray().put(22));
+        Object priorProfile = field(controller, "profile");
         try {
+            store.trust(profile, saved.endpointKey(), original.keyBase64);
+            store.trust(profile, changed.endpointKey(), original.keyBase64);
+            org.json.JSONObject selectedProfile = new org.json.JSONObject().put("id", profile).put("name", "Read-only identity UI fixture");
+            ui(driver, () -> setField(controller, "profile", selectedProfile));
+            List<Object> mixed = Arrays.asList(identityReview(added, newlySeen, "new"), identityReview(saved, original, "saved"), identityReview(changed, replacement, "changed"));
+            captureUiNetwork(driver, activity, controller);
+            ui(driver, () -> invoke(controller, "showIdentities", new Class<?>[]{List.class, int.class, String.class},
+                    mixed, field(controller, "generation"), profile));
+            driver.waitForIdleSync();
+            AlertDialog review = (AlertDialog) field(controller, "selectionDialog");
             ui(driver, () -> {
-                require(count(trustDialog).startsWith("0 selected"), "A blocked identity was preselected");
-                tag(trustDialog, "discovery-select-all").performClick();
-                require(count(trustDialog).startsWith("1 selected"), "Select-all included a blocked identity");
-                trustDialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick();
+                require(review != null && review.isShowing(), "New SSH identities did not get an explicit approval review");
+                require(!hasCheckboxView(review.getWindow().getDecorView())
+                                && review.getWindow().getDecorView().findViewWithTag("discovery-select-all") == null,
+                        "SSH identity review asks users to select the same computers again");
+                require("Trust and continue".equalsIgnoreCase(review.getButton(AlertDialog.BUTTON_POSITIVE).getText().toString()),
+                        "New identities do not have an explicit Trust and continue action");
+                ListView identities = tag(review, "discovery-review-list");
+                require(identities.getAdapter().getCount() == 3, "Identity review dropped a new, saved, or blocked computer");
+                identities.setSelection(2);
             });
             driver.waitForIdleSync();
-            require(selected.get().equals(Collections.singleton("new")), "Blocked identity entered approved trust selection");
-        } finally { ui(driver, trustDialog::dismiss); }
+            require(AutomaticPcIpVerification.hasText(driver, "blocked"), "Changed SSH identity is not visibly blocked");
+            require(store.trustedKey(profile, added.endpointKey()) == null, "Merely reviewing a new identity trusted it");
+            ui(driver, () -> review.getButton(AlertDialog.BUTTON_POSITIVE).performClick());
+            driver.waitForIdleSync();
+            AutomaticPcIpVerification.awaitText(driver, "SSH credentials");
+            require(newlySeen.keyBase64.equals(store.trustedKey(profile, added.endpointKey())), "Explicit Trust and continue did not save the new identity");
+            require(original.keyBase64.equals(store.trustedKey(profile, changed.endpointKey()))
+                            && original.keyBase64.equals(store.trustedKey(profile, saved.endpointKey())),
+                    "Identity approval replaced a changed or already-saved SSH pin");
+            require(AutomaticPcIpVerification.clickText(driver, "Cancel"), "Could not leave credentials after identity approval");
+
+            captureUiNetwork(driver, activity, controller);
+            ui(driver, () -> invoke(controller, "showIdentities", new Class<?>[]{List.class, int.class, String.class},
+                    Collections.singletonList(identityReview(saved, original, "saved")), field(controller, "generation"), profile));
+            driver.waitForIdleSync();
+            AutomaticPcIpVerification.awaitText(driver, "SSH credentials");
+            require(!AutomaticPcIpVerification.hasText(driver, "Review SSH identities"), "Unchanged saved identity requires a repeated approval screen");
+            require(AutomaticPcIpVerification.clickText(driver, "Cancel"), "Could not leave credentials after saved identity bypass");
+
+            // The worker can finish after foreground permission is lost, before its UI callback runs.
+            // Exercise that boundary without pausing the Activity or attempting a connection.
+            boolean priorForeground = (Boolean) field(controller, "foreground");
+            int beforePins = store.knownEndpoints().length();
+            captureUiNetwork(driver, activity, controller);
+            DiscoveryNetwork finishingNetwork = (DiscoveryNetwork) field(controller, "network");
+            try {
+                ui(driver, () -> {
+                    setField(controller, "working", true);
+                    setField(controller, "foreground", false);
+                    invoke(controller, "showIdentities", new Class<?>[]{List.class, int.class, String.class},
+                            Collections.singletonList(identityReview(saved, original, "saved")), field(controller, "generation"), profile);
+                });
+                driver.waitForIdleSync();
+                require(field(controller, "network") == null && finishingNetwork.isCancelled() && Boolean.FALSE.equals(field(controller, "working")),
+                        "Backgrounded saved-identity completion stranded an owned network or busy controller");
+                require(!AutomaticPcIpVerification.hasText(driver, "SSH credentials")
+                                && !AutomaticPcIpVerification.hasText(driver, "Review SSH identities"),
+                        "Backgrounded identity completion opened a credential or trust dialog");
+                require(original.keyBase64.equals(store.trustedKey(profile, saved.endpointKey())) && store.knownEndpoints().length() == beforePins,
+                        "Backgrounded identity completion changed saved trust");
+            } finally { ui(driver, () -> setField(controller, "foreground", priorForeground)); }
+            require(!Boolean.TRUE.equals(field(controller, "working")), "Restoring foreground left discovery busy");
+
+            Object trusted = trusted(saved, original);
+            byte[] secret = "generated-review-only-password".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            try (SshDiscovery.Credential credential = new SshDiscovery.Credential("fixture", secret, null, null)) {
+                Arrays.fill(secret, (byte) 0);
+                ui(driver, () -> invoke(controller, "reviewRequests", new Class<?>[]{List.class, List.class}, Collections.singletonList(trusted),
+                        Collections.singletonList(new SshDiscovery.BatchRequest(saved, original, credential, null))));
+                driver.waitForIdleSync();
+                AlertDialog inspection = (AlertDialog) field(controller, "selectionDialog");
+                ui(driver, () -> {
+                    require(inspection != null && inspection.isShowing(), "Inspection review was not presented");
+                    require(!hasCheckboxView(inspection.getWindow().getDecorView()), "Inspection review repeats computer selection");
+                    Button primary = inspection.getButton(AlertDialog.BUTTON_POSITIVE);
+                    require("Inspect + automatic IP".equalsIgnoreCase(primary.getText().toString())
+                                    && "discovery-highlighted-primary".equals(primary.getTag()) && primary.getTypeface().isBold(),
+                            "Inspect + automatic IP is not the highlighted primary action");
+                    android.graphics.drawable.Drawable background = primary.getBackground();
+                    require(background instanceof android.graphics.drawable.RippleDrawable, "Inspection action lacks its native highlighted background");
+                    android.graphics.drawable.Drawable fill = ((android.graphics.drawable.RippleDrawable) background).getDrawable(0).getCurrent();
+                    require(fill instanceof android.graphics.drawable.GradientDrawable
+                                    && ((android.graphics.drawable.GradientDrawable) fill).getColor().getDefaultColor() == DiscoveryUi.GREEN
+                                    && primary.getCurrentTextColor() != DiscoveryUi.GREEN,
+                            "Inspection action does not have a green fill and contrasting text");
+                    inspection.getButton(AlertDialog.BUTTON_NEGATIVE).performClick();
+                });
+                driver.waitForIdleSync();
+            } finally { Arrays.fill(secret, (byte) 0); }
+            status(driver, "PASS_STAGE: single_selection_identity_review_and_highlighted_inspection");
+        } finally {
+            ui(driver, () -> { invoke(controller, "cancel", new Class<?>[0]); setField(controller, "profile", priorProfile); });
+            store.deleteProfile(profile);
+        }
+    }
+    private static void captureUiNetwork(Instrumentation driver, Activity activity, DiscoveryController controller) throws Exception {
+        // Captures local routing state only. The fixture never probes an endpoint or authenticates.
+        DiscoveryNetwork captured = DiscoveryNetwork.capture(activity);
+        ui(driver, () -> setField(controller, "network", captured));
+    }
+    private static SshDiscovery.Identity generatedIdentity() throws Exception {
+        com.jcraft.jsch.KeyPair key = com.jcraft.jsch.KeyPair.genKeyPair(new com.jcraft.jsch.JSch(), com.jcraft.jsch.KeyPair.RSA, 2048);
+        try { return new SshDiscovery.Identity(java.util.Base64.getEncoder().encodeToString(key.getPublicKeyBlob()), "ssh-rsa"); }
+        finally { key.dispose(); }
+    }
+    private static Object identityReview(DiscoveryPolicy.Candidate candidate, SshDiscovery.Identity identity, String state) {
+        try {
+            java.lang.reflect.Constructor<?> constructor = Class.forName("com.gridlens.android.DiscoveryController$IdentityReview")
+                    .getDeclaredConstructor(DiscoveryPolicy.Candidate.class, SshDiscovery.Identity.class, String.class);
+            constructor.setAccessible(true); return constructor.newInstance(candidate, identity, state);
+        } catch (ReflectiveOperationException error) { throw new AssertionError("Could not construct native identity review", error); }
+    }
+    private static Object trusted(DiscoveryPolicy.Candidate candidate, SshDiscovery.Identity identity) {
+        try {
+            java.lang.reflect.Constructor<?> constructor = Class.forName("com.gridlens.android.DiscoveryController$Trusted")
+                    .getDeclaredConstructor(DiscoveryPolicy.Candidate.class, SshDiscovery.Identity.class);
+            constructor.setAccessible(true); return constructor.newInstance(candidate, identity);
+        } catch (ReflectiveOperationException error) { throw new AssertionError("Could not construct native trusted-PC fixture", error); }
+    }
+    private static boolean hasCheckboxView(View view) {
+        if (view instanceof CheckBox) return true;
+        if (view instanceof ViewGroup) for (int i = 0; i < ((ViewGroup) view).getChildCount(); i++)
+            if (hasCheckboxView(((ViewGroup) view).getChildAt(i))) return true;
+        return false;
     }
 
     private static void verifyResult(Instrumentation driver, Activity activity) {
@@ -586,8 +705,9 @@ final class DiscoveryUiVerification {
     private static AlertDialog showSelection(Instrumentation driver, Activity activity, String title, List<DiscoveryUi.Row> rows,
             List<DiscoveryUi.Filter> filters, Set<String> initiallySelected, int limit, AtomicReference<Set<String>> chosen) {
         AtomicReference<AlertDialog> shown = new AtomicReference<>();
-        ui(driver, () -> shown.set(new DiscoveryUi(activity).select(title, "Synthetic fixture; no computers are contacted.", rows, filters,
-                initiallySelected, limit, title.startsWith("Choose") ? "Save selected hosts" : "Continue", chosen::set, () -> {})));
+        ui(driver, () -> shown.set(new DiscoveryUi(activity).select(title, "Synthetic fixture; no computers are contacted.",
+                "Search by name or part of an IP address. Your selections remain when the search changes.", rows, filters,
+                initiallySelected, limit, "Selection complete", chosen::set, () -> {})));
         driver.waitForIdleSync();
         return shown.get();
     }

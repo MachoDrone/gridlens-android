@@ -8,6 +8,13 @@ continues independently.
 
 **[Download the signed Android APK](https://github.com/MachoDrone/gridlens-android-releases/releases/latest/download/gridlens-android.apk)**
 
+**Version 0.2.15** uses one list for choosing computers. Choose the computers once,
+review their SSH identities, then sign in and inspect. Identity review asks for
+approval of new identities for those computers without another checkbox list.
+GridLens automatically saves every verified Nosana host found on the chosen
+computers, including multiple hosts on one PC. Incomplete checks remain in the
+final inspection details; unresolved host identities are never added to the fleet.
+
 **Version 0.2.14** repairs search-field keyboard input in the native selection
 screens and gives results a taller, separate scrolling area. The result count
 means all matches for the current search and filter, including rows below the
@@ -21,16 +28,16 @@ data. SSH identity approval remains separate for each network profile. See
 [verification](docs/VERIFICATION.md) for candidate checks, publication and
 physical-phone acceptance.
 
-**Version 0.2.13** simplifies native Network
-Discovery. Blue underlined actions have short descriptions, dialog titles are
-green, and dialog buttons have visible outlines. First-time setup opens the
+**Version 0.2.13** introduced the native Network
+Discovery presentation. Blue underlined actions have short descriptions, dialog
+titles are green, and dialog buttons have visible outlines. First-time setup opens the
 network settings directly. Search and bulk-selection controls help choose
 computers, one identity review replaces repeated trust dialogs, and SSH sign-in
 offers an existing SSH key first with a separate password option.
 
-After inspection, choose which verified Nosana hosts to save. Computers with no
-verified hosts are kept in inspection details, rather than mixed into the host
-picker. The final **Fleet saved** screen shows counts and monitoring status;
+Versions 0.2.13–0.2.14 used a second selection of verified hosts after inspection;
+0.2.15 replaces that step with automatic saving from the chosen computers.
+The final **Fleet saved** screen shows counts and monitoring status;
 **View inspection details** reveals individual results and **View fleet** closes
 the summary. Physical phone acceptance remains separate from automated checks;
 see [verification](docs/VERIFICATION.md).
@@ -119,18 +126,21 @@ network profiles remain available for later visits and other locations.
 Tap the search field to enter a name or address, or filter the results. The count
 includes matching rows outside the visible scrolling area. **Select all results**
 selects every selectable match for the current search and filter; up to 512
-computers can be inspected in one batch. Review their SSH identities before
-signing in. **No saved SSH identity** refers to the selected network profile, not
-whether a PC runs Nosana. An SSH response alone cannot identify a Nosana host.
+computers can be inspected in one batch. Choose computers once, then review their
+SSH identities before signing in. The review carries forward those choices and
+asks for explicit approval of new identities. **No saved SSH identity** refers to
+the selected network profile, not whether a PC runs Nosana. An SSH response alone
+cannot identify a Nosana host.
 New SSH identities require your explicit approval; changed identities remain
 blocked.
 
 Choose **SSH key** if you already have a key authorized on these computers, or
 choose **Password**. Both require the computer's username. The app does not create
-or install SSH keys. After inspection, **Choose Nosana hosts to save** shows the
-verified hosts with their computer names and addresses. Select the desired hosts,
-then save the named fleet. Incomplete checks remain visible in **Inspection
-details**. Rescans add or update selected hosts and retain existing saved hosts.
+or install SSH keys. After inspection, the app automatically saves all verified
+Nosana hosts found on the chosen computers in the named fleet. Each verified host
+on a PC is included. Incomplete checks and computers with no verified hosts remain
+visible in **View inspection details** on the result screen. Rescans add or update
+verified discoveries and retain existing saved hosts.
 
 Reopening a saved fleet refreshes public Fleet data over ordinary internet without
 another network scan or SSH login. Scans never start automatically. **Fleets**
@@ -141,9 +151,10 @@ Android Keystore. **Forget credentials** leaves saved fleets available. Containe
 rewards reads and owned Docker recorder operations, including per-PC sudo when
 needed; saved approval avoids recurring password prompts. **→ Enable full
 monitoring…** opens that approval from the inspection review. New monitoring is
-limited to the hosts you save and their verified computers. A partial host choice
-that cannot safely update existing PC monitoring leaves that approval unchanged
-and reports the deferred setup; use **Enable / repair monitoring** separately.
+limited to the verified hosts saved from the chosen computers and their verified
+PC associations. Incomplete discovery that cannot safely update existing PC
+monitoring leaves that approval unchanged and reports the deferred setup; use
+**Enable / repair monitoring** separately.
 Full-tunnel VPNs may require learning the destination range once on-site or
 entering it; GridLens does not guess all private networks or configure VPNs.
 See [Network Discovery](docs/NETWORK_DISCOVERY.md) for supported layouts, limits

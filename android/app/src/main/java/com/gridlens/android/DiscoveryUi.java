@@ -5,8 +5,10 @@ import android.app.AlertDialog;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
+import android.graphics.drawable.StateListDrawable;
 import android.os.Build;
 import android.text.Editable;
 import android.text.InputType;
@@ -79,6 +81,31 @@ final class DiscoveryUi {
             Button button = dialog.getButton(which);
             if (button != null) outline(button);
         }
+    }
+
+    /** Emphasize an explicitly chosen primary action without changing its authority or label. */
+    void highlightPrimary(AlertDialog dialog) {
+        Button button = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+        if (button == null) return;
+        GradientDrawable enabled = new GradientDrawable();
+        enabled.setColor(GREEN);
+        enabled.setCornerRadius(dp(5));
+        enabled.setStroke(dp(1), GREEN);
+        GradientDrawable disabled = new GradientDrawable();
+        disabled.setColor(Color.rgb(65, 73, 65));
+        disabled.setCornerRadius(dp(5));
+        disabled.setStroke(dp(1), Color.rgb(105, 115, 105));
+        StateListDrawable states = new StateListDrawable();
+        states.addState(new int[]{-android.R.attr.state_enabled}, disabled);
+        states.addState(new int[]{}, enabled);
+        GradientDrawable mask = new GradientDrawable();
+        mask.setColor(Color.WHITE);
+        mask.setCornerRadius(dp(5));
+        button.setBackground(new RippleDrawable(ColorStateList.valueOf(Color.argb(45, 0, 0, 0)), states, mask));
+        button.setTextColor(new ColorStateList(new int[][]{new int[]{-android.R.attr.state_enabled}, new int[]{}},
+                new int[]{Color.rgb(175, 175, 175), Color.rgb(11, 25, 10)}));
+        button.setTypeface(button.getTypeface(), Typeface.BOLD);
+        button.setTag("discovery-highlighted-primary");
     }
 
     LinearLayout form() {
@@ -189,11 +216,22 @@ final class DiscoveryUi {
     AlertDialog select(String title, String explanation, List<Row> rows, List<Filter> filters,
             Set<String> initiallySelected, int maxSelection, String buttonLabel,
             Consumer<Set<String>> onSelected, Runnable onCancel) {
+        return select(title, explanation, null, rows, filters, initiallySelected, maxSelection,
+                buttonLabel, onSelected, onCancel);
+    }
+
+    AlertDialog select(String title, String explanation, String searchHelp, List<Row> rows, List<Filter> filters,
+            Set<String> initiallySelected, int maxSelection, String buttonLabel,
+            Consumer<Set<String>> onSelected, Runnable onCancel) {
         if (maxSelection < 1) throw new IllegalArgumentException("Selection limit must be positive");
         Selection selection = new Selection(rows, initiallySelected);
         SelectionLayout body = new SelectionLayout();
         LinearLayout header = new LinearLayout(activity);
         header.setOrientation(LinearLayout.VERTICAL);
+        if (searchHelp != null && !searchHelp.isEmpty()) {
+            TextView help = label(header, searchHelp);
+            help.setTag("discovery-search-help");
+        }
         if (explanation != null && !explanation.isEmpty()) label(header, explanation);
         EditText search = new EditText(activity);
         search.setTag("discovery-search");
@@ -253,6 +291,9 @@ final class DiscoveryUi {
         body.addView(list, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
         TextView count = label(body, "");
         count.setTag("discovery-count");
+        count.setTextColor(GREEN);
+        count.setTextSize(18);
+        count.setTypeface(count.getTypeface(), Typeface.BOLD);
         count.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         TextView scrollHint = label(body, "");
         scrollHint.setTag("discovery-scroll-hint");
@@ -331,6 +372,37 @@ final class DiscoveryUi {
             onSelected.accept(Collections.unmodifiableSet(ordered));
         });
         refilter.run();
+        return dialog;
+    }
+
+    AlertDialog confirmRows(String title, String explanation, List<Row> rows, String positiveLabel,
+            Runnable onConfirm, String backLabel, Runnable onBack, Runnable onCancel) {
+        SelectionLayout body = new SelectionLayout();
+        LinearLayout summary = new LinearLayout(activity);
+        summary.setOrientation(LinearLayout.VERTICAL);
+        if (explanation != null && !explanation.isEmpty()) label(summary, explanation);
+        ScrollView options = scroll(summary);
+        options.setTag("discovery-review-explanation");
+        body.options = options;
+        body.addView(options, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        ListView list = new ListView(activity);
+        list.setTag("discovery-review-list");
+        list.setDividerHeight(dp(1));
+        list.setVerticalScrollBarEnabled(true);
+        list.setScrollbarFadingEnabled(false);
+        list.setAdapter(new ReviewAdapter(rows));
+        body.addView(list, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+        AlertDialog.Builder review = builder(title).setView(body)
+                .setNegativeButton("Cancel", (closed, which) -> run(onCancel))
+                .setOnCancelListener(closed -> run(onCancel));
+        if (positiveLabel != null) review.setPositiveButton(positiveLabel, (closed, which) -> run(onConfirm));
+        if (backLabel != null) review.setNeutralButton(backLabel, (closed, which) -> run(onBack));
+        AlertDialog dialog = show(review);
+        reserveSelectionFooter(dialog);
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_HIDDEN);
+            dialog.getWindow().setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+        }
         return dialog;
     }
 
@@ -498,6 +570,38 @@ final class DiscoveryUi {
             });
             CheckBox target = checkbox;
             row.setOnClickListener(value.selectable ? view -> target.toggle() : null);
+            return row;
+        }
+    }
+
+    private final class ReviewAdapter extends BaseAdapter {
+        private final List<Row> rows;
+        ReviewAdapter(List<Row> rows) { this.rows = new ArrayList<>(rows); }
+        @Override public int getCount() { return rows.size(); }
+        @Override public Row getItem(int position) { return rows.get(position); }
+        @Override public long getItemId(int position) { return position; }
+        @Override public boolean hasStableIds() { return true; }
+        @Override public boolean areAllItemsEnabled() { return false; }
+        @Override public boolean isEnabled(int position) { return false; }
+        @Override public View getView(int position, View convertView, ViewGroup parent) {
+            LinearLayout row;
+            if (convertView instanceof LinearLayout) row = (LinearLayout) convertView;
+            else {
+                row = new LinearLayout(activity);
+                row.setOrientation(LinearLayout.VERTICAL);
+                row.setPadding(dp(4), dp(8), dp(4), dp(8));
+                TextView heading = label(row, "");
+                heading.setTextColor(TEXT);
+                heading.setTextSize(17);
+                heading.setTypeface(heading.getTypeface(), Typeface.BOLD);
+                label(row, "").setTextSize(14);
+            }
+            Row value = getItem(position);
+            row.setTag("discovery-review-row:" + value.id);
+            ((TextView) row.getChildAt(0)).setText(value.title);
+            TextView detail = (TextView) row.getChildAt(1);
+            detail.setText(value.description);
+            detail.setVisibility(value.description.isEmpty() ? View.GONE : View.VISIBLE);
             return row;
         }
     }
