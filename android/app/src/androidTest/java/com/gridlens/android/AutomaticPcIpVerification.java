@@ -221,7 +221,7 @@ final class AutomaticPcIpVerification {
         require(clickContainingText(driver, "10.0.2.2:" + port), "Could not select discovered SSH fixture; " + visibleText(driver));
         require(clickText(driver, "Review SSH identities"), "Could not review normal SSH identity");
         awaitText(driver, "Review SSH identities");
-        if (!priorTrust) require(clickText(driver, "Select all shown"), "Could not select generated SSH identity; " + visibleText(driver));
+        if (!priorTrust) require(clickText(driver, "Select all results"), "Could not select generated SSH identity; " + visibleText(driver));
         require(clickText(driver, priorTrust ? "Continue" : "Trust selected computers"), "Could not approve the consolidated SSH identities; " + visibleText(driver));
         awaitText(driver, "SSH credentials");
         require(clickText(driver, "Password"), "Could not choose password sign-in; " + visibleText(driver));
@@ -234,7 +234,7 @@ final class AutomaticPcIpVerification {
         require(clickText(driver, "Inspect + automatic IP"), "Normal review lacks its automatic PC-IP action; " + visibleText(driver));
         awaitText(driver, "Choose Nosana hosts to save");
         if (selectedHostCount == 1) require(setField(driver, "Search name or address", "1".repeat(32)), "Could not filter the verified host list");
-        require(clickText(driver, "Select all shown"), "Could not select verified Nosana hosts");
+        require(clickText(driver, "Select all results"), "Could not select verified Nosana hosts");
         require(clickText(driver, "Save selected hosts"), "Could not save the explicitly selected Nosana hosts");
     }
 

@@ -179,15 +179,15 @@ final class DiscoveryController {
             for (DiscoveryPolicy.Candidate candidate : candidates) {
                 boolean saved = store.trustedKey(profile.getString("id"), candidate.endpointKey()) != null;
                 rows.add(new DiscoveryUi.Row(candidate.endpointKey(), display(candidate),
-                        saved ? "Saved SSH identity — checked again before sign-in" : "Unfamiliar computer — identity approval needed", saved ? "saved" : "new", true));
+                        saved ? "SSH identity saved in this profile" : "SSH identity not saved in this profile", saved ? "saved" : "new", true));
             }
         } catch (Exception error) { storageError(); cancel(); return; }
         int run = generation;
         selectionDialog = presentation.select("Select computers to inspect",
-                "These computers answered SSH. Sign-in and inspection are needed to confirm Nosana. Select the computers you want to check.",
+                "Network profile: " + profile.optString("name") + ". Select computers to check for Nosana. SSH approvals are saved separately for each network profile.",
                 rows, Arrays.asList(new DiscoveryUi.Filter("All computers", row -> true),
-                        new DiscoveryUi.Filter("Saved identities", row -> "saved".equals(row.group)),
-                        new DiscoveryUi.Filter("Unfamiliar", row -> "new".equals(row.group))),
+                        new DiscoveryUi.Filter("Saved SSH identities", row -> "saved".equals(row.group)),
+                        new DiscoveryUi.Filter("No saved SSH identity", row -> "new".equals(row.group))),
                 java.util.Collections.emptySet(), 512, "Review SSH identities", ids -> {
                     if (run != generation || destroyed) return;
                     List<DiscoveryPolicy.Candidate> selected = new ArrayList<>();

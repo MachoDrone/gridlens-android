@@ -455,8 +455,13 @@ Physical-device acceptance remains separate from the recorded automated checks.
 `DiscoveryUi` supplies native green titles, outlined dialog actions,
 blue underlined action rows, separate wrapping descriptions and short labeled
 inputs. A virtualized selection list supports search, filters, bulk selection,
-stable checked IDs and an explicit maximum. Its controls scroll with the list
-while the selected count and confirmation remain outside it. Action rows expose
+stable checked IDs and an explicit maximum. In the current layout, search is a
+direct child of the custom dialog view; explanation, filters and bulk controls
+have a bounded scrolling region above the independently scrolling results.
+Selected/result counts and confirmation remain outside the result list. Selection
+footers reserve the native button bar's full measured height, including stacked
+buttons at larger text sizes, before allocating result space. The
+keyboard and layout correction is described under 0.2.14 below. Action rows expose
 one combined accessibility description; automated text lookup must consider that
 description as well as a node's text.
 
@@ -494,3 +499,33 @@ can be cancelled. Native-only snapshots bind that result to the exact remembered
 credential used by inspection even after cancellation clears the SSH buffers. A
 changed credential does not inherit an old rejection. Storage failure blocks
 automatic collection; choosing fewer hosts cannot discard a denial.
+
+## Search input and result visibility (0.2.14)
+
+The 0.2.13 selection screen placed the search editor inside a `ListView` header.
+The 0.2.14 correction attaches it directly to the custom view before creating the
+dialog, so Android can recognize the text editor during dialog setup. The window
+also clears `FLAG_ALT_FOCUSABLE_IM` and uses resize behavior when the keyboard
+opens. Verify actual tapping and ordinary keyboard input; assigning text directly
+to the view does not exercise this failure boundary.
+
+Selection dialogs use the available window height. A separate virtualized result
+list receives the remaining space below search and the bounded options region.
+The result list keeps its scrollbar visible and shows **Scroll for more results**
+or **Scroll up for earlier results** when appropriate. The count is the total
+number of rows matching the search/filter, including rows outside the viewport.
+**Select all results** selects all selectable matches; it does not change the
+selection limit or clear selected rows hidden by a later filter.
+
+Candidate rows now describe saved SSH identity state in the selected network
+profile, whose name appears in the explanation. The lookup remains the exact
+profile UUID plus IP and SSH port. **No saved SSH identity** is not a Nosana
+classification or evidence that fleet data was deleted. Creating a new profile
+does not inherit another profile's trust, even when their names or ranges match.
+Saved keys are still verified before login and changed keys remain blocked; this
+wording change adds no cross-profile trust or credential access.
+
+Record candidate test results, publication and physical-phone confirmation
+separately in `VERIFICATION.md`. Acceptance should cover tap-to-type search,
+keyboard dismissal, scrolling through all matching rows, selections surviving
+filter changes, narrow/large-font layouts and the profile-specific identity labels.

@@ -46,6 +46,8 @@ final class DiscoveryUiVerification {
             MainActivity screen = activity;
             DiscoveryController controller = awaitController(activity);
             long searches = DiscoveryNetwork.startedSearchesForTesting(), connections = DiscoveryNetwork.startedConnectionsForTesting();
+            verifySearchInput(driver, screen);
+            verifySelectionFooterWithKeyboard(driver, screen);
             verifySelection(driver, screen);
             verifyLimitsAndTrust(driver, screen);
             verifyResult(driver, screen);
@@ -57,13 +59,17 @@ final class DiscoveryUiVerification {
                     "UI-only checks persisted discovery credentials or monitoring authority");
             require(DiscoveryNetwork.startedSearchesForTesting() == searches && DiscoveryNetwork.startedConnectionsForTesting() == connections,
                     "UI-only actions started discovery or SSH connections");
-            result.putString("stream", "PASS (discovery UI): 200 virtualized candidates, search/filter preservation and explicit selection of 50 hosts; "
+            result.putString("stream", "PASS (discovery UI): physical Search tap opens the Android keyboard, injected typing filters eight computers, selection survives keyboard dismissal and clearing search, and all eight rows are reachable by touch scrolling at 360dp; "
+                    + "both selection actions fully visible at 320dp with 1.6× text and the keyboard open/closed; "
+                    + "200 virtualized candidates, search/filter preservation and explicit selection of 50 hosts; "
                     + "512-PC limit, blocked identity rows, empty-profile and empty-credential shortcuts, key/password visibility and secret clearing, "
                     + "cancelled document picker, secure credential dialog, compact 320dp layout with enlarged text, and expandable Fleet saved details. "
                     + "No network discovery, SSH connection, operator roster, persistent credential, or monitoring grant. Physical-device acceptance remains separate.\n");
             outcome = Activity.RESULT_OK;
         } catch (Exception | AssertionError error) {
-            result.putString("stream", "FAIL (discovery UI): " + error.getClass().getSimpleName() + ": " + error.getMessage() + "\n");
+            java.io.StringWriter trace = new java.io.StringWriter();
+            error.printStackTrace(new java.io.PrintWriter(trace));
+            result.putString("stream", "FAIL (discovery UI): " + error.getClass().getSimpleName() + ": " + error.getMessage() + "\n" + trace);
         } finally {
             if (activity != null) {
                 MainActivity closing = activity;
@@ -71,6 +77,326 @@ final class DiscoveryUiVerification {
             }
         }
         driver.finish(outcome, result);
+    }
+
+    /** Exercise Android input dispatch, not only programmatic EditText.setText. */
+    private static void verifySearchInput(Instrumentation driver, Activity activity) throws Exception {
+        require(android.os.Build.VERSION.SDK_INT >= 30, "Discovery input fixture requires Android 11+ to observe actual IME visibility");
+        List<DiscoveryUi.Row> rows = new ArrayList<>();
+        for (int i = 0; i < 8; i++) rows.add(new DiscoveryUi.Row("input-" + i, "192.0.2." + (101 + i) + ":22",
+                "SSH identity not yet saved in this network profile. Approve this computer's identity before signing in.", "new", true));
+        AtomicReference<Set<String>> chosen = new AtomicReference<>();
+        AtomicReference<AlertDialog> shown = new AtomicReference<>();
+        ui(driver, () -> {
+            AlertDialog dialog = new DiscoveryUi(activity).select("Select computers to inspect",
+                    "These computers answered SSH. Sign-in and inspection are needed to confirm Nosana. Select the computers you want to check.",
+                    rows, Arrays.asList(new DiscoveryUi.Filter("All computers", row -> true),
+                            new DiscoveryUi.Filter("Identity not saved", row -> "new".equals(row.group))),
+                    Collections.emptySet(), 512, "Review SSH identities", chosen::set, () -> {});
+            dialog.getWindow().setLayout(Math.round(360 * activity.getResources().getDisplayMetrics().density), WindowManager.LayoutParams.WRAP_CONTENT);
+            shown.set(dialog);
+        });
+        driver.waitForIdleSync();
+        AlertDialog dialog = shown.get();
+        try {
+            awaitStableInputLayout(driver, dialog);
+            InputState before = inputState(driver, activity, dialog);
+            require(before.matches == 8, "Input fixture did not contain all eight computers");
+            Set<String> initiallyVisible = visibleInputRows(driver, dialog);
+            Set<String> initiallyFullyVisible = fullyVisibleInputRows(driver, dialog);
+            status(driver, "DISCOVERY_INPUT_BEFORE: flags=0x" + Integer.toHexString(before.flags)
+                    + ", matchingRows=" + before.matches + ", visibleRows=" + initiallyVisible.size()
+                    + ", fullyVisibleRows=" + initiallyFullyVisible.size());
+            screenshot(driver, activity, "discovery-input-initial.png");
+            tapTag(driver, dialog, "discovery-search");
+            InputState opened = awaitInput(driver, activity, dialog, state -> state.imeVisible, 5000);
+            require(opened.imeVisible, "Physical Search tap did not open the Android keyboard; beforeFlags=0x"
+                    + Integer.toHexString(before.flags) + ", afterFlags=0x" + Integer.toHexString(opened.flags)
+                    + ", focused=" + opened.focused + ", inputMethodActive=" + opened.inputMethodActive);
+            require((before.flags & WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM) == 0
+                    && (opened.flags & WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM) == 0,
+                    "Selection dialog excludes its Search field from IME input");
+            require(opened.focused && opened.inputMethodActive, "Visible keyboard is not connected to the tapped Search field");
+            require(initiallyFullyVisible.size() >= 3,
+                    "The 360dp selection viewport initially shows fewer than three complete computer rows; fullyVisibleRows=" + initiallyFullyVisible.size());
+            require(before.summary.startsWith("0 selected · 8 results"), "Footer does not distinguish all matching results from the visible viewport");
+            awaitStableInputLayout(driver, dialog);
+            screenshot(driver, activity, "discovery-input-keyboard.png");
+
+            String query = "192.0.2.103";
+            status(driver, "DISCOVERY_INPUT_ACTION: type query with keyboard open");
+            typeKeys(driver, query);
+            InputState filtered = awaitInput(driver, activity, dialog, state -> query.equals(state.text) && state.matches == 1, 5000);
+            require(query.equals(filtered.text) && filtered.matches == 1 && filtered.imeVisible,
+                    "Typing with the keyboard open did not filter to the matching computer; input=" + filtered.text + ", matches=" + filtered.matches);
+            revealTagBySwiping(driver, dialog, "discovery-check:input-2", true);
+            tapTag(driver, dialog, "discovery-check:input-2");
+            driver.waitForIdleSync();
+            require(inputState(driver, activity, dialog).summary.startsWith("1 selected"), "Tapping the filtered computer did not select it");
+            dismissKeyboard(driver, activity, dialog);
+            require(dialog.isShowing() && inputState(driver, activity, dialog).summary.startsWith("1 selected"),
+                    "Dismissing the keyboard lost the dialog or selected computer");
+
+            revealTagBySwiping(driver, dialog, "discovery-search", false);
+            tapTag(driver, dialog, "discovery-search");
+            InputState reopened = awaitInput(driver, activity, dialog, state -> state.imeVisible, 5000);
+            require(reopened.imeVisible, "Search keyboard could not be reopened after selecting a computer");
+            awaitStableInputLayout(driver, dialog);
+            status(driver, "DISCOVERY_INPUT_ACTION: clear query with keyboard open");
+            key(driver, android.view.KeyEvent.KEYCODE_MOVE_END);
+            for (int i = 0; i < query.length(); i++) key(driver, android.view.KeyEvent.KEYCODE_DEL);
+            InputState cleared = awaitInput(driver, activity, dialog, state -> state.text.isEmpty() && state.matches == 8, 5000);
+            require(cleared.text.isEmpty() && cleared.matches == 8 && cleared.summary.startsWith("1 selected"),
+                    "Clearing Search through input events lost rows or the existing selection");
+            dismissKeyboard(driver, activity, dialog);
+
+            Set<String> reached = new LinkedHashSet<>();
+            ui(driver, () -> {
+                ListView list = tag(dialog, "discovery-list");
+                TextView hint = tag(dialog, "discovery-scroll-hint");
+                require(!list.canScrollVertically(1) || "Scroll for more results".contentEquals(hint.getText()),
+                        "The list does not explain that additional results are below the viewport");
+            });
+            for (int attempt = 0; attempt < 16 && reached.size() < 8; attempt++) {
+                reached.addAll(visibleInputRows(driver, dialog));
+                if (reached.size() < 8) swipeList(driver, dialog, true);
+            }
+            require(reached.size() == 8, "Touch scrolling could not reach all eight matching computers; visible at least once=" + reached);
+            ui(driver, () -> {
+                android.graphics.Rect bounds = new android.graphics.Rect();
+                require(tag(dialog, "discovery-count").getGlobalVisibleRect(bounds) && !bounds.isEmpty(), "Selection count is not visible after scrolling");
+                require(dialog.getButton(AlertDialog.BUTTON_POSITIVE).getGlobalVisibleRect(bounds) && !bounds.isEmpty(),
+                        "Continue action is not visible after scrolling");
+            });
+            tapView(driver, dialog.getButton(AlertDialog.BUTTON_POSITIVE));
+            driver.waitForIdleSync();
+            require(Collections.singleton("input-2").equals(chosen.get()), "Keyboard/filter/scroll interaction changed the selected identity");
+            status(driver, "PASS_STAGE: physical_search_keyboard_and_eight_scrollable_computers");
+        } finally { ui(driver, dialog::dismiss); }
+    }
+
+    private static final class InputState {
+        int flags, matches;
+        boolean imeVisible, focused, inputMethodActive;
+        String text, summary;
+    }
+    private static void verifySelectionFooterWithKeyboard(Instrumentation driver, Activity activity) throws Exception {
+        List<DiscoveryUi.Row> rows = new ArrayList<>();
+        for (int i = 0; i < 8; i++) rows.add(new DiscoveryUi.Row("compact-" + i, "192.0.2." + (101 + i) + ":22",
+                "SSH identity not yet saved. Approve this computer's identity before signing in."));
+        AtomicReference<AlertDialog> shown = new AtomicReference<>();
+        ui(driver, () -> {
+            AlertDialog dialog = new DiscoveryUi(activity).select("Select computers to inspect",
+                    "These computers answered SSH. Sign-in and inspection are needed to confirm Nosana.", rows,
+                    Collections.emptyList(), Collections.singleton("compact-0"), 512, "Review SSH identities", ignored -> {}, () -> {});
+            dialog.getWindow().setLayout(Math.round(320 * activity.getResources().getDisplayMetrics().density), WindowManager.LayoutParams.MATCH_PARENT);
+            scaleText(dialog.getWindow().getDecorView(), 1.6f);
+            shown.set(dialog);
+        });
+        driver.waitForIdleSync();
+        AlertDialog dialog = shown.get();
+        try {
+            assertSelectionFooter(driver, dialog, "keyboard closed");
+            tapTag(driver, dialog, "discovery-search");
+            require(awaitInput(driver, activity, dialog, state -> state.imeVisible, 5000).imeVisible,
+                    "Compact selection keyboard did not open from a physical tap");
+            awaitStableInputLayout(driver, dialog);
+            assertSelectionFooter(driver, dialog, "keyboard open");
+            dismissKeyboard(driver, activity, dialog);
+            assertSelectionFooter(driver, dialog, "keyboard dismissed");
+            status(driver, "PASS_STAGE: selection_footer_320dp_large_text_with_keyboard");
+        } finally { ui(driver, dialog::dismiss); }
+    }
+    private static void assertSelectionFooter(Instrumentation driver, AlertDialog dialog, String phase) {
+        ui(driver, () -> {
+            android.graphics.Rect bounds = new android.graphics.Rect();
+            for (int which : new int[]{AlertDialog.BUTTON_NEGATIVE, AlertDialog.BUTTON_POSITIVE}) {
+                Button button = dialog.getButton(which);
+                require(button != null && button.isShown() && button.getHeight() > 0 && button.getGlobalVisibleRect(bounds)
+                                && bounds.height() >= button.getHeight() && bounds.width() >= button.getWidth(),
+                        "Selection action is clipped at 320dp with enlarged text (" + phase + "): " + (button == null ? which : button.getText()));
+                android.text.Layout layout = button.getLayout();
+                require(layout != null && layout.getLineCount() > 0, "Selection action has no readable text layout (" + phase + ")");
+                for (int line = 0; line < layout.getLineCount(); line++) require(layout.getEllipsisCount(line) == 0
+                                && layout.getLineWidth(line) <= layout.getWidth() + 1,
+                        "Selection action text is truncated (" + phase + "): " + button.getText());
+                require(layout.getLineBottom(layout.getLineCount() - 1) + button.getCompoundPaddingTop() + button.getCompoundPaddingBottom() <= button.getHeight(),
+                        "Selection action text is vertically clipped (" + phase + "): " + button.getText());
+            }
+            View list = tag(dialog, "discovery-list");
+            require(list.isShown() && list.getGlobalVisibleRect(bounds) && bounds.height() > 0,
+                    "Selection results have no visible viewport (" + phase + ")");
+        });
+    }
+    private static InputState inputState(Instrumentation driver, Activity activity, AlertDialog dialog) {
+        AtomicReference<InputState> captured = new AtomicReference<>();
+        ui(driver, () -> {
+            InputState state = new InputState();
+            EditText search = tag(dialog, "discovery-search");
+            ListView list = tag(dialog, "discovery-list");
+            state.flags = dialog.getWindow().getAttributes().flags;
+            android.view.WindowInsets insets = dialog.getWindow().getDecorView().getRootWindowInsets();
+            state.imeVisible = insets != null && insets.isVisible(android.view.WindowInsets.Type.ime());
+            state.focused = search.hasFocus();
+            android.view.inputmethod.InputMethodManager input = activity.getSystemService(android.view.inputmethod.InputMethodManager.class);
+            state.inputMethodActive = input != null && input.isActive(search);
+            state.text = search.getText().toString();
+            state.matches = list.getAdapter().getCount() - list.getHeaderViewsCount() - list.getFooterViewsCount();
+            state.summary = count(dialog);
+            captured.set(state);
+        });
+        return captured.get();
+    }
+    private static InputState awaitInput(Instrumentation driver, Activity activity, AlertDialog dialog,
+            java.util.function.Predicate<InputState> ready, long allowanceMs) throws InterruptedException {
+        long deadline = android.os.SystemClock.elapsedRealtime() + allowanceMs;
+        InputState state;
+        do {
+            state = inputState(driver, activity, dialog);
+            if (ready.test(state)) return state;
+            Thread.sleep(50);
+        } while (android.os.SystemClock.elapsedRealtime() < deadline);
+        return state;
+    }
+    private static void dismissKeyboard(Instrumentation driver, Activity activity, AlertDialog dialog) throws InterruptedException {
+        if (inputState(driver, activity, dialog).imeVisible) {
+            status(driver, "DISCOVERY_INPUT_ACTION: dismiss keyboard with Back");
+            key(driver, android.view.KeyEvent.KEYCODE_BACK);
+        }
+        InputState hidden = awaitInput(driver, activity, dialog, state -> !state.imeVisible, 5000);
+        require(!hidden.imeVisible, "Android keyboard did not dismiss with Back");
+        awaitStableInputLayout(driver, dialog);
+    }
+    private static Set<String> visibleInputRows(Instrumentation driver, AlertDialog dialog) {
+        Set<String> visible = new LinkedHashSet<>();
+        ui(driver, () -> {
+            android.graphics.Rect rectangle = new android.graphics.Rect();
+            for (int i = 0; i < 8; i++) {
+                View row = dialog.getWindow().getDecorView().findViewWithTag("discovery-check:input-" + i);
+                if (row != null && row.isShown() && row.getGlobalVisibleRect(rectangle)
+                        && rectangle.height() >= Math.min(row.getHeight(), Math.round(24 * row.getResources().getDisplayMetrics().density))) visible.add("input-" + i);
+            }
+        });
+        return visible;
+    }
+    private static Set<String> fullyVisibleInputRows(Instrumentation driver, AlertDialog dialog) {
+        Set<String> visible = new LinkedHashSet<>();
+        ui(driver, () -> {
+            android.graphics.Rect rectangle = new android.graphics.Rect();
+            for (int i = 0; i < 8; i++) {
+                View row = dialog.getWindow().getDecorView().findViewWithTag("discovery-row:input-" + i);
+                if (row != null && row.isShown() && row.getHeight() > 0 && row.getGlobalVisibleRect(rectangle)
+                        && rectangle.height() >= row.getHeight()) visible.add("input-" + i);
+            }
+        });
+        return visible;
+    }
+    private static void revealTagBySwiping(Instrumentation driver, AlertDialog dialog, String name, boolean forward) throws InterruptedException {
+        for (int attempt = 0; attempt < 12; attempt++) {
+            boolean[] visible = {false};
+            ui(driver, () -> {
+                View view = dialog.getWindow().getDecorView().findViewWithTag(name);
+                android.graphics.Rect rectangle = new android.graphics.Rect();
+                visible[0] = view != null && view.isShown() && view.getGlobalVisibleRect(rectangle)
+                        && rectangle.height() >= Math.min(view.getHeight(), Math.round(40 * view.getResources().getDisplayMetrics().density));
+            });
+            if (visible[0]) return;
+            swipeList(driver, dialog, forward);
+        }
+        throw new AssertionError("Touch scrolling did not reveal " + name);
+    }
+    private static void tapTag(Instrumentation driver, AlertDialog dialog, String name) {
+        AtomicReference<View> found = new AtomicReference<>();
+        ui(driver, () -> found.set(tag(dialog, name)));
+        tapView(driver, found.get());
+    }
+    private static void tapView(Instrumentation driver, View view) {
+        android.graphics.Rect bounds = new android.graphics.Rect();
+        android.graphics.Rect rootBounds = new android.graphics.Rect();
+        ui(driver, () -> {
+            view.getGlobalVisibleRect(rootBounds);
+            require(visibleScreenBounds(view, bounds), "Cannot tap a view outside the visible viewport");
+        });
+        if ("discovery-search".equals(view.getTag())) status(driver,
+                "DISCOVERY_INPUT_TAP: rootBounds=" + rootBounds.toShortString() + ", screenBounds=" + bounds.toShortString());
+        long down = android.os.SystemClock.uptimeMillis();
+        pointer(driver, down, down, android.view.MotionEvent.ACTION_DOWN, bounds.exactCenterX(), bounds.exactCenterY());
+        pointer(driver, down, down + 80, android.view.MotionEvent.ACTION_UP, bounds.exactCenterX(), bounds.exactCenterY());
+        driver.waitForIdleSync();
+    }
+    private static void swipeList(Instrumentation driver, AlertDialog dialog, boolean forward) throws InterruptedException {
+        android.graphics.Rect bounds = new android.graphics.Rect();
+        ui(driver, () -> require(visibleScreenBounds(tag(dialog, "discovery-list"), bounds) && bounds.height() > 80, "Discovery list has no usable scroll viewport"));
+        float start = bounds.top + bounds.height() * (forward ? .82f : .18f);
+        float end = bounds.top + bounds.height() * (forward ? .18f : .82f);
+        long down = android.os.SystemClock.uptimeMillis();
+        pointer(driver, down, down, android.view.MotionEvent.ACTION_DOWN, bounds.exactCenterX(), start);
+        for (int step = 1; step <= 12; step++) {
+            Thread.sleep(20);
+            pointer(driver, down, android.os.SystemClock.uptimeMillis(), android.view.MotionEvent.ACTION_MOVE,
+                    bounds.exactCenterX(), start + (end - start) * step / 12);
+        }
+        pointer(driver, down, android.os.SystemClock.uptimeMillis(), android.view.MotionEvent.ACTION_UP, bounds.exactCenterX(), end);
+        driver.waitForIdleSync();
+        Thread.sleep(150);
+    }
+    /** Pointer injection uses display coordinates, whereas getGlobalVisibleRect uses the view root. */
+    private static boolean visibleScreenBounds(View view, android.graphics.Rect bounds) {
+        if (!view.isShown() || !view.getLocalVisibleRect(bounds) || bounds.isEmpty()) return false;
+        int[] origin = new int[2];
+        view.getLocationOnScreen(origin);
+        bounds.offset(origin[0], origin[1]);
+        return true;
+    }
+    private static void pointer(Instrumentation driver, long down, long at, int action, float x, float y) {
+        android.view.MotionEvent event = android.view.MotionEvent.obtain(down, at, action, x, y, 0);
+        event.setSource(android.view.InputDevice.SOURCE_TOUCHSCREEN);
+        try { require(driver.getUiAutomation().injectInputEvent(event, true), "Android rejected touchscreen action " + action + " at " + x + "," + y); }
+        finally { event.recycle(); }
+    }
+    private static void key(Instrumentation driver, int code) {
+        long down = android.os.SystemClock.uptimeMillis();
+        for (int action : new int[]{android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.ACTION_UP}) {
+            android.view.KeyEvent event = new android.view.KeyEvent(down, android.os.SystemClock.uptimeMillis(), action, code, 0, 0,
+                    android.view.KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0, android.view.InputDevice.SOURCE_KEYBOARD);
+            require(driver.getUiAutomation().injectInputEvent(event, true), "Android rejected keyboard action " + action + " for key " + code);
+        }
+    }
+    private static void typeKeys(Instrumentation driver, String text) {
+        android.view.KeyEvent[] events = android.view.KeyCharacterMap.load(android.view.KeyCharacterMap.VIRTUAL_KEYBOARD).getEvents(text.toCharArray());
+        require(events != null, "Synthetic query cannot be typed with the virtual keyboard");
+        for (android.view.KeyEvent event : events) require(driver.getUiAutomation().injectInputEvent(
+                android.view.KeyEvent.changeTimeRepeat(event, android.os.SystemClock.uptimeMillis(), 0), true), "Android rejected a typed query key");
+    }
+    private static void awaitStableInputLayout(Instrumentation driver, AlertDialog dialog) throws InterruptedException {
+        long deadline = android.os.SystemClock.elapsedRealtime() + 3000, stableSince = 0;
+        String previous = null;
+        while (android.os.SystemClock.elapsedRealtime() < deadline) {
+            AtomicReference<String> captured = new AtomicReference<>();
+            ui(driver, () -> {
+                android.graphics.Rect list = new android.graphics.Rect(), search = new android.graphics.Rect();
+                visibleScreenBounds(tag(dialog, "discovery-list"), list);
+                visibleScreenBounds(tag(dialog, "discovery-search"), search);
+                View root = dialog.getWindow().getDecorView();
+                captured.set(list.toShortString() + search.toShortString() + ":" + root.getWidth() + ":" + root.getHeight() + ":" + root.isLayoutRequested());
+            });
+            long now = android.os.SystemClock.elapsedRealtime();
+            if (!captured.get().equals(previous)) { previous = captured.get(); stableSince = now; }
+            else if (now - stableSince >= 250 && !captured.get().endsWith(":true")) { driver.waitForIdleSync(); return; }
+            Thread.sleep(50);
+        }
+        throw new AssertionError("Discovery layout did not settle after an input transition: " + previous);
+    }
+    private static void screenshot(Instrumentation driver, Activity activity, String name) throws java.io.IOException {
+        android.graphics.Bitmap bitmap = driver.getUiAutomation().takeScreenshot();
+        require(bitmap != null, "Could not capture the non-secret synthetic discovery screen");
+        try (java.io.OutputStream output = new java.io.FileOutputStream(new java.io.File(activity.getCacheDir(), name))) {
+            require(bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output), "Could not save synthetic discovery screenshot");
+        } finally { bitmap.recycle(); }
+        status(driver, "DISCOVERY_INPUT_SCREENSHOT: cache/" + name);
+    }
+    private static void status(Instrumentation driver, String text) {
+        Bundle progress = new Bundle(); progress.putString("stream", text + "\n"); driver.sendStatus(0, progress);
     }
 
     private static void verifySelection(Instrumentation driver, Activity activity) {
@@ -87,7 +413,7 @@ final class DiscoveryUiVerification {
             ui(driver, () -> {
                 require(!dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled(), "An empty candidate selection can continue");
                 ListView list = tag(dialog, "discovery-list");
-                require(list.getAdapter().getCount() == 201 && list.getChildCount() < 200,
+                require(list.getAdapter().getCount() == 200 + list.getHeaderViewsCount() && list.getChildCount() < 200,
                         "Large candidate list was truncated or is not virtualized");
                 ((Spinner) tag(dialog, "discovery-filter")).setSelection(1);
             });
@@ -95,19 +421,19 @@ final class DiscoveryUiVerification {
             ui(driver, () -> {
                 ((EditText) tag(dialog, "discovery-search")).setText("rack a");
                 tag(dialog, "discovery-select-all").performClick();
-                require(count(dialog).startsWith("50 selected · 50 shown"), "Search and identity filter did not select the matching 50 PCs");
+                require(count(dialog).startsWith("50 selected · 50 results"), "Search and identity filter did not select the matching 50 PCs");
                 ((EditText) tag(dialog, "discovery-search")).setText("");
-                require(count(dialog).startsWith("50 selected · 100 shown"), "Clearing search lost selections");
+                require(count(dialog).startsWith("50 selected · 100 results"), "Clearing search lost selections");
                 ((Spinner) tag(dialog, "discovery-filter")).setSelection(2);
             });
             driver.waitForIdleSync();
             ui(driver, () -> {
-                require(count(dialog).startsWith("50 selected · 100 shown"), "Changing filters discarded hidden selections");
+                require(count(dialog).startsWith("50 selected · 100 results"), "Changing filters discarded hidden selections");
                 ((Spinner) tag(dialog, "discovery-filter")).setSelection(0);
             });
             driver.waitForIdleSync();
             ui(driver, () -> {
-                require(count(dialog).startsWith("50 selected · 200 shown"), "Restoring all candidates changed the selection");
+                require(count(dialog).startsWith("50 selected · 200 results"), "Restoring all candidates changed the selection");
                 dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick();
             });
             driver.waitForIdleSync();
@@ -123,7 +449,7 @@ final class DiscoveryUiVerification {
         try {
             ui(driver, () -> {
                 tag(found, "discovery-select-all").performClick();
-                require(count(found).startsWith("50 selected · 50 shown"), "Verified host select-all lost hosts on shared PCs");
+                require(count(found).startsWith("50 selected · 50 results"), "Verified host select-all lost hosts on shared PCs");
                 tag(found, "discovery-clear").performClick();
                 require(count(found).startsWith("0 selected") && !found.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled(),
                         "Clearing verified hosts still permits an empty save");

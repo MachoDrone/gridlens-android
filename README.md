@@ -8,6 +8,19 @@ continues independently.
 
 **[Download the signed Android APK](https://github.com/MachoDrone/gridlens-android-releases/releases/latest/download/gridlens-android.apk)**
 
+**Version 0.2.14** repairs search-field keyboard input in the native selection
+screens and gives results a taller, separate scrolling area. The result count
+means all matches for the current search and filter, including rows below the
+screen. **Scroll for more results** makes that visible, and **Select all results**
+selects every selectable match.
+
+Computer rows now say whether an **SSH identity is saved in this profile**, and
+the screen names the selected network profile. A missing saved SSH identity does
+not mean the computer is unfamiliar, lacks Nosana, or has lost its saved fleet
+data. SSH identity approval remains separate for each network profile. See
+[verification](docs/VERIFICATION.md) for candidate checks, publication and
+physical-phone acceptance.
+
 **Version 0.2.13** simplifies native Network
 Discovery. Blue underlined actions have short descriptions, dialog titles are
 green, and dialog buttons have visible outlines. First-time setup opens the
@@ -103,11 +116,14 @@ find reachable SSH services on Wi-Fi or your existing VPN. On first use, check t
 suggested network settings; current Wi-Fi defaults are usually suitable. Saved
 network profiles remain available for later visits and other locations.
 
-Search or filter the results, select computers and review their SSH identities
-before signing in. **Select all shown** avoids checking every row individually;
-up to 512 computers can be inspected in one batch. An SSH response alone cannot
-identify a Nosana host. New SSH identities require your explicit approval; changed
-identities remain blocked.
+Tap the search field to enter a name or address, or filter the results. The count
+includes matching rows outside the visible scrolling area. **Select all results**
+selects every selectable match for the current search and filter; up to 512
+computers can be inspected in one batch. Review their SSH identities before
+signing in. **No saved SSH identity** refers to the selected network profile, not
+whether a PC runs Nosana. An SSH response alone cannot identify a Nosana host.
+New SSH identities require your explicit approval; changed identities remain
+blocked.
 
 Choose **SSH key** if you already have a key authorized on these computers, or
 choose **Password**. Both require the computer's username. The app does not create

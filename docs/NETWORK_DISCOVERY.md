@@ -25,12 +25,16 @@ services, external input files and VPN configuration are unchanged.
    it never sweeps an IPv6 subnet. The profile is independent of VPN brand, phone
    VPN address and VPN server public endpoint. Use separate profiles for different
    destination mappings or overlapping networks.
-3. Choose the computers to inspect. Search by name or address, filter saved or
-   unfamiliar identities, and use **Select all shown** or **Clear selection**.
-   Selections remain checked when filters change; clearing removes the whole
-   selection. Continue requires 1–512 selected computers. No result is selected
-   automatically at this step. SSH reachability alone cannot determine which
-   computers run Nosana, so choosing computers still precedes sign-in and inventory.
+3. Choose the computers to inspect. Tap **Search name or address** to type, then
+   filter by **Saved SSH identities** or **No saved SSH identity** if useful.
+   Results have their own scrolling area. The count includes all matches for the
+   current search and filter, not just rows visible on screen; **Scroll for more
+   results** appears when more rows are below. **Select all results** selects every
+   selectable match, including offscreen rows. Selections remain checked when
+   filters change; **Clear selection** removes the whole selection. Continue
+   requires 1–512 selected computers. No result is selected automatically at this
+   step. SSH reachability alone cannot determine which computers run Nosana, so
+   choosing computers still precedes sign-in and inventory.
 4. Review the selected computers' identities together. Matching saved identities
    are selected; new identities start unchecked and require explicit approval
    after comparison with a trusted source. Fingerprints remain visible. Changed
@@ -78,6 +82,16 @@ reading. Public Nosana/Solana readings use the existing providers, shared caches
 budgets, retry deadlines and source timestamps over ordinary internet. Automatic
 PC IP checks separately need the saved SSH endpoint reachable over Wi-Fi or VPN;
 failed or unavailable connections retain dated values without renewing them.
+
+The computer picker names the selected network profile. **SSH identity not saved
+in this profile** means this profile has no approved SSH key for that IP and port.
+The same PC can already belong to a saved fleet or have an approved identity in
+another profile. Creating another profile, even with the same name or range,
+creates a separate approval context; editing an existing profile keeps its
+identity. This label does not classify Nosana hosts or establish lost data.
+Approval is never copied automatically between profiles, since different networks
+can reuse the same IP addresses. The subsequent identity review still verifies
+saved keys and requires explicit approval for new identities.
 
 ## Network and SSH boundaries
 

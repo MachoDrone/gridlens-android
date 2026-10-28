@@ -16,11 +16,13 @@ import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.view.inputmethod.EditorInfo;
 import android.widget.AdapterView;
+import android.widget.AbsListView;
 import android.widget.ArrayAdapter;
 import android.widget.BaseAdapter;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.ScrollView;
@@ -189,7 +191,7 @@ final class DiscoveryUi {
             Consumer<Set<String>> onSelected, Runnable onCancel) {
         if (maxSelection < 1) throw new IllegalArgumentException("Selection limit must be positive");
         Selection selection = new Selection(rows, initiallySelected);
-        LinearLayout body = form();
+        SelectionLayout body = new SelectionLayout();
         LinearLayout header = new LinearLayout(activity);
         header.setOrientation(LinearLayout.VERTICAL);
         if (explanation != null && !explanation.isEmpty()) label(header, explanation);
@@ -203,7 +205,9 @@ final class DiscoveryUi {
         search.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
         search.setImeOptions(EditorInfo.IME_ACTION_DONE | EditorInfo.IME_FLAG_NO_EXTRACT_UI | EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING);
         search.setMinHeight(dp(48));
-        header.addView(search);
+        // A ListView header is not attached during AlertDialog's text-editor check.
+        // Keep the editor in the actual custom-view hierarchy before creating it.
+        body.addView(search);
 
         List<Filter> available = filters == null || filters.isEmpty()
                 ? Collections.singletonList(new Filter("All", row -> true)) : new ArrayList<>(filters);
@@ -219,7 +223,7 @@ final class DiscoveryUi {
         LinearLayout controls = new LinearLayout(activity);
         controls.setOrientation(LinearLayout.HORIZONTAL);
         Button all = new Button(activity);
-        all.setText("Select all shown");
+        all.setText("Select all results");
         all.setTag("discovery-select-all");
         all.setAllCaps(false);
         all.setSingleLine(false);
@@ -235,19 +239,32 @@ final class DiscoveryUi {
         clearLayout.setMarginStart(dp(6));
         controls.addView(clear, clearLayout);
         header.addView(controls);
+        ScrollView options = scroll(header);
+        options.setTag("discovery-options");
+        body.options = options;
+        body.addView(options, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         ListView list = new ListView(activity);
         list.setTag("discovery-list");
         list.setDividerHeight(dp(1));
         list.setItemsCanFocus(true);
-        list.addHeaderView(header, null, false);
-        // All explanatory controls scroll with the virtualized list at large font sizes.
-        // This leaves the selection total and dialog actions reachable on small screens.
-        int listHeight = Math.max(dp(160), Math.min(dp(360), activity.getResources().getDisplayMetrics().heightPixels * 2 / 5));
-        body.addView(list, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, listHeight));
+        list.setVerticalScrollBarEnabled(true);
+        list.setScrollbarFadingEnabled(false);
+        body.addView(list, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
         TextView count = label(body, "");
         count.setTag("discovery-count");
         count.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        TextView scrollHint = label(body, "");
+        scrollHint.setTag("discovery-scroll-hint");
+        scrollHint.setTextSize(14);
+        scrollHint.setPadding(0, 0, 0, 0);
+        scrollHint.setMinHeight(dp(20));
+        Runnable updateScrollHint = () -> {
+            String hint = selection.visible.isEmpty() ? "No results match your search."
+                    : list.canScrollVertically(1) ? "Scroll for more results"
+                    : list.canScrollVertically(-1) ? "Scroll up for earlier results" : "";
+            if (!hint.contentEquals(scrollHint.getText())) scrollHint.setText(hint);
+        };
         AlertDialog dialog = builder(title).setView(body)
                 .setPositiveButton(buttonLabel, null)
                 .setNegativeButton("Cancel", (closed, which) -> run(onCancel))
@@ -257,17 +274,22 @@ final class DiscoveryUi {
             int shownSelectable = 0;
             for (Row row : selection.visible) if (row.selectable) shownSelectable++;
             int selected = selection.selected.size();
-            String text = selected + " selected · " + selection.visible.size() + " shown";
+            String text = selected + " selected · " + selection.visible.size() + " results";
             if (selected > maxSelection) text += "\nChoose at most " + maxSelection + " to continue.";
-            else if (selected == 0) text += "\nSelect at least one to continue.";
             count.setText(text);
             all.setEnabled(shownSelectable > 0);
             clear.setEnabled(selected > 0);
             Button proceed = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
             if (proceed != null) proceed.setEnabled(selected > 0 && selected <= maxSelection);
+            list.post(updateScrollHint);
         };
         adapter.changed = update;
         list.setAdapter(adapter);
+        list.setOnScrollListener(new AbsListView.OnScrollListener() {
+            @Override public void onScrollStateChanged(AbsListView view, int state) { updateScrollHint.run(); }
+            @Override public void onScroll(AbsListView view, int first, int visible, int total) { updateScrollHint.run(); }
+        });
+        list.addOnLayoutChangeListener((view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> updateScrollHint.run());
         Runnable refilter = () -> {
             int index = filter.getSelectedItemPosition();
             selection.filter(search.getText().toString(), available.get(Math.max(0, index)).matches);
@@ -295,8 +317,12 @@ final class DiscoveryUi {
         });
         dialog.show();
         style(dialog);
-        if (dialog.getWindow() != null) dialog.getWindow().setSoftInputMode(
-                WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE | WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
+        reserveSelectionFooter(dialog);
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().clearFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM);
+            dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE | WindowManager.LayoutParams.SOFT_INPUT_STATE_HIDDEN);
+            dialog.getWindow().setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+        }
         dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
             if (selection.selected.isEmpty() || selection.selected.size() > maxSelection) return;
             LinkedHashSet<String> ordered = new LinkedHashSet<>();
@@ -306,6 +332,61 @@ final class DiscoveryUi {
         });
         refilter.run();
         return dialog;
+    }
+
+    private void reserveSelectionFooter(AlertDialog dialog) {
+        int footerId = activity.getResources().getIdentifier("buttonPanel", "id", "android");
+        View footer = footerId == 0 ? null : dialog.findViewById(footerId);
+        if (footer == null || !(footer.getParent() instanceof ViewGroup)) return;
+        ViewGroup parent = (ViewGroup) footer.getParent();
+        int index = parent.indexOfChild(footer);
+        ViewGroup.LayoutParams layout = footer.getLayoutParams();
+        parent.removeView(footer);
+        FooterReservation reservation = new FooterReservation();
+        reservation.setId(footerId);
+        reservation.setTag("discovery-footer");
+        footer.setId(View.NO_ID);
+        reservation.addView(footer, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+        parent.addView(reservation, index, layout);
+    }
+
+    /** The platform's stacked bar minimum includes only a peek of its second button. */
+    private final class FooterReservation extends FrameLayout {
+        private int fullHeight;
+        FooterReservation() { super(activity); }
+        @Override protected void onMeasure(int widthSpec, int heightSpec) {
+            // AlertDialogLayout asks for the footer's minimum before measuring its
+            // expanding middle panel. Reserve the actual native bar, including every
+            // wrapped/stacked button. Recompute for width and font changes in both
+            // directions; no previously larger minimum may keep the bar expanded.
+            fullHeight = 0;
+            super.onMeasure(widthSpec, MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED));
+            fullHeight = getMeasuredHeight();
+            super.onMeasure(widthSpec, heightSpec);
+        }
+        @Override public int getMinimumHeight() { return Math.max(super.getMinimumHeight(), fullHeight); }
+    }
+
+    /** Reserve the remaining dialog space for results, including when the IME resizes it. */
+    private final class SelectionLayout extends LinearLayout {
+        ScrollView options;
+        SelectionLayout() {
+            super(activity);
+            setOrientation(VERTICAL);
+            setPadding(dp(16), dp(4), dp(16), dp(12));
+        }
+        @Override protected void onMeasure(int widthSpec, int heightSpec) {
+            int height = MeasureSpec.getSize(heightSpec);
+            if (options != null && height > 0 && MeasureSpec.getMode(heightSpec) != MeasureSpec.UNSPECIFIED) {
+                int width = Math.max(0, MeasureSpec.getSize(widthSpec) - getPaddingLeft() - getPaddingRight());
+                int available = Math.max(0, height - getPaddingTop() - getPaddingBottom());
+                int optionsLimit = Math.min(available / 3, Math.max(0, available - dp(190)));
+                options.measure(MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(optionsLimit, MeasureSpec.AT_MOST));
+                options.getLayoutParams().height = Math.min(optionsLimit, options.getMeasuredHeight());
+                super.onMeasure(widthSpec, MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY));
+            } else super.onMeasure(widthSpec, heightSpec);
+        }
     }
 
     AlertDialog result(String title, String summary, String details, String doneLabel, Runnable onDone) {

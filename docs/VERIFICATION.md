@@ -841,3 +841,65 @@ was accessed or modified. Tests used generated credentials and isolated stores.
 
 Signed APK size: 197386852 bytes. SHA-256:
 `fb7165e37f4defa83d82c4cfec040dd7964b97de931af47edbe77f2aa7c43a0b`.
+
+
+## Android 0.2.14 — usable search and visible discovery results, October 28, 2026
+
+Version code 17 corrects the selection-screen regressions introduced in 0.2.13.
+Search now belongs directly to the dialog view, so Android recognizes its text
+editor before list rows are attached; the blocking input-method flag is cleared.
+Results have their own taller scrolling area, a persistent scrollbar and explicit
+scroll cues. The count says results rather than claiming all matches are on
+screen. Bulk selection is labeled Select all results.
+
+The candidate screen identifies the current network profile and says whether
+an SSH identity is saved in that profile. This remains the exact profile/IP/port
+lookup; it does not classify Nosana, infer loss of saved fleet data or trust a PC
+from a matching address in another profile. No trust-store migration is included.
+
+Evidence and completed checks:
+
+- The original selection window carried `FLAG_ALT_FOCUSABLE_IM` (`0x1820002`
+  diagnostic flags) while its search editor was held in a not-yet-attached list
+  header. Its eight-result fixture exposed only one row to the initial visibility
+  check. The corrected window omits the blocking flag (`0x1800002`), with three
+  complete rows initially visible at 360dp even using longer synthetic descriptions.
+- Actual screen-coordinate taps open the Android keyboard; ordinary injected key
+  events filter eight PCs to one. Touch selection, Back to dismiss the keyboard,
+  reopening, deleting the query, and scrolling to all eight PCs preserve the
+  selected identity. This test does not assign search text, request focus, or
+  force the keyboard through application APIs.
+- At 320dp and 1.6-times text size, Cancel and the positive action are completely
+  visible and readable with the keyboard open and closed, while the results
+  retain a visible viewport. The first layout candidate clipped Cancel when the
+  native footer stacked; reserving its full measured height corrected this
+  before publication. Search, 200-row virtualization, 50-host selection, the
+  512-PC limit, blocked identities, credential modes and completion details pass.
+- The normal native search → SSH identity review → credential entry → inspection
+  → selected-host save → automatic-IP journey passed on the final APK against
+  generated SSH fixtures. Three saved hosts rendered the measured PC IP; the
+  existing enrollment policy fixtures also passed. No manual repair or new
+  full-monitoring/wallet/GPU/sudo grant was used.
+- `npm run check` passed: 117 Android runtime/helper tests, 27 Python tests,
+  816 inherited Node tests and all 332 browser tests (13.1 minutes for the browser
+  portion). All 177 Android unit tests passed in each debug/release variant.
+  Release lint and debug/instrumentation/signed release builds passed.
+- The APK is `com.gridlens.android`, 0.2.14/code 17, signed by the existing pinned
+  certificate. ZIP and 16 KiB ELF LOAD alignment for all six native libraries
+  verify. The new labels and footer reservation are packaged; test classes,
+  operator rosters and signing material are absent.
+
+The initial new touch fixture incorrectly used root-relative bounds for screen
+injection, then targeted input at only the app UID despite interacting with the
+keyboard's window. Those test-only errors were corrected using visible screen
+coordinates and UI automation input. Earlier tap failures are not evidence that
+the taps reached Search; the original blocking flag was observed independently.
+Final assertions require actual keyboard visibility, focus, typed text and the
+correct selection, with bounded layout settling. Protections and assertions were
+not weakened. Synthetic screenshots were inspected and remain outside Git.
+
+No operator PC, phone, existing SSH/WireGuard configuration or Nosana/Solana key
+was accessed. Physical-phone confirmation remains separate from emulator proof.
+
+Signed APK size: 197386852 bytes. SHA-256:
+`b43e5d396aa9cedb4903cd3a59fd8023eea6e06306653afc219b208fdbb3ca6f`.
