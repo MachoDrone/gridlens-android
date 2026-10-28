@@ -32,6 +32,7 @@ final class AutomaticPcIpPolicyVerification {
                 SshDiscovery.Result authenticated = SshDiscovery.inventory(network, endpoint, identity, secret, null);
                 require(authenticated.status == SshDiscovery.Status.SUCCESS && authenticated.addresses.size() == 3,
                         "Policy fixture did not authenticate the three-node PC");
+                InspectionSelectionPolicyVerification.verify(driver, activity, origin, token, fleet, observedTarget, authenticated);
                 List<SshDiscovery.BatchRequest> requests = List.of(selected);
                 Map<String, SshDiscovery.Result> results = Map.of(endpoint.endpointKey(), authenticated);
                 Map<String, String> credentials = Map.of(endpoint.endpointKey(), credential);

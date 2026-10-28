@@ -776,3 +776,68 @@ emulators and synthetic data were removed; raw evidence remains outside Git.
 
 Verified signed APK size: 197354084 bytes. SHA-256:
 `ef8f3bec11df359c244fde639e878a888a58d9faf8a29994c6489fa2ccf23aca`.
+
+
+## Android 0.2.13 — discovery and SSH usability, October 28, 2026
+
+Version code 16 updates native discovery with described blue underlined actions,
+green titles, outlined buttons, empty-chooser shortcuts, network-setting guidance
+and separate existing-key/password forms. Computer selection remains explicit,
+with search, filters and bulk actions. One identity review precedes sign-in; a
+second selection chooses verified Nosana hosts before saving. The completion
+page now shows counts, monitoring state and issues with expandable per-PC details.
+
+New monitoring is scoped to selected, unambiguously associated hosts and PCs.
+Partial changes to existing PC-wide monitoring are deferred rather than changing
+unselected hosts. Complete inspection evidence preserves conflicts and shared
+credential rejection. Real login denials are saved before the host picker,
+independently of Save or cancellation. Existing repair paths, source timestamps,
+provider waits, pauses and saved state remain separate from this selection.
+
+Completed candidate verification:
+
+- `npm run check`: 117 Android runtime/helper/browser tests, 27 Python recorder
+  tests, 816 inherited Node tests and all 332 browser tests passed. The browser
+  portion took 13.7 minutes; no vendored application code changed.
+- All 177 Android unit tests passed in both debug and release variants. Release
+  lint, debug/instrumentation APKs and the signed release build passed.
+- API 36 native-only Keystore, monitoring permission and update-store verification
+  passed with no discovery or SSH connections.
+- Native discovery UI checks passed for 200 virtualized computers, selecting 50
+  hosts, persistent filtered selection, the 512-PC limit, blocked identity rows,
+  empty-profile/credential shortcuts, key/password mode changes, discarded-secret
+  clearing, cancelled document import, secure-window protection, 320dp enlarged
+  text and expandable completion details.
+- The actual search → consolidated SSH trust → password sign-in → inspection →
+  host selection → save → automatic-IP journey passed against generated SSH
+  fixtures. Separate runs saved all three discovered hosts and only one of the
+  three; only the selected rows rendered with the measured PC IP. A third run
+  left Remember unchecked and saved hosts without credentials, monitoring targets
+  or PC-IP observations. No manual repair or full-monitoring approval was used.
+- A clean full Node/WebView smoke run passed: runtime startup, loopback
+  authentication, roster persistence, pause/resume, update/download presentation,
+  APK rejection and independent PC-IP/API rendering, without live providers.
+- Registration policy fixtures passed for one-of-three selected node bindings,
+  partial existing-PC preservation, ambiguous PC associations, excluded failed
+  shared credentials, cancellation before credential/permission persistence,
+  incomplete prior binding evidence, preserved source deadlines/history and
+  durable pre-save rejection even after live SSH buffers were cleared.
+- The signed package is `com.gridlens.android`, version 0.2.13/code 16, with the
+  pinned release certificate. Signature, ZIP alignment and 16 KiB ELF LOAD
+  alignment for all six native libraries verify. The packaged discovery/denial
+  logic is present; instrumentation classes, rosters and signing material are absent.
+
+Fixture corrections added the document intent's MIME type/category to its
+ActivityMonitor and waited for Android's queued dialog callbacks. The first
+missed monitor correctly opened DocumentsUI; its stale task was closed before
+retrying. No product protection or assertion was weakened. The broad smoke
+fixture requires fresh preferences; an initial run after onboarding retained
+its full-IP display preference, so only this disposable app's data was cleared
+for the clean smoke run. These fixture interventions do not establish phone-side
+compatibility or diagnose an operator PC.
+
+No operator PC, physical phone, existing host service, VPN or Nosana/Solana key
+was accessed or modified. Tests used generated credentials and isolated stores.
+
+Signed APK size: 197386852 bytes. SHA-256:
+`fb7165e37f4defa83d82c4cfec040dd7964b97de931af47edbe77f2aa7c43a0b`.

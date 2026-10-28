@@ -8,6 +8,20 @@ continues independently.
 
 **[Download the signed Android APK](https://github.com/MachoDrone/gridlens-android-releases/releases/latest/download/gridlens-android.apk)**
 
+**Version 0.2.13** simplifies native Network
+Discovery. Blue underlined actions have short descriptions, dialog titles are
+green, and dialog buttons have visible outlines. First-time setup opens the
+network settings directly. Search and bulk-selection controls help choose
+computers, one identity review replaces repeated trust dialogs, and SSH sign-in
+offers an existing SSH key first with a separate password option.
+
+After inspection, choose which verified Nosana hosts to save. Computers with no
+verified hosts are kept in inspection details, rather than mixed into the host
+picker. The final **Fleet saved** screen shows counts and monitoring status;
+**View inspection details** reveals individual results and **View fleet** closes
+the summary. Physical phone acceptance remains separate from automated checks;
+see [verification](docs/VERIFICATION.md).
+
 **Version 0.2.12** includes automatic PC IP collection in normal discovery.
 Choose **Inspect + automatic IP** on the native review screen. After successful
 PC verification and fleet saving, the app uses the selected remembered SSH
@@ -85,16 +99,35 @@ what was actually checked.
 
 Install the APK and open GridLens. Android may ask you to allow installations from
 your browser. The app opens **Network Discovery**. Choose **Search network** to
-find reachable SSH services on Wi-Fi or your existing VPN, select computers and
-review their SSH identities in native Android screens. Save a named fleet from
-verified public Nosana addresses. Reopening it refreshes public Fleet data over
-ordinary internet without another network scan or SSH login. Scans never start
-automatically. **Fleets** manages saved fleets, network profiles and credentials.
+find reachable SSH services on Wi-Fi or your existing VPN. On first use, check the
+suggested network settings; current Wi-Fi defaults are usually suitable. Saved
+network profiles remain available for later visits and other locations.
+
+Search or filter the results, select computers and review their SSH identities
+before signing in. **Select all shown** avoids checking every row individually;
+up to 512 computers can be inspected in one batch. An SSH response alone cannot
+identify a Nosana host. New SSH identities require your explicit approval; changed
+identities remain blocked.
+
+Choose **SSH key** if you already have a key authorized on these computers, or
+choose **Password**. Both require the computer's username. The app does not create
+or install SSH keys. After inspection, **Choose Nosana hosts to save** shows the
+verified hosts with their computer names and addresses. Select the desired hosts,
+then save the named fleet. Incomplete checks remain visible in **Inspection
+details**. Rescans add or update selected hosts and retain existing saved hosts.
+
+Reopening a saved fleet refreshes public Fleet data over ordinary internet without
+another network scan or SSH login. Scans never start automatically. **Fleets**
+manages saved fleets, network profiles and credentials.
 
 SSH passwords and imported keys stay native and can be remembered encrypted with
 Android Keystore. **Forget credentials** leaves saved fleets available. Container inventory is read-only. Monitoring setup separately approves its fixed
 rewards reads and owned Docker recorder operations, including per-PC sudo when
-needed; saved approval avoids recurring password prompts.
+needed; saved approval avoids recurring password prompts. **→ Enable full
+monitoring…** opens that approval from the inspection review. New monitoring is
+limited to the hosts you save and their verified computers. A partial host choice
+that cannot safely update existing PC monitoring leaves that approval unchanged
+and reports the deferred setup; use **Enable / repair monitoring** separately.
 Full-tunnel VPNs may require learning the destination range once on-site or
 entering it; GridLens does not guess all private networks or configure VPNs.
 See [Network Discovery](docs/NETWORK_DISCOVERY.md) for supported layouts, limits

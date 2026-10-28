@@ -424,9 +424,20 @@ public final class SshDiscovery {
         };
     }
     public static Identity inspectIdentity(DiscoveryNetwork network, DiscoveryPolicy.Candidate candidate) throws IOException { return inspectIdentity(transport(network), candidate); }
+    public static Identity inspectIdentity(DiscoveryNetwork network, DiscoveryPolicy.Candidate candidate, String savedKey) throws IOException {
+        return inspectIdentity(transport(network), candidate, savedKey);
+    }
     static Identity inspectIdentity(Transport network, DiscoveryPolicy.Candidate candidate) throws IOException {
+        return inspectIdentity(network, candidate, null);
+    }
+    static Identity inspectIdentity(Transport network, DiscoveryPolicy.Candidate candidate, String savedKey) throws IOException {
         configureCryptoForAndroid();
-        PinnedRepository repository = new PinnedRepository(null);
+        Identity expected = null;
+        if (savedKey != null) {
+            try { expected = new Identity(savedKey, new HostKey("discovery", Base64.getDecoder().decode(savedKey)).getType()); }
+            catch (Exception invalidKey) { throw new IOException("Saved SSH identity could not be verified"); }
+        }
+        PinnedRepository repository = new PinnedRepository(expected);
         Session session = null; ScheduledFuture<?> timeout = null;
         try {
             session = session(new JSch(), network, candidate, "gridlens-discovery", repository);

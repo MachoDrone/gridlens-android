@@ -21,6 +21,7 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class SmokeInstrumentation extends Instrumentation {
     private boolean nativeOnly;
     private boolean backgroundDownload;
+    private boolean discoveryUi;
     private Bundle productionSsh;
     @Override public void onCreate(Bundle arguments) {
         super.onCreate(arguments);
@@ -28,10 +29,12 @@ public final class SmokeInstrumentation extends Instrumentation {
         backgroundDownload = arguments != null && ("true".equals(arguments.getString("backgroundDownload"))
                 || "true".equals(arguments.getString("downloadOnly")));
         productionSsh = arguments != null && "true".equals(arguments.getString("productionSsh")) ? arguments : null;
+        discoveryUi = arguments != null && "true".equals(arguments.getString("discoveryUi"));
         start();
     }
 
     @Override public void onStart() {
+        if (discoveryUi) { DiscoveryUiVerification.verify(this); return; }
         if (productionSsh != null) { ProductionNetworkInstrumentation.verify(this, productionSsh); return; }
         Bundle result = new Bundle();
         MainActivity activity = null;

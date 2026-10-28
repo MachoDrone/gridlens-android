@@ -10,26 +10,43 @@ services, external input files and VPN configuration are unchanged.
 ## Workflow
 
 1. Connect the phone to Wi-Fi, or an existing VPN over Wi-Fi/cellular. Choose
-   Search network and a named network profile. Learn destination ranges from
+   **Search network**. With no saved profiles, the network editor opens directly;
+   otherwise choose a named profile or add another. Learn destination ranges from
    Android's current Wi-Fi addresses or specific VPN routes; save that profile
    for later use. A VPN's default route cannot reveal a hidden remote network.
    Learn the range once on-site or enter the destination range. Advertisements
-   alone can also supply candidates when no range is known.
+   alone can also supply candidates when no range is known. Suggested Wi-Fi
+   settings are usually suitable; VPN suggestions still need checking against
+   the destination computers. **Advanced settings** contains range-format help
+   and additional SSH ports.
 2. Search port 22 and any additional ports saved in the profile. IPv4 /16 through
    /32 is supported without reducing a /16 to /24. Broader routes require a
    narrower profile. IPv6 uses explicit /128 host routes or advertised services;
    it never sweeps an IPv6 subnet. The profile is independent of VPN brand, phone
    VPN address and VPN server public endpoint. Use separate profiles for different
    destination mappings or overlapping networks.
-3. Select candidate computers, compare their SSH fingerprints with a trusted
-   source and explicitly trust first-use identities. An open port, IP or advertised
-   name is not identity proof. Changed trusted keys block credential submission.
-4. Enter or choose native SSH credential profiles. Share a profile only with the
+3. Choose the computers to inspect. Search by name or address, filter saved or
+   unfamiliar identities, and use **Select all shown** or **Clear selection**.
+   Selections remain checked when filters change; clearing removes the whole
+   selection. Continue requires 1–512 selected computers. No result is selected
+   automatically at this step. SSH reachability alone cannot determine which
+   computers run Nosana, so choosing computers still precedes sign-in and inventory.
+4. Review the selected computers' identities together. Matching saved identities
+   are selected; new identities start unchecked and require explicit approval
+   after comparison with a trusted source. Fingerprints remain visible. Changed
+   or unavailable identities cannot be selected and receive no credentials. An
+   open port, IP or advertised name is not identity proof.
+5. Enter or choose native SSH credential profiles. If none are saved, the sign-in
+   form opens directly. **SSH key** is offered first for an existing key already
+   authorized on the computers; **Password** shows a separate password field.
+   Both methods require the computer's username. A key passphrase is needed only
+   for a protected key. GridLens does not create or install SSH keys, and Nosana or
+   Solana wallet files must never be imported. Share a profile only with the
    selected trusted PCs, or use a per-PC override. Passwords and supported RSA,
    ECDSA and Ed25519 SSH keys (including supported encrypted files) stay native.
    Review the selected credentials before inspection. One authentication failure
    stops new batch work; up to four already-started sessions may finish.
-5. Read-only inventory reports verified public addresses, inaccessible PCs and
+6. Read-only inventory reports verified public addresses, inaccessible PCs and
    unresolved Nosana instances separately. Container access may need explicit
    per-PC sudo approval and a password. No passwordless-sudo setup is required.
    The normal review offers **Inspect + automatic IP**, explicitly approving
@@ -37,9 +54,23 @@ services, external input files and VPN configuration are unchanged.
    grants no wallet/GPU/sudo operations. **Inspect only** preserves one-time
    inspection. Credentials left unremembered remain ephemeral and are excluded
    from automatic IP collection. Existing protected pauses and denials remain;
-   the save result reports exclusions. Successful public addresses automatically
-   create and select a named fleet.
-   Rename, reopen, rescan, remove selected hosts or delete it through Fleets.
+   the save result reports exclusions. The prominent **→ Enable full monitoring…**
+   action separately explains and approves rewards, GPU recorders and IP checks.
+7. **Choose Nosana hosts to save** shows verified hosts with their PC names and
+   addresses, sorted by computer name. Search and bulk selection work here too;
+   no hosts start selected. **Inspection details** shows incomplete checks and
+   computers without verified hosts. Select the hosts to save, then create or
+   merge the fleet. Empty selection cannot save or grant monitoring. Rescans keep
+   existing saved hosts, including hosts left unselected. New monitoring is
+   limited to the selected hosts and their verified PC associations. If a partial
+   selection cannot safely update an existing PC monitoring record, its settings
+   remain unchanged and setup is deferred to **Enable / repair monitoring**.
+8. **Fleet saved** reports selected host/PC counts and the actual approval/setup
+   outcome. Incomplete checks and automatic-IP exclusions remain visible as
+   counts, with per-PC reasons under **View inspection details**. Monitoring setup
+   in progress is not reported as successful collection. **View fleet** closes
+   the summary. Rename, reopen, rescan, remove hosts or delete the fleet through
+   **Fleets**.
 
 Rescans merge verified discoveries and update their discovery dates. Unreachable
 PCs do not remove saved hosts. A successful discovery is not a fresh metric

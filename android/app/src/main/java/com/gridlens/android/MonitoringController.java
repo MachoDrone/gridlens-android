@@ -123,38 +123,80 @@ final class MonitoringController {
                     + " Keep this fleet open for its scheduled IP readings.";
         }
     }
+    /** Native-only snapshots survive cancellation wiping the live SSH secret buffers. */
+    static final class InspectionCredentialEvidence {
+        private final Map<String, RememberedInspectionCredential> endpoints;
+        private InspectionCredentialEvidence(Map<String, RememberedInspectionCredential> endpoints) {
+            this.endpoints = Collections.unmodifiableMap(new java.util.LinkedHashMap<>(endpoints));
+        }
+    }
+    private static final class RememberedInspectionCredential {
+        final String id, snapshot;
+        RememberedInspectionCredential(String id, String snapshot) { this.id = id; this.snapshot = snapshot; }
+    }
+    InspectionCredentialEvidence captureInspectionCredentials(List<SshDiscovery.BatchRequest> requests,
+            Map<String, String> credentialIds) throws Exception {
+        Map<String, RememberedInspectionCredential> evidence = new java.util.LinkedHashMap<>();
+        try {
+            synchronized (store) {
+                for (SshDiscovery.BatchRequest request : requests) {
+                    String endpoint = request.candidate.endpointKey(), id = credentialIds.get(endpoint);
+                    if (id == null) continue;
+                    JSONObject remembered = store.credential(id);
+                    if (remembered != null && matchesRememberedCredential(request, remembered))
+                        evidence.put(endpoint, new RememberedInspectionCredential(id, remembered.toString()));
+                }
+            }
+            return new InspectionCredentialEvidence(evidence);
+        } catch (Exception failure) { storageBlocked = true; cancelActive(); throw failure; }
+    }
+    /** Persist real login rejection before host selection/save can be cancelled. No permission is granted here. */
+    void recordInspectionFailure(InspectionCredentialEvidence evidence, String endpoint, SshDiscovery.Status status) throws Exception {
+        if (status != SshDiscovery.Status.AUTH_FAILED) return;
+        try {
+            if (evidence == null) throw new IllegalArgumentException("Captured inspection credential evidence required");
+            RememberedInspectionCredential rejected = evidence.endpoints.get(endpoint);
+            if (rejected == null) return; // An ephemeral or changed credential cannot suspend a different saved profile.
+            synchronized (store) {
+                JSONObject current = store.credential(rejected.id);
+                if (current == null || !rejected.snapshot.equals(current.toString())) return;
+                store.suspendDirectPcCredential(rejected.id, rejected.snapshot);
+                rejectDirectPcCredential(rejected.id);
+            }
+        } catch (Exception failure) { storageBlocked = true; cancelActive(); throw failure; }
+    }
     /** Ordinary discovery grants only PC IP access, using credentials already remembered by the user. */
     PcIpEnrollmentReport registerAutomaticPcIp(String fleetId, String profileId, List<SshDiscovery.BatchRequest> requests,
             Map<String, SshDiscovery.Result> results, Map<String, String> credentialIds,
             java.util.function.BooleanSupplier consentActive) throws Exception {
+        return registerAutomaticPcIp(fleetId, profileId, requests, results, credentialIds, consentActive, null);
+    }
+    PcIpEnrollmentReport registerAutomaticPcIp(String fleetId, String profileId, List<SshDiscovery.BatchRequest> requests,
+            Map<String, SshDiscovery.Result> results, Map<String, String> credentialIds,
+            java.util.function.BooleanSupplier consentActive, InspectionSelection selection) throws Exception {
+        if (selection != null) selection.requireCompleteEvidence(results);
         PcIpEnrollmentReport report = new PcIpEnrollmentReport();
-        Set<String> rejectedCredentials = new HashSet<>();
-        for (SshDiscovery.BatchRequest request : requests) {
-            SshDiscovery.Result result = results.get(request.candidate.endpointKey());
-            String credentialId = credentialIds.get(request.candidate.endpointKey());
-            if (result != null && result.status == SshDiscovery.Status.AUTH_FAILED && credentialId != null) {
-                rejectedCredentials.add(credentialId);
-                JSONObject remembered = store.credential(credentialId);
-                if (remembered != null && matchesRememberedCredential(request, remembered)) {
-                    try { store.suspendDirectPcCredential(credentialId, remembered.toString()); }
-                    catch (Exception failure) { storageBlocked = true; cancelActive(); throw failure; }
-                    rejectDirectPcCredential(credentialId);
-                }
-            }
-        }
+        Set<String> rejectedCredentials = rejectInspectedCredentials(requests, results, credentialIds);
         Set<String> associated = currentFleetPcIds(fleetId);
+        Set<String> savedHosts = selection == null ? Collections.emptySet() : currentRoster(fleetId);
         for (SshDiscovery.BatchRequest request : requests) {
             String endpoint = request.candidate.endpointKey(), reason = null;
+            String pc = pcId(request.identity);
+            if (selection != null && !selection.includesEndpointPc(endpoint, pc)) {
+                if (selection.resultFor(endpoint) != null) report.excluded.add(endpoint + " (selected hosts have no unambiguous PC association)");
+                continue;
+            }
             String credentialId = credentialIds.get(endpoint);
             SshDiscovery.Result result = results.get(endpoint);
             if (!consentActive.getAsBoolean()) reason = "approval interrupted";
             else if (storageBlocked) reason = "permission storage needs recovery";
             else if (!PcIpEnrollment.authenticatedPc(request, result)) reason = "PC identity or SSH login not verified";
-            String pc = pcId(request.identity);
             if (reason == null && !associated.contains(pc)) reason = "no matching saved host association";
+            if (reason == null && selection != null && !savedHosts.containsAll(selection.resultFor(endpoint).addresses)) reason = "selected hosts are not all in the saved fleet";
             JSONObject remembered = credentialId == null ? null : store.credential(credentialId);
             if (reason == null && (remembered == null || !matchesRememberedCredential(request, remembered))) reason = "matching remembered SSH credentials required";
-            if (reason == null && (rejectedCredentials.contains(credentialId) || !automaticCredentialAllowed(credentialId))) reason = "saved SSH credentials remain paused";
+            if (reason == null && (rejectedCredentials.contains(credentialId) || !automaticCredentialAllowed(credentialId)
+                    || selection != null && InspectionSelection.credentialWasRejected(request, requests, results))) reason = "saved SSH credentials remain paused";
             JSONObject existing = store.findMonitoringPc(fleetId, pc);
             if (reason == null && existing != null && !unusedInspection(existing)) {
                 if (existing.optBoolean("approved") && !existing.optBoolean("aliasReplaced")
@@ -180,6 +222,25 @@ final class MonitoringController {
             else report.excluded.add(endpoint + " (saved approval or credentials changed; no access added)");
         }
         return report;
+    }
+    /** Always inspect the entire batch before applying the user's narrower host choice. */
+    private Set<String> rejectInspectedCredentials(List<SshDiscovery.BatchRequest> requests,
+            Map<String, SshDiscovery.Result> results, Map<String, String> credentialIds) throws Exception {
+        Set<String> rejectedCredentials = new HashSet<>();
+        for (SshDiscovery.BatchRequest request : requests) {
+            SshDiscovery.Result result = results.get(request.candidate.endpointKey());
+            String credentialId = credentialIds.get(request.candidate.endpointKey());
+            if (result != null && result.status == SshDiscovery.Status.AUTH_FAILED && credentialId != null) {
+                rejectedCredentials.add(credentialId);
+                JSONObject remembered = store.credential(credentialId);
+                if (remembered != null && matchesRememberedCredential(request, remembered)) {
+                    try { store.suspendDirectPcCredential(credentialId, remembered.toString()); }
+                    catch (Exception failure) { storageBlocked = true; cancelActive(); throw failure; }
+                    rejectDirectPcCredential(credentialId);
+                }
+            }
+        }
+        return rejectedCredentials;
     }
     private boolean automaticCredentialAllowed(String credentialId) {
         if (credentialId == null || blockedCredentialProfiles.contains(credentialId)) return false;
@@ -227,18 +288,65 @@ final class MonitoringController {
         return PcIpEnrollment.unusedInspection(target.optBoolean("approved"), target.optBoolean("paused"), target.optString("status"),
                 target.optBoolean("setupPending"), target.optBoolean("aliasReplaced"), clear);
     }
-    /** Called only by the native discovery save flow after successful explicit approval. */
+    static final class RegistrationDeferral {
+        final String endpoint, reason;
+        RegistrationDeferral(String endpoint, String reason) { this.endpoint = endpoint; this.reason = reason; }
+    }
+    static final class MonitoringRegistrationReport {
+        final List<JSONObject> targets = new ArrayList<>();
+        final List<RegistrationDeferral> deferred = new ArrayList<>();
+        String summary() {
+            return deferred.isEmpty() ? "" : deferred.size()
+                    + " PCs need attention before additional monitoring can start. Open Enable / repair monitoring to review them.";
+        }
+        private void defer(SshDiscovery.BatchRequest request, String reason) {
+            deferred.add(new RegistrationDeferral(request.candidate.endpointKey(), reason));
+        }
+    }
+    /** Explicit repair keeps its existing PC scope; ordinary discovery passes a host selection. */
     List<JSONObject> register(String fleetId, String profileId, List<SshDiscovery.BatchRequest> requests,
             Map<String, SshDiscovery.Result> results, Map<String, String> credentialIds,
             Map<String, byte[]> sudoPasswords, boolean approve) throws Exception {
+        return register(fleetId, profileId, requests, results, credentialIds, sudoPasswords, approve, null).targets;
+    }
+    MonitoringRegistrationReport register(String fleetId, String profileId, List<SshDiscovery.BatchRequest> requests,
+            Map<String, SshDiscovery.Result> results, Map<String, String> credentialIds,
+            Map<String, byte[]> sudoPasswords, boolean approve, InspectionSelection selection) throws Exception {
+        return register(fleetId, profileId, requests, results, credentialIds, sudoPasswords, approve, selection, () -> true);
+    }
+    MonitoringRegistrationReport register(String fleetId, String profileId, List<SshDiscovery.BatchRequest> requests,
+            Map<String, SshDiscovery.Result> results, Map<String, String> credentialIds,
+            Map<String, byte[]> sudoPasswords, boolean approve, InspectionSelection selection,
+            java.util.function.BooleanSupplier consentActive) throws Exception {
+        if (consentActive == null) throw new IllegalArgumentException("Native consent state required");
+        if (selection != null) selection.requireCompleteEvidence(results);
+        Set<String> rejectedCredentials = selection == null ? Collections.emptySet()
+                : rejectInspectedCredentials(requests, results, credentialIds);
+        Set<String> associated = selection == null ? Collections.emptySet() : currentFleetPcIds(fleetId);
+        Set<String> savedHosts = selection == null ? Collections.emptySet() : currentRoster(fleetId);
         JSONArray saved = store.monitoringTargets();
-        List<JSONObject> setup = new ArrayList<>();
+        MonitoringRegistrationReport report = new MonitoringRegistrationReport();
         for (SshDiscovery.BatchRequest request : requests) {
-            SshDiscovery.Result result = results.get(request.candidate.endpointKey());
+            if (!consentActive.getAsBoolean()) { report.defer(request, "Approval interrupted"); continue; }
+            SshDiscovery.Result result = selection == null ? results.get(request.candidate.endpointKey())
+                    : selection.resultFor(request.candidate.endpointKey());
             if (result == null || result.status == SshDiscovery.Status.AUTH_FAILED || result.status == SshDiscovery.Status.IDENTITY_CHANGED
                     || result.status == SshDiscovery.Status.CANCELLED || result.status == SshDiscovery.Status.UNREACHABLE) continue;
             boolean pcOnly = result.bindings.isEmpty();
             String verifiedPcId = pcId(request.identity);
+            if (selection != null) {
+                String credential = credentialIds.get(request.candidate.endpointKey());
+                String reason = null;
+                if (!selection.includesEndpointPc(request.candidate.endpointKey(), verifiedPcId)
+                        || !PcIpEnrollment.authenticatedPc(request, result)) reason = "Selected hosts have no unambiguous verified PC association";
+                else if (!associated.contains(verifiedPcId)) reason = "Selected hosts have no matching saved PC association";
+                else if (!savedHosts.containsAll(result.addresses)) reason = "Selected hosts are not all in the saved fleet";
+                else if (storageBlocked) reason = "Permission storage needs recovery";
+                else if (InspectionSelection.credentialWasRejected(request, requests, results)
+                        || rejectedCredentials.contains(credential)
+                        || credential != null && !automaticCredentialAllowed(credential)) reason = "SSH credential rejection remains in effect";
+                if (reason != null) { report.defer(request, reason); continue; }
+            }
             if (pcOnly && (!approve || result.pcMetadata == null || !verifiedPcId.equals(result.pcMetadata.pcId)
                     || !currentFleetHasPc(fleetId, verifiedPcId))) continue;
             if (result.bindings.size() > 64) throw new IllegalArgumentException("This PC exceeds 64 monitoring bindings; monitoring was not enabled for it");
@@ -249,20 +357,35 @@ final class MonitoringController {
                     if (target == null || request.candidate.address.equals(old.getString("address")) && request.candidate.port == old.getInt("port")) target = old;
                 }
             }
+            if (selection != null) {
+                String reason = selectedRegistrationDeferral(saved, target, fleetId, verifiedPcId, request, result, selection);
+                if (reason != null) { report.defer(request, reason); continue; }
+            }
+            JSONObject expectedTarget = selection == null || target == null ? null : new JSONObject(target.toString());
             if (target != null && !approve && target.optBoolean("approved")) continue;
             boolean changedEndpoint = target != null && (!request.candidate.address.equals(target.getString("address")) || request.candidate.port != target.getInt("port"));
-            JSONArray preservedSuspensions = target != null && (changedEndpoint || pcOnly) && target.optJSONArray("rewardsSuspended") != null
+            JSONArray preservedSuspensions = target != null && (selection != null || changedEndpoint || pcOnly) && target.optJSONArray("rewardsSuspended") != null
                     ? new JSONArray(target.getJSONArray("rewardsSuspended").toString()) : new JSONArray();
-            JSONArray preservedVerifications = target != null && (changedEndpoint || pcOnly) && target.optJSONArray("rewardsVerified") != null
+            JSONArray preservedVerifications = target != null && (selection != null || changedEndpoint || pcOnly) && target.optJSONArray("rewardsVerified") != null
                     ? new JSONArray(target.getJSONArray("rewardsVerified").toString()) : new JSONArray();
             String credentialId = credentialIds.get(request.candidate.endpointKey());
             if (approve && credentialId == null) {
+                if (!consentActive.getAsBoolean()) { report.defer(request, "Approval interrupted"); continue; }
                 SshDiscovery.Credential credential = request.credential;
                 JSONObject nativeCredential = new JSONObject().put("name", "Monitoring " + request.candidate.address)
                         .put("username", credential.username).put("password", credential.password == null ? "" : new String(credential.password, StandardCharsets.UTF_8))
                         .put("key", credential.privateKey == null ? "" : android.util.Base64.encodeToString(credential.privateKey, android.util.Base64.NO_WRAP))
                         .put("passphrase", credential.passphrase == null ? "" : new String(credential.passphrase, StandardCharsets.UTF_8));
-                credentialId = store.saveCredential(nativeCredential, request.identity.keyBase64);
+                synchronized (store) {
+                    if (!consentActive.getAsBoolean()) { report.defer(request, "Approval interrupted"); continue; }
+                    credentialId = store.saveCredential(nativeCredential, request.identity.keyBase64);
+                }
+            }
+            if (selection != null && approve) {
+                JSONObject remembered = credentialId == null ? null : store.credential(credentialId);
+                if (remembered == null || !matchesRememberedCredential(request, remembered)) {
+                    report.defer(request, "Saved SSH credentials changed after inspection"); continue;
+                }
             }
             boolean previousRewardsAuthorized = target != null && target.optBoolean("rewardsAuthorized");
             String authorization = pcOnly && target != null ? target.optString("authorizationId", java.util.UUID.randomUUID().toString()) : java.util.UUID.randomUUID().toString();
@@ -275,22 +398,77 @@ final class MonitoringController {
                 for (int i = 0; i < bindings.length(); i++) boundAddresses.add(binding(bindings.getJSONObject(i)).address);
                 for (JSONArray retained : new JSONArray[]{preservedSuspensions, preservedVerifications})
                     for (int i = retained.length() - 1; i >= 0; i--) if (!boundAddresses.contains(retained.getString(i))) retained.remove(i);
-                if (!bindings.toString().equals(String.valueOf(target.optJSONArray("bindings")))) target.remove("gpuCursors");
+                if (selection == null && !bindings.toString().equals(String.valueOf(target.optJSONArray("bindings")))) target.remove("gpuCursors");
             }
             target.put("fleetId", fleetId).put("profileId", profileId).put("address", request.candidate.address).put("port", request.candidate.port)
                     .put("keyBase64", request.identity.keyBase64).put("algorithm", request.identity.algorithm).put("pcId", verifiedPcId)
                     .put("credentialId", credentialId == null ? "" : credentialId).put("bindings", bindings)
                     .put("approved", approve).put("paused", false).put("rewardsAuthorized", pcOnly ? previousRewardsAuthorized : approve && preservedSuspensions.length() < bindings.length()).put("rewardsVerified", preservedVerifications)
                     .put("rewardsSuspended", preservedSuspensions).put("authorizationId", authorization)
-                    .put("setupPending", !pcOnly && approve).put("lastSetupAttemptAtMs", 0).put("status", pcOnly ? "binding-changed" : "authorization-required");
+                    .put("setupPending", !pcOnly && approve).put("lastSetupAttemptAtMs", expectedTarget == null ? 0 : expectedTarget.optLong("lastSetupAttemptAtMs"))
+                    .put("status", pcOnly ? "binding-changed" : "authorization-required");
             if (pcOnly) target.put("paused", true);
             if (sudoPasswords.containsKey(request.candidate.endpointKey())) {
                 target.put("sudoApproved", true).put("sudoPassword", new String(sudoPasswords.get(request.candidate.endpointKey()), StandardCharsets.UTF_8));
             } else if (!target.has("sudoApproved")) target.put("sudoApproved", false);
-            if (pcOnly) store.savePcMonitoringTarget(target); else store.saveMonitoringTarget(target);
-            if (approve) setup.add(new JSONObject(target.toString()));
+            if (selection != null) {
+                if (!saveSelectedRegistration(expectedTarget, target, request, pcOnly, consentActive)) {
+                    report.defer(request, "Saved approval or credentials changed; no additional access was granted"); continue;
+                }
+            } else if (pcOnly) store.savePcMonitoringTarget(target); else store.saveMonitoringTarget(target);
+            if (approve) report.targets.add(new JSONObject(target.toString()));
         }
-        return setup;
+        return report;
+    }
+    /** A newly narrowed approval cannot overwrite a restriction received after inspection. */
+    private boolean saveSelectedRegistration(JSONObject expected, JSONObject target,
+            SshDiscovery.BatchRequest request, boolean pcOnly, java.util.function.BooleanSupplier consentActive) throws Exception {
+        synchronized (store) {
+            if (!consentActive.getAsBoolean() || storageBlocked || !automaticCredentialAllowed(target.optString("credentialId"))) return false;
+            JSONObject current = store.findMonitoringPc(target.getString("fleetId"), target.getString("pcId"));
+            if (expected == null ? current != null : current == null || !expected.toString().equals(current.toString())) return false;
+            JSONObject remembered = store.credential(target.getString("credentialId"));
+            if (remembered == null || !matchesRememberedCredential(request, remembered)) return false;
+            if (!request.identity.keyBase64.equals(store.trustedKey(target.getString("profileId"), request.candidate.endpointKey()))) return false;
+            if (!automaticPcStateAllowed(target.getString("fleetId"), target.getString("pcId"), expected, request.candidate)) return false;
+            if (!consentActive.getAsBoolean()) return false;
+            if (pcOnly) store.savePcMonitoringTarget(target); else store.saveMonitoringTarget(target);
+            return true;
+        }
+    }
+    /** A partial host choice cannot safely rewrite the older PC-wide setup/permission record. */
+    private static String selectedRegistrationDeferral(JSONArray saved, JSONObject target, String fleetId,
+            String pcId, SshDiscovery.BatchRequest request, SshDiscovery.Result selectedResult, InspectionSelection selection) {
+        int matching = 0;
+        for (int i = 0; i < saved.length(); i++) {
+            JSONObject prior = saved.optJSONObject(i);
+            if (prior != null && fleetId.equals(prior.optString("fleetId")) && pcId.equals(prior.optString("pcId"))) matching++;
+        }
+        if (matching > 1) return "Saved PC connection records need explicit repair";
+        if (target == null) return null;
+        try {
+            validateTarget(target);
+            List<NodeBinding> existingBindings = new ArrayList<>();
+            JSONArray bindings = target.getJSONArray("bindings");
+            for (int i = 0; i < bindings.length(); i++) existingBindings.add(binding(bindings.getJSONObject(i)));
+            if (!selection.includesEveryBinding(pcId, existingBindings))
+                return "This PC also has unselected hosts; existing monitoring was left unchanged";
+            for (NodeBinding previous : existingBindings) {
+                boolean exact = false;
+                for (NodeBinding inspected : selectedResult.bindings)
+                    if (previous.address.equals(inspected.address) && previous.key().equals(inspected.key())) { exact = true; break; }
+                if (!exact) return "An existing node binding was not verified unchanged; existing monitoring was kept";
+            }
+            if (!request.candidate.address.equals(target.getString("address")) || request.candidate.port != target.getInt("port")
+                    || !request.identity.keyBase64.equals(target.getString("keyBase64")))
+                return "Changing a saved PC connection requires explicit repair";
+            JSONArray suspended = target.optJSONArray("rewardsSuspended");
+            if (target.optBoolean("aliasReplaced") || suspended == null || suspended.length() > 0
+                    || !unusedInspection(target) && (!target.optBoolean("approved") || target.optBoolean("paused")
+                    || !"active".equals(target.optString("status")) || !existingBindings.isEmpty() && !target.optBoolean("rewardsAuthorized")))
+                return "Existing monitoring restrictions were kept; use explicit repair";
+        } catch (Exception invalidTarget) { return "Saved monitoring records need explicit repair"; }
+        return null;
     }
     void startSetup(List<JSONObject> targets) {
         if (!targets.isEmpty()) storageBlocked = false; // A new explicit approval was successfully persisted.

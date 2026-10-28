@@ -103,4 +103,29 @@ public final class PinnedHostKeyNegotiationTest {
             assertEquals(0, fixture.logins.get()); assertEquals(0, fixture.commands.get());
         }
     }
+    @Test public void rediscoveryPrefersSavedRsaKeyWithoutSendingCredentials() throws Exception {
+        KeyPair known = rsa();
+        try (Fixture fixture = new Fixture(known, ec("secp256r1"))) {
+            SshDiscovery.Identity saved = identity(known);
+            SshDiscovery.Identity observed = SshDiscovery.inspectIdentity(fixture, fixture.candidate(), saved.keyBase64);
+            assertEquals(saved.keyBase64, observed.keyBase64);
+            assertEquals("ssh-rsa", observed.algorithm);
+            assertEquals(0, fixture.logins.get()); assertEquals(0, fixture.commands.get());
+        }
+    }
+    @Test public void rediscoveryReportsChangedSavedKeyWithoutSendingCredentials() throws Exception {
+        KeyPair known = rsa(), replacement = rsa();
+        try (Fixture fixture = new Fixture(replacement, ec("secp256r1"))) {
+            SshDiscovery.Identity observed = SshDiscovery.inspectIdentity(fixture, fixture.candidate(), identity(known).keyBase64);
+            assertEquals(identity(replacement).keyBase64, observed.keyBase64);
+            assertNotEquals(identity(known).keyBase64, observed.keyBase64);
+            assertEquals(0, fixture.logins.get()); assertEquals(0, fixture.commands.get());
+        }
+    }
+    @Test public void invalidSavedDiscoveryKeyFailsBeforeNetworkAuthentication() throws Exception {
+        try (Fixture fixture = new Fixture(rsa())) {
+            assertThrows(java.io.IOException.class, () -> SshDiscovery.inspectIdentity(fixture, fixture.candidate(), "invalid-key"));
+            assertEquals(0, fixture.logins.get()); assertEquals(0, fixture.commands.get());
+        }
+    }
 }

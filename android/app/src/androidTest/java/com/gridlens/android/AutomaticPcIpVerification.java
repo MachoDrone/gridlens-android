@@ -71,12 +71,15 @@ final class AutomaticPcIpVerification {
             profile = store.saveProfile(null, profileName, new JSONArray().put("10.0.2.2/32"), new JSONArray().put(port));
             long initialSearches = DiscoveryNetwork.startedSearchesForTesting();
             boolean ephemeralOnly = "true".equals(arguments.getString("ephemeralOnly"));
-            discover(driver, discovery, profileName, port, !ephemeralOnly, false);
+            int selectedHostCount = "true".equals(arguments.getString("oneHostOnly")) ? 1 : 3;
+            discover(driver, discovery, profileName, port, !ephemeralOnly, false, selectedHostCount);
             awaitText(driver, "Fleet saved");
-            require(hasText(driver, "3 verified public host addresses"), "Normal inventory did not save all three arbitrary-name nodes");
-            require(clickText(driver, "OK"), "Could not close normal fleet save result");
+            require(hasText(driver, selectedHostCount + " Nosana host"), "Completion did not report the selected host count");
+            require(clickText(driver, "View fleet"), "Could not open the fleet from its completion summary");
             JSONArray saved = request(origin, token, "/mobile/fleets", null).getJSONArray("fleets");
             require(saved.length() == 1, "Normal discovery did not create exactly one fleet");
+            require(saved.getJSONObject(0).getJSONArray("hosts").length() == selectedHostCount,
+                    "Discovery saved unselected hosts or lost selected hosts");
             String fleet = saved.getJSONObject(0).getString("id"); fleets.add(fleet);
             if (ephemeralOnly) {
                 require(store.credentialProfiles().length() == 0 && store.monitoringTargets().length() == 0,
@@ -88,7 +91,7 @@ final class AutomaticPcIpVerification {
                         "Ephemeral discovery caused an unrequested additional search");
                 stage(driver, "automatic_ip_ephemeral_review");
                 result.putString("stream", "PASS: fresh native search→SSH trust→Remember unchecked credentials→normal Inspect + automatic IP review→"
-                        + "three arbitrary-name node discoveries→one saved public fleet; no persisted credential, automatic target or PC-IP reading. "
+                        + "three arbitrary-name node discoveries→explicit selection of " + selectedHostCount + " hosts→one saved public fleet; no persisted credential, automatic target or PC-IP reading. "
                         + "Generated loopback SSH fixture only; no operator PC or existing private keys.\n");
             } else {
                 JSONObject target = awaitTarget(store, fleet);
@@ -107,29 +110,31 @@ final class AutomaticPcIpVerification {
                 require(observations.getJSONArray("hosts").length() == 0, "Automatic PC-IP enrollment delivered node/reward/GPU observations");
                 require(DiscoveryNetwork.startedSearchesForTesting() == initialSearches + 1,
                         "Automatic IP monitoring unexpectedly repeated discovery");
-                awaitJavascript(driver, activity, "document.querySelectorAll('#fleet-rows > tr[data-host]').length===3");
+                awaitJavascript(driver, activity, "document.querySelectorAll('#fleet-rows > tr[data-host]').length===" + selectedHostCount);
                 for (int i = 0; i < 6 && !"\"full\"".equals(javascript(driver, activity,
                         "document.getElementById('ip-display-toggle').dataset.mode")); i++)
                     javascript(driver, activity, "document.getElementById('ip-display-toggle').click()");
                 // Normal save opens the page before the first PC read may finish. Allow
                 // the existing 30-second cache poll plus its request allowance; no manual refresh.
                 awaitJavascript(driver, activity, "Array.from(document.querySelectorAll('#fleet-rows > tr[data-host] td[data-col=ip]'))"
-                        + ".filter(e=>e.textContent==='8.8.8.8 / 192.168.10.101').length===3", 40000);
+                        + ".filter(e=>e.textContent==='8.8.8.8 / 192.168.10.101').length===" + selectedHostCount, 40000);
                 require(!hasText(driver, "Allow IP checks") && !hasText(driver, "IP check: three-host-fixture"),
                         "Ordinary discovery unexpectedly required the manual IP repair flow");
-                stage(driver, "automatic_ip_normal_review_three_rendered_ips");
+                stage(driver, "automatic_ip_normal_review_" + selectedHostCount + "_rendered_ips");
 
                 // Policy fixtures use a separate vault after the complete normal UI proof.
                 // The ephemeral normal-user journey runs separately from a fresh app.
                 DiscoveryController current = discovery; MainActivity screen = activity; String appOrigin = origin;
                 driver.runOnMainSync(() -> { current.paused(); screen.webViewForTesting().loadUrl(appOrigin + "/?scenario=fresh"); });
-                AutomaticPcIpPolicyVerification.verify(driver, activity, origin, token, fleet, target);
-                stage(driver, "automatic_ip_policy_preservation");
+                if (selectedHostCount == 3) {
+                    AutomaticPcIpPolicyVerification.verify(driver, activity, origin, token, fleet, target);
+                    stage(driver, "automatic_ip_policy_preservation");
+                }
                 result.putString("stream", "PASS: actual native search→SSH trust→remembered credentials→normal Inspect + automatic IP review→"
-                        + "three arbitrary-name node discoveries→saved fleet→automatic PC egress/interface reading→three rendered IP cells; "
+                        + "three arbitrary-name node discoveries→selection of " + selectedHostCount + " hosts→saved fleet→automatic PC egress/interface reading→" + selectedHostCount + " rendered IP cells; "
                         + "no repair tap, full monitoring, wallet permission, sudo or node/GPU grant. "
-                        + "Encrypted-store checks preserve healthy targets, manual pauses, revocation, source waits, and real SSH identity/credential denials; "
-                        + "clean legacy inspection conversion and current fleet association are verified. "
+                        + (selectedHostCount == 3 ? "Encrypted-store checks preserve healthy targets, manual pauses, revocation, source waits, and real SSH identity/credential denials; "
+                            + "clean legacy inspection conversion and current fleet association are verified. " : "Unselected hosts remain outside the saved fleet. ")
                         + "Generated loopback SSH fixture only; no operator PC or existing private keys.\n");
             }
             outcome = Activity.RESULT_OK;
@@ -206,7 +211,7 @@ final class AutomaticPcIpVerification {
     }
 
     private static void discover(Instrumentation driver, DiscoveryController discovery, String profileName,
-            int port, boolean remember, boolean priorTrust) throws Exception {
+            int port, boolean remember, boolean priorTrust, int selectedHostCount) throws Exception {
         awaitDiscoveryNetwork(driver);
         driver.runOnMainSync(() -> discovery.show(null));
         require(clickText(driver, "Search network"), "Could not choose normal Search network; " + visibleText(driver));
@@ -215,16 +220,22 @@ final class AutomaticPcIpVerification {
         awaitText(driver, "Select computers to inspect");
         require(clickContainingText(driver, "10.0.2.2:" + port), "Could not select discovered SSH fixture; " + visibleText(driver));
         require(clickText(driver, "Review SSH identities"), "Could not review normal SSH identity");
-        if (!priorTrust) require(clickText(driver, "Trust this key"), "Could not approve generated SSH identity; " + visibleText(driver));
-        require(clickText(driver, "Enter / import SSH credentials"), "Could not enter native credentials; " + visibleText(driver));
+        awaitText(driver, "Review SSH identities");
+        if (!priorTrust) require(clickText(driver, "Select all shown"), "Could not select generated SSH identity; " + visibleText(driver));
+        require(clickText(driver, priorTrust ? "Continue" : "Trust selected computers"), "Could not approve the consolidated SSH identities; " + visibleText(driver));
         awaitText(driver, "SSH credentials");
-        require(setField(driver, "SSH username", "fixture"), "Could not fill generated SSH username");
-        require(setField(driver, "SSH password (leave blank for key login)", "isolated-ssh-password"), "Could not fill generated SSH password");
+        require(clickText(driver, "Password"), "Could not choose password sign-in; " + visibleText(driver));
+        require(setField(driver, "Username", "fixture"), "Could not fill generated SSH username");
+        require(setField(driver, "SSH password", "isolated-ssh-password"), "Could not fill generated SSH password");
         if (!remember) require(clickText(driver, "Remember encrypted credentials"), "Could not select ephemeral credential mode");
         require(clickText(driver, "Continue"), "Could not submit generated native credential");
         awaitText(driver, "Review 1 selected, trusted PCs");
         require(hasText(driver, "remembered") && hasText(driver, "ipify"), "Automatic IP review did not explain retained-credential/IP authority");
         require(clickText(driver, "Inspect + automatic IP"), "Normal review lacks its automatic PC-IP action; " + visibleText(driver));
+        awaitText(driver, "Choose Nosana hosts to save");
+        if (selectedHostCount == 1) require(setField(driver, "Search name or address", "1".repeat(32)), "Could not filter the verified host list");
+        require(clickText(driver, "Select all shown"), "Could not select verified Nosana hosts");
+        require(clickText(driver, "Save selected hosts"), "Could not save the explicitly selected Nosana hosts");
     }
 
     private static DiscoveryController awaitDiscovery(Instrumentation driver, MainActivity activity) throws Exception {
@@ -286,13 +297,14 @@ final class AutomaticPcIpVerification {
         driver.runOnMainSync(() -> activity.webViewForTesting().evaluateJavascript(expression, answer -> { value.set(answer); done.countDown(); }));
         require(done.await(5, java.util.concurrent.TimeUnit.SECONDS), "Automatic IP WebView JavaScript timed out"); return value.get();
     }
-    private static void awaitText(Instrumentation driver, String text) throws Exception {
+    static void awaitText(Instrumentation driver, String text) throws Exception {
         long deadline = android.os.SystemClock.elapsedRealtime() + 45000;
         while (!hasText(driver, text) && android.os.SystemClock.elapsedRealtime() < deadline) Thread.sleep(100);
         require(hasText(driver, text), "Native text missing: " + text + "; visible=" + visibleText(driver));
     }
-    private static boolean hasText(Instrumentation driver, String expected) {
-        return visit(driver.getUiAutomation().getRootInActiveWindow(), node -> node.getText() != null && node.getText().toString().contains(expected));
+    static boolean hasText(Instrumentation driver, String expected) {
+        return visit(driver.getUiAutomation().getRootInActiveWindow(), node -> node.getText() != null && node.getText().toString().contains(expected)
+                || node.getContentDescription() != null && node.getContentDescription().toString().contains(expected));
     }
     private interface NodeCheck { boolean test(AccessibilityNodeInfo node); }
     private static boolean visit(AccessibilityNodeInfo node, NodeCheck test) {
@@ -303,8 +315,10 @@ final class AutomaticPcIpVerification {
             return false;
         } finally { node.recycle(); }
     }
-    private static boolean clickText(Instrumentation driver, String expected) throws Exception {
-        return clickMatching(driver, node -> node.getText() != null && node.getText().toString().equalsIgnoreCase(expected));
+    static boolean clickText(Instrumentation driver, String expected) throws Exception {
+        return clickMatching(driver, node -> node.getText() != null && node.getText().toString().equalsIgnoreCase(expected)
+                || node.getContentDescription() != null && (node.getContentDescription().toString().equalsIgnoreCase(expected)
+                    || node.getContentDescription().toString().startsWith(expected + ". ")));
     }
     private static boolean clickContainingText(Instrumentation driver, String expected) throws Exception {
         return clickMatching(driver, node -> node.getText() != null && node.getText().toString().contains(expected));
@@ -331,7 +345,7 @@ final class AutomaticPcIpVerification {
         }
         return false;
     }
-    private static boolean setField(Instrumentation driver, String hint, String value) throws Exception {
+    static boolean setField(Instrumentation driver, String hint, String value) throws Exception {
         Bundle args = new Bundle(); args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, value);
         long deadline = android.os.SystemClock.elapsedRealtime() + 15000;
         while (android.os.SystemClock.elapsedRealtime() < deadline) {

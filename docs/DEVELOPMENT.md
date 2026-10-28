@@ -448,3 +448,49 @@ three arbitrary-name hosts without invoking manual repair. A second run leaves
 Remember unchecked and verifies that no credential or ongoing IP permission is
 persisted. It is restricted to a disposable emulator and generated local SSH
 fixture; provider routes are intercepted before synthetic addresses reach readers.
+
+## Discovery usability (0.2.13)
+
+Physical-device acceptance remains separate from the recorded automated checks.
+`DiscoveryUi` supplies native green titles, outlined dialog actions,
+blue underlined action rows, separate wrapping descriptions and short labeled
+inputs. A virtualized selection list supports search, filters, bulk selection,
+stable checked IDs and an explicit maximum. Its controls scroll with the list
+while the selected count and confirmation remain outside it. Action rows expose
+one combined accessibility description; automated text lookup must consider that
+description as well as a node's text.
+
+Normal discovery skips empty profile/credential chooser screens. It still
+requires computer selection before inspection, and reads SSH identities with
+bounded concurrency before a consolidated trust review. Matching saved keys are
+selected; new keys require selection and explicit trust; changed/unavailable keys
+cannot proceed. The SSH form starts with an existing-key method and provides a
+separate password method. Changing methods clears the previous secret fields;
+remembering, sharing and per-PC overrides retain their existing authority.
+
+Inspection now leads to a second, initially empty selection of verified Nosana
+hosts before fleet persistence. Selected public addresses and metadata form the
+save request, while complete inspection results retain authentication failures,
+unresolved observations and shared-credential restrictions. Monitoring
+registration receives the explicit host selection. New grants must fit those
+verified host/PC associations; partial selections that cannot safely update an
+existing PC-wide record are deferred without rewriting its prior permissions.
+The existing explicit saved-PC repair path remains separate.
+
+The completion dialog separates host/PC counts, approval/setup status and issue
+counts from expandable inspection details. **View fleet** replaces its generic
+OK action. Rejection, unavailable readings, preserved approvals and unfinished
+monitoring setup must retain their actual meanings in both views.
+
+Candidate acceptance must exercise the normal native journey, existing SSH-key
+and password modes, remembered/ephemeral credentials, shared and per-PC sign-in,
+large result sets, search/filter selection, blocked identities, selected-host
+monitoring scope, partial rescans, cancellation and narrow/large-font layouts.
+Use the existing isolated instrumentation and generated SSH fixtures; record
+actual results separately in `VERIFICATION.md`.
+
+Genuine SSH rejection is persisted as inspection returns, before the host picker
+can be cancelled. Native-only snapshots bind that result to the exact remembered
+credential used by inspection even after cancellation clears the SSH buffers. A
+changed credential does not inherit an old rejection. Storage failure blocks
+automatic collection; choosing fewer hosts cannot discard a denial.
