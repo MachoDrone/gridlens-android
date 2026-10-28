@@ -2,7 +2,8 @@ import { createMobileMonitoring } from "./mobile-monitoring.ts";
 import { rewardView, rewardAtoms, jobGpuConditions, networkView } from "../fleet/pc-observations.ts";
 import { gpuRecordingFacts } from "./mobile-telemetry.ts";
 import "./sidebar.ts";
-import { isSavedFleetScenario, readMobileScenarios, mobilePcAddresses, formatMobileIPDisplay } from "./mobile-scenarios.ts";
+import { isSavedFleetScenario, readMobileScenarios, mobilePcAddresses, formatMobileIPDisplay, normalizeMobileIPMode, nextMobileIPMode, mobileIPModeLabel } from "./mobile-scenarios.ts";
+import type { MobileIPDisplayMode } from "./mobile-scenarios.ts";
 import { bindFleetViewport } from "./viewport.ts";
 import { bindFleetTableScroll } from "./table-scroll.ts";
 import { startConnectionIndicator } from "./connection.ts";
@@ -11,7 +12,7 @@ import type { HostView, PCView, RuntimeView } from "../fleet/freshness.ts";
 import { DEFAULT_SORT, nextFleetSort, parseSortPreference, sortFleetRows } from "../fleet/sort.ts";
 import type { FleetSort, SortableFleetRow, SortColumn } from "../fleet/sort.ts";
 import { formatIPDisplay, ipModeLabel, nextIPMode, normalizeIPMode } from "../fleet/ip-display.ts";
-import type { IPAddresses, IPDisplayMode } from "../fleet/ip-display.ts";
+import type { IPAddresses } from "../fleet/ip-display.ts";
 import { nextDurationMode, normalizeDurationMode, projectDuration } from "../fleet/duration.ts";
 import type { DurationDisplayMode, DurationInput, DurationView } from "../fleet/duration.ts";
 import { projectDurationAvailability } from "../fleet/live-duration.ts";
@@ -96,7 +97,7 @@ const COLUMNS = [
   ["stakedNos", "Staked NOS", "Toggle between a dull-green checkmark / red lowercase x and the actual / required NOS amounts. A current checkmark means exact vault NOS meets the current market’s displayed NOS target, including verified 0 / 0; x means it is below that target. Amount view rounds to whole NOS and uses bright green or red for the actual amount. Exact amounts drive sorting and comparison. This does not establish full market eligibility. Amounts still releasing during unstaking remain included; details distinguish duration-weighted xNOS. Shared public RPC checks every 30 minutes; readings expire after 35 minutes. Failed or expired comparisons stay gray; an unknown comparison is a dash."],
   ["status", "Status", "Reported Nosana classification. ONBOARDED is displayed as COMMUNITY (yellow C); REJECTED as red R; PREMIUM as green P. Details preserve the raw response. This does not establish container health or current job activity."],
   ["pc", "PC", mobileScenarios.enabled ? "PC Name reported through verified SSH discovery. Tap for saved computer details. Rescan refreshes this dated inventory; public Nosana refresh does not." : "The sample PC that owns this host. Select a PC cell for the row’s observation details."],
-  ["ip", "IP", mobileScenarios.enabled ? "External/public IP / internal/private IP from verified PC monitoring. Cycle hidden, both full addresses, external last octet and internal last octet without leading dots. IPv6 stays complete; a missing address is −. Full addresses drive sorting. Enabled monitoring checks external IPv4, with IPv6 fallback, whether or not the PC uses NAT. Shared public addresses can appear on every applicable host. Details show the original address/check times and any failed lookup. A PC-side VPN can change the outward address; the phone’s own IP is never substituted." : "Toggle between hidden (•), full global / internal addresses, global last octet and internal last octet. Compact IPv4 values include the leading dot, such as .102. IPv6 stays complete. Sorting always uses the full internal address. These are documentation-only sample addresses, not links or reachable PCs."],
+  ["ip", "IP", mobileScenarios.enabled ? "External/public IP / internal/private IP from verified PC monitoring. Cycle hidden, both full addresses, external IP / NAT, external last octet, internal IP and internal last octet. IPv4 suffixes include a leading dot, such as .42. IPv6 stays complete; a missing address is −. Full addresses drive sorting. Enabled monitoring checks external IPv4, with IPv6 fallback, whether or not the PC uses NAT. Shared public addresses can appear on every applicable host. Details show the original address/check times and any failed lookup. A PC-side VPN can change the outward address; the phone’s own IP is never substituted." : "Toggle between hidden (•), full global / internal addresses, global last octet and internal last octet. Compact IPv4 values include the leading dot, such as .102. IPv6 stays complete. Sorting always uses the full internal address. These are documentation-only sample addresses, not links or reachable PCs."],
   ["hostAddress", "Host Address", "A supplied public Nosana host address. Toggle between the first five characters (default) and the full address. Both views link to the same full address in Nosana Explorer, and sorting always uses the full address. Supplied addresses do not establish current host status or any measurements."],
   ["sol", "SOL", "Confirmed SOL balance from public mainnet RPC, checked best effort every 30 seconds while visible. Three decimals are rounded down for display; exact lamports and provenance are in details and drive sorting. Failed or 60-second-old readings remain gray. Missing accounts remain unknown; verified zero remains zero."],
   ["api", "API", "Last confirmed API result from Node Info, separate from State. Online stays green and Offline stays red. Bold means within its checking window; regular weight means stale or unconfirmed. Online uses a 30-second window. Offline stays bold until its recorded retry is overdue, including an eight-second request allowance. Details preserve original check times and the retry deadline. Amber Populating.. means no confirmed result is available yet. State OTHER can still be API Online. Timeouts and inconclusive checks do not overwrite the last confirmed result. This does not establish whether the PC or workload is running."],
@@ -208,9 +209,10 @@ try {
 } catch {
   // Browsers that deny storage can still sort for the current page session.
 }
-let ipMode: IPDisplayMode = "dot";
+const syntheticIPAddresses = new WeakMap<HTMLTableCellElement, IPAddresses>();
+let ipMode: MobileIPDisplayMode = "dot";
 try {
-  ipMode = normalizeIPMode(localStorage.getItem(IP_MODE_PREFERENCE_KEY));
+  ipMode = (mobileScenarios.enabled ? normalizeMobileIPMode : normalizeIPMode)(localStorage.getItem(IP_MODE_PREFERENCE_KEY));
 } catch {
   // The display control remains usable when browser storage is unavailable.
 }
@@ -488,7 +490,7 @@ function sourceDetails(cell: HTMLTableCellElement, title: string): void {
   openCellInfo(cell, title);
 }
 
-for (const [key, label] of COLUMNS) {
+for (const [key, label, description] of COLUMNS) {
   const heading = document.createElement("th");
   heading.scope = "col";
   heading.dataset.col = key;
@@ -498,7 +500,7 @@ for (const [key, label] of COLUMNS) {
   button.className = "column-label";
   button.textContent = label;
   button.setAttribute("aria-label", `Sort by ${label}`);
-  button.title = COLUMN_HELP[key];
+  button.title = mobileScenarios.enabled && key === "ip" ? description : COLUMN_HELP[key];
   if (LOCAL_SOURCE_NOTES[key]) button.setAttribute("aria-describedby", "local-source-note");
   button.addEventListener("click", () => changeSort(nextFleetSort(activeSort, key)));
   heading.append(button);
@@ -513,7 +515,7 @@ for (const [key, label] of COLUMNS) {
     toggle.setAttribute("aria-describedby", `${key}-mode-status`);
     toggle.addEventListener("click", (event) => {
       event.stopPropagation();
-      if (key === "ip") ipMode = nextIPMode(ipMode);
+      if (key === "ip") ipMode = mobileScenarios.enabled ? nextMobileIPMode(ipMode) : nextIPMode(normalizeIPMode(ipMode));
       else if (key === "hostAddress") hostAddressMode = hostAddressMode === "compact" ? "full" : "compact";
       else if (key === "duration") durationMode = nextDurationMode(durationMode);
       else if (key === "market") marketMode = nextMarketMode(marketMode);
@@ -531,7 +533,8 @@ for (const [key, label] of COLUMNS) {
       } catch {
         // Display changes are still retained in memory for this page session.
       }
-      render();
+      if (key === "ip" && mobileScenarios.enabled) renderIPDisplayOnly();
+      else render();
     });
     heading.append(toggle);
   }
@@ -949,7 +952,7 @@ let freshnessRenderPending = false;
 const progressRows = new Map<string, Set<ReadKind>>();
 let pageHidden = false;
 const mobileMonitoring = mobileScenarios.enabled && discoveredScenario ? createMobileMonitoring({
-  fleetId: liveScenario.slice(6), visible: () => visibleStateView(), hosts: () => suppliedAddresses,
+  fleetId: liveScenario.slice(6), visible: () => visibleStateView(), hosts: () => suppliedAddresses, pcIds: () => Object.values(savedFleet?.pcs ?? {}).map(pc => pc.pcId),
   changed: () => { if (supplied) render(); },
 }) : undefined;
 const jobHistory = createJobHistoryView({
@@ -2033,7 +2036,8 @@ function renderRow({ pcView: pc, runtime, host, addresses, durationInput, durati
         break;
       }
       case "ip": {
-        const display = mobileScenarios.enabled ? formatMobileIPDisplay(addresses, ipMode) : formatIPDisplay(addresses, ipMode);
+        if (mobileScenarios.enabled) syntheticIPAddresses.set(cell, addresses);
+        const display = mobileScenarios.enabled ? formatMobileIPDisplay(addresses, ipMode) : formatIPDisplay(addresses, normalizeIPMode(ipMode));
         cell.textContent = display.text;
         cell.title = brief(display.description.replace(". Internal:", "; Internal:"));
         cell.setAttribute("aria-label", display.description);
@@ -2142,9 +2146,12 @@ function renderDisplaySettings(): void {
   renderQueuedDurationHeader();
   const sortLabel = COLUMNS.find(([key]) => key === activeSort.column)?.[1] ?? "PC";
   setText(element("sort-status"), `${sortLabel} · ${activeSort.direction === "asc" ? "ascending" : "descending"}`);
-  const ipDisplayStatus = `IP display: ${ipModeLabel(ipMode)}; next: ${ipModeLabel(nextIPMode(ipMode))}.`;
+  const ipDisplayStatus = mobileScenarios.enabled
+    ? `IP display: ${mobileIPModeLabel(ipMode)}; next: ${mobileIPModeLabel(nextMobileIPMode(ipMode))}.`
+    : `IP display: ${ipModeLabel(normalizeIPMode(ipMode))}; next: ${ipModeLabel(nextIPMode(normalizeIPMode(ipMode)))}.`;
   element("ip-display-toggle").title = ipDisplayStatus;
   element("ip-display-toggle").dataset.mode = ipMode;
+  if (mobileScenarios.enabled) element("ip-display-toggle").setAttribute("aria-label", `Toggle IP display. ${ipDisplayStatus}`);
   setText(element("ip-mode-status"), ipDisplayStatus);
   const hostAddressStatus = `Host Address display: ${hostAddressMode === "compact" ? "first five characters" : "full address"}; next: ${hostAddressMode === "compact" ? "full address" : "first five characters"}.`;
   element("hostAddress-display-toggle").title = hostAddressStatus;
@@ -2511,9 +2518,35 @@ function renderSuppliedStatus(nodeProjectionTime: number): void {
     : `${liveScenario === "real200" ? "Real200 uses its separate supplied Host Address list; the count above reflects the file contents. " : ""}Addresses are read when the preview starts. Edit the supplied file outside the app and restart the preview to load changes.`);
 }
 
+/** Display changes never traverse job-history or collection scheduling. */
+function renderIPDisplayOnly(): void {
+  renderDisplaySettings();
+  for (const row of element("fleet-rows").querySelectorAll<HTMLTableRowElement>("tr[data-host]")) {
+    const cell = row.querySelector<HTMLTableCellElement>('td[data-col="ip"]');
+    if (!cell) continue;
+    if (supplied) renderMobilePc(cell, "ip", row.dataset.host!);
+    else {
+      const addresses = syntheticIPAddresses.get(cell);
+      if (!addresses) continue;
+      const display = formatMobileIPDisplay(addresses, ipMode);
+      cell.textContent = display.text;
+      cell.title = brief(display.description);
+      cell.setAttribute("aria-label", display.description);
+    }
+  }
+}
+
+function mobileNetworkRecord(address: string) {
+  const pc = savedFleet?.pcs[address];
+  const current = pc ? mobileMonitoring?.pcNetworks.get(pc.pcId) : undefined;
+  if (current) return current;
+  const legacy = mobileMonitoring?.index.get(address);
+  return legacy?.binding.pcId === pc?.pcId ? legacy : undefined;
+}
+
 function mobileAddresses(address: string): IPAddresses {
   const fallback = mobilePcAddresses(savedFleet?.pcs[address]);
-  const observed = networkView(mobileMonitoring?.index.get(address), liveNow());
+  const observed = networkView(mobileNetworkRecord(address), liveNow());
   return { global: observed.publicIp, internal: observed.privateIp ?? fallback.internal };
 }
 
@@ -2523,30 +2556,42 @@ function renderMobilePc(cell: HTMLTableCellElement, key: "pc" | "ip", address: s
   const value = rowValue(cell, "host-details");
   value.classList.add("host-details");
   const label = key === "pc" ? "PC Name" : "IP Addresses";
-  const observed = networkView(record, liveNow());
+  const networkRecord = mobileNetworkRecord(address);
+  const network = networkRecord?.network;
+  const observed = networkView(networkRecord, liveNow());
   const display = formatMobileIPDisplay(mobileAddresses(address), ipMode);
   setText(value, key === "pc" ? pc?.pcName ?? "—" : display.text);
   cell.dataset.pcObservedAt = String(pc?.observedAtMs ?? "");
   value.setAttribute("aria-label", `${label}: ${key === "pc" ? pc?.pcName ?? "unknown" : display.description}. Open saved discovery details.`);
   const publicFact = observed.publicIp
     ? `${observed.publicRetained ? "Retained public" : "Public"} IP: ${observed.publicIp}. ${checkedFact(observed.publicObservedAtMs, "Public IP checked")}`
-    : record?.network ? "Public IP is currently unavailable." : "No public IP check result is available yet.";
+    : network ? "Public IP is currently unavailable." : "No public IP check result is available yet.";
   const privateFact = observed.privateIp
     ? `${observed.privateRetained ? "Retained private" : "Private"} IP: ${observed.privateIp}. ${checkedFact(observed.privateObservedAtMs, "Private IP checked")}`
     : mobilePcAddresses(pc).internal ? `Saved private IP: ${mobilePcAddresses(pc).internal}. ${checkedFact(pc?.observedAtMs, "Discovered")}`
       : "No private IP reading is available.";
+  const publicFailures = { "missing-curl": "curl is not installed on this PC", dns: "DNS lookup failed", connection: "connection failed",
+    timeout: "request timed out", tls: "TLS verification or connection failed", "http-refusal": "HTTP request refused",
+    "invalid-response": "invalid response" };
+  const failures = [
+    ...(network?.publicFailure ? [`Public IP failure: ${publicFailures[network.publicFailure]}${network.httpStatus ? ` (HTTP ${network.httpStatus})` : ""}.`] : []),
+    ...(network?.privateFailure ? ["Private IP failure: interface read failed."] : []),
+    ...(network?.retryAtMs ? [checkedFact(network.retryAtMs, "Public IP retry eligible")] : []),
+  ];
   const monitoringFact = [record?.monitoring ? `PC monitoring: ${record.monitoring.status.replaceAll("-", " ")}.` : "No PC monitoring status is available yet.",
-    ...(record?.network?.status === "unavailable" ? ["The public IP lookup did not succeed.", checkedFact(record.network.observedAtMs, "Public IP attempt"),
+    ...failures,
+    ...(network?.status === "unavailable" ? ["The public IP lookup did not succeed.", checkedFact(network.observedAtMs, "Public IP attempt"),
       "A failed lookup normally becomes eligible to retry after one minute. Provider-requested waits are honored. Enabled monitoring retries while this fleet is open; an offline PC or paused monitoring can delay it."] : [])].join(" ");
   const discoveryFact = pc ? `${checkedFact(pc.observedAtMs, "Discovered")} Discovered addresses: ${pc.ipAddresses.join(", ")}.`
     : "No saved PC discovery details are available.";
-  const method = "Enabled monitoring checks this PC’s external/public IP with or without NAT, preferring IPv4 with IPv6 fallback. Shared public addresses are valid for multiple PCs and hosts. A PC-side VPN can change the outward address.";
+  const method = "Enabled monitoring checks this PC’s external/public IP directly with installed curl, independently of node containers, with or without NAT, preferring IPv4 with IPv6 fallback. Shared public addresses are valid for multiple PCs and hosts. A PC-side VPN can change the outward address.";
   rememberInfo(cell, {
     summary: [ink(key === "ip" ? "Public and private IP observations." : pc ? `PC: ${pc.pcName ?? "name unavailable"}.` : "PC name unavailable.", pc || key === "ip" ? "plain" : "warning")],
     // The shared dialog shows four facts. Keep current IPs and failure/retry status
     // in those visible slots; full discovery inventory remains in source details.
     facts: key === "ip" ? [publicFact, privateFact, monitoringFact, method] : [discoveryFact, publicFact, privateFact, monitoringFact],
-    source: [discoveryFact, "PC name and discovered addresses keep their original discovery time. Enabled monitoring refreshes IP checks separately while this fleet is open.", method,
+    source: [discoveryFact, ...(network ? [`Latest IP observation source: ${network.source}.`] : []),
+      ...(networkRecord?.lastGoodNetwork ? [`Retained successful IP source: ${networkRecord.lastGoodNetwork.source}.`] : []), "PC name and discovered addresses keep their original discovery time. Enabled monitoring refreshes IP checks separately while this fleet is open.", method,
       pc ? `Verified SSH identity digest: ${pc.pcId}\nObserved: ${new Date(pc.observedAtMs).toISOString()}` : "No saved machine-name observation is connected for this host.",
       ...(pc?.gpuTelemetry ? [`GPU recorder: ${pc.gpuTelemetry.collector.status}. Expand GPU conditions below Scenario for recorded signals.`] : [])].join("\n"),
   }, value);

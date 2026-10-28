@@ -109,6 +109,7 @@ public final class SmokeInstrumentation extends Instrumentation {
             UpdateDownloadVerification.verifyStore(getTargetContext());
             require(DiscoveryNetwork.startedSearchesForTesting() == 0 && DiscoveryNetwork.startedConnectionsForTesting() == 0,
                 "Launch or ordinary Fleet operations started network discovery/SSH");
+            PcNetworkVerification.verify(this, current, origin, token);
             runOnMainSync(() -> current.webViewForTesting().loadUrl(origin + "/?scenario=network-discovery"));
             long discoveryDeadline = android.os.SystemClock.elapsedRealtime() + 15000;
             boolean discoveryReady = false;
@@ -122,7 +123,7 @@ public final class SmokeInstrumentation extends Instrumentation {
             runOnMainSync(() -> { callActivityOnPause(current); callActivityOnResume(current); });
             require(DiscoveryNetwork.startedSearchesForTesting() == 0 && DiscoveryNetwork.startedConnectionsForTesting() == 0,
                 "Opening/resuming/refreshing Network Discovery started a search");
-            result.putString("stream", "PASS: embedded Node/WebView boot, eight synthetic hosts, loopback authentication, roster validation/persistence, pause/resume, installed-version/update-status presentation at 390dp, download MB/total/percent presentation, private service declaration and isolated update-store recovery, actual Android APK rejection and narrow update provider. No live provider or GitHub requests.\n");
+            result.putString("stream", "PASS: embedded Node/WebView boot, eight synthetic hosts, loopback authentication, roster validation/persistence, pause/resume, installed-version/update-status presentation at 390dp, download MB/total/percent presentation, private service declaration and isolated update-store recovery, actual Android APK rejection and narrow update provider. Independent PC IP controller/API/WebView checks passed with three blocked node workers, shared PC readings, malformed GPU rejection and foreground/revocation cancellation. No live provider or GitHub requests.\n");
             finish(Activity.RESULT_OK, result);
         } catch (Exception | AssertionError error) {
             result.putString("stream", (backgroundDownload ? "FAIL (background-download only): " : nativeOnly ? "FAIL (native-only): " : "FAIL: ") + error.getClass().getSimpleName() + ": " + error.getMessage() + "\n");

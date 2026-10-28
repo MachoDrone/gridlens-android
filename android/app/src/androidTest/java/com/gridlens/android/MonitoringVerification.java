@@ -36,6 +36,14 @@ final class MonitoringVerification {
             SshDiscovery.MonitoringResult publicRead = new SshDiscovery.MonitoringResult(node, null, null, "active", false, 0,
                     new PublicIpReader.Observation(1000, "8.8.8.8", 1000L, null, null).json());
             require(MonitoringController.permittedObservation(store, target, publicRead), "Approved native delivery was blocked");
+            require(MonitoringController.permittedNetworkObservation(store, target), "Approved PC-only delivery was blocked");
+            JSONObject bindingPaused = new JSONObject(target.toString()).put("paused", true).put("status", "binding-changed");
+            store.saveMonitoringTarget(bindingPaused);
+            require(MonitoringController.permittedNetworkObservation(store, target), "Stopped or changed node binding blocked PC IP");
+            require(!MonitoringController.permittedObservation(store, target, publicRead), "Node-binding pause was bypassed by node delivery");
+            store.saveMonitoringTarget(new JSONObject(target.toString()).put("paused", true).put("status", "paused"));
+            require(!MonitoringController.permittedNetworkObservation(store, target), "Manual pause was bypassed by PC IP");
+            store.saveMonitoringTarget(target);
             verifySourceIsolation(target.getString("pcId"), node);
             JSONObject sibling = new JSONObject(target.toString()).put("id", UUID.randomUUID().toString()).put("fleetId", UUID.randomUUID().toString())
                     .put("address", "192.0.2.13");
@@ -54,6 +62,7 @@ final class MonitoringVerification {
             require(sharedPause.getJSONObject(0).getBoolean("paused") && sharedPause.getJSONObject(1).getBoolean("paused"),
                     "Shared SSH credential denial left another PC eligible for password retries");
             require(!sharedPause.getJSONObject(2).getBoolean("paused"), "Unrelated credential profile was paused");
+            require(!MonitoringController.permittedNetworkObservation(reopened, target), "Genuine shared SSH rejection left IP lane authorized");
             reopened.saveMonitoringTarget(target); reopened.saveMonitoringTarget(sibling);
             long retry = System.currentTimeMillis() + 86_400_000L;
             reopened.restrictMonitoring(target, address, true, false, "authorization-required", retry);
@@ -61,10 +70,12 @@ final class MonitoringVerification {
             require(!denied.getBoolean("rewardsAuthorized") && denied.getJSONArray("rewardsVerified").length() == 0,
                     "Authorization denial did not suspend the node independently of upload");
             require(!denied.getBoolean("paused"), "Rewards denial unnecessarily paused GPU reads");
+            require(MonitoringController.permittedNetworkObservation(reopened, target), "Wallet-specific denial blocked approved PC IP");
             require(reopened.rewardsRetryAtMs() == retry, "Provider delay was not persisted");
             JSONObject approvedAgain = new JSONObject(target.toString()).put("authorizationId", UUID.randomUUID().toString());
             reopened.saveMonitoringTarget(approvedAgain);
             require(!MonitoringController.permittedObservation(reopened, target, publicRead), "Late source delivered across replacement authorization");
+            require(!MonitoringController.permittedNetworkObservation(reopened, target), "Late PC source crossed replacement authorization");
             require(MonitoringController.permittedObservation(reopened, approvedAgain, publicRead), "Replacement authorization blocked its own source");
             require(!reopened.suspendCredentialProfile(target), "An old approval suspended the newly approved shared credential target");
             reopened.restrictMonitoring(target, address, true, true, "identity-changed", retry);
@@ -72,6 +83,7 @@ final class MonitoringVerification {
             JSONObject paused = new JSONObject(approvedAgain.toString()).put("approved", false).put("paused", true);
             reopened.saveMonitoringTarget(paused);
             require(!MonitoringController.permittedObservation(reopened, approvedAgain, publicRead), "Revoked permission delivered a successful source");
+            require(!MonitoringController.permittedNetworkObservation(reopened, approvedAgain), "Revoked PC permission delivered a source");
             reopened.restrictMonitoring(approvedAgain, address, true, false, "authorization-required", retry);
             require(!reopened.monitoringTargets().getJSONObject(0).getBoolean("approved"), "A late receipt re-enabled a paused target");
             JSONObject live = new JSONObject(approvedAgain.toString()).put("authorizationId", UUID.randomUUID().toString())
@@ -98,6 +110,7 @@ final class MonitoringVerification {
             long preservedRetry = reopened.rewardsRetryAtMs();
             reopened.forgetCredentials();
             require(!MonitoringController.permittedObservation(reopened, approvedAgain, publicRead), "Forgotten credentials delivered a late source");
+            require(!MonitoringController.permittedNetworkObservation(reopened, approvedAgain), "Forgotten credentials allowed PC IP delivery");
             require(reopened.resumeVerifiedConnections(new JSONArray().put(recoveryBeforeForget), () -> true).length() == 0,
                     "Recovery recreated a forgotten credential/permission");
             require(!reopened.suspendCredentialProfile(approvedAgain), "A forgotten target accepted an old credential failure");

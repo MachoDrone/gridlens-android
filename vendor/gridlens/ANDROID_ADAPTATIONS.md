@@ -76,3 +76,21 @@ timestamps say “Last read by GridLens” and do not claim Nosana update times.
 mobile-scenarios.ts preserves both IP slots, using − for missing addresses;
 IPv6 remains complete in compact modes. IP help covers public-only connections
 and shared NAT without changing discovery, collection or observation times.
+
+Android 0.2.9 extends only the marker-gated IP display to six steps: hidden,
+both full addresses, external IP / NAT, external IPv4 last octet, internal IP,
+and internal IPv4 last octet. Suffixes include their leading dot; IPv6 stays
+complete. The existing preference key and dot/full/ext/int meanings remain,
+with public-full/private-full added. Invalid or missing preferences hide IPs.
+The inherited desktop formatter and its four-mode cycle stay byte-identical.
+All modes retain full-address sorting and initiate no requests.
+
+mobile-monitoring.ts additionally validates optional PC-keyed network records
+against saved fleet PC identities. main.ts shares each record with every host
+currently assigned to that PC, independently of node monitoring observations.
+Legacy node-bound network observations remain readable. IP details expose only
+bounded public/private failure categories, an HTTP status when applicable, and
+recorded retry eligibility. Latest and retained source labels/timestamps remain
+separate; rendering never advances their evidence. pc-observations.ts validates
+the compatible schema-1 PC-network update/read contracts and bounded failure
+fields while retaining the existing reward/GPU/node contracts.

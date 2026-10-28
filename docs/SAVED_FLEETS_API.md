@@ -129,3 +129,21 @@ unknown fields, invalid pairs and public/private misclassification fail closed.
 The store independently retains each last successful part in lastGoodNetwork.
 Older journals remain compatible. These fields contain no endpoint authority,
 credentials or request URL and cannot trigger connections from the browser.
+
+## PC network observations (0.2.9)
+
+The same schema-1 POST envelope additionally accepts `{pcId,network}` in `updates`.
+This shape contains no host address, binding, rewards, GPU or monitoring status.
+The PC ID must belong to saved PC metadata in that fleet. Each PC observation is
+stored independently by fleet and PC, and read responses may include `pcNetworks`.
+Network updates cannot replace node bindings or discard financial/GPU history.
+Host removal/reassociation changes which PC reading applies without copying a
+network measurement into a different identity.
+
+The network `source` accepts `pc-egress-ipify` and the historical
+`node-egress-ipify`. Optional `publicFailure` is one of `missing-curl`, `dns`,
+`connection`, `timeout`, `tls`, `http-refusal`, `invalid-response`;
+`privateFailure` accepts `interface-read-failure`. Optional `httpStatus` is a
+bounded HTTP status and `retryAtMs` is an original provider deadline. Unknown
+fields and invalid values fail closed. Old schema-1 journals remain readable;
+loading or redelivery cannot advance source timestamps or reset provider waits.

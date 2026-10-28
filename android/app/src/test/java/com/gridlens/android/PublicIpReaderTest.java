@@ -15,14 +15,14 @@ public final class PublicIpReaderTest {
             commands.add(command);
             if (command.equals(PcMetadata.ADDRESSES_COMMAND)) return new PublicIpReader.Response(0, "172.17.0.1 192.168.1.20 fd12::5");
             assertEquals(PublicIpReader.command(BINDING, false), command);
-            assertTrue(command.contains("exec " + BINDING.nodeContainerId + " /usr/bin/env -i /usr/local/bin/node -e "));
-            assertEquals(128, maxBytes); assertEquals(7000, timeout);
-            return new PublicIpReader.Response(0, "8.8.8.8\n");
+            assertTrue(command.contains("curl -q -4")); assertFalse(command.contains("docker")); assertFalse(command.contains("sudo"));
+            assertEquals(16384, maxBytes); assertEquals(11000, timeout);
+            return new PublicIpReader.Response(0, "HTTP/1.1 200 OK\r\n\r\n8.8.8.8\n");
         }, clock::incrementAndGet);
         assertEquals(2, commands.size()); assertEquals("192.168.1.20", reading.privateIp); assertEquals("8.8.8.8", reading.publicIp);
         assertEquals(Long.valueOf(1001), reading.privateObservedAtMs); assertEquals(Long.valueOf(1002), reading.publicObservedAtMs);
         assertEquals(1003, reading.observedAtMs); assertEquals(reading.json(), PublicIpReader.parse(reading.json()).json());
-        assertTrue(reading.json().contains("\"source\":\"node-egress-ipify\""));
+        assertTrue(reading.json().contains("\"source\":\"pc-egress-ipify\""));
     }
     @Test public void failedPublicLookupKeepsActualPrivateObservationWithoutInventingPublicIp() {
         PublicIpReader.Observation reading = PublicIpReader.read(BINDING, "10.9.9.9", false, (command, maxBytes, timeout) ->
@@ -57,7 +57,7 @@ public final class PublicIpReaderTest {
         assertNull(PublicIpReader.parse(json.replace("\"ok\"", "\"unavailable\"")));
         assertNull(PublicIpReader.parse(json.replace("\"publicObservedAtMs\":900", "\"publicObservedAtMs\":1001")));
         assertNull(PublicIpReader.parse(json.replace("8.8.8.8", "127.0.0.1")));
-        assertNull(PublicIpReader.parse(json.replace("node-egress-ipify", "phone-ip")));
+        assertNull(PublicIpReader.parse(json.replace("pc-egress-ipify", "phone-ip")));
     }
     @Test public void unavailableIpv4UsesOneNativeControlledIpv6Fallback() {
         List<String> commands = new ArrayList<>();
@@ -66,7 +66,7 @@ public final class PublicIpReaderTest {
             if (command.equals(PcMetadata.ADDRESSES_COMMAND)) return new PublicIpReader.Response(0, "10.0.0.1");
             if (command.equals(PublicIpReader.command(BINDING, false, 4))) return new PublicIpReader.Response(PublicIpReader.NETWORK_FAILURE, "");
             assertEquals(PublicIpReader.command(BINDING, false, 6), command);
-            return new PublicIpReader.Response(0, "2606:4700::1111\n");
+            return new PublicIpReader.Response(0, "HTTP/2 200\r\n\r\n2606:4700::1111\n");
         }, () -> 1000);
         assertEquals(3, commands.size()); assertNotNull(result.publicIp);
         assertTrue(result.publicIp.contains(":")); assertEquals("10.0.0.1", result.privateIp);
@@ -78,11 +78,38 @@ public final class PublicIpReaderTest {
                 commands.add(command);
                 if (command.equals(PcMetadata.ADDRESSES_COMMAND)) return new PublicIpReader.Response(0, "10.0.0.1");
                 if (cancelled) throw new java.io.IOException("Captured network cancelled");
-                return new PublicIpReader.Response(PublicIpReader.HTTP_FAILURE, "retry-seconds:3600\n");
+                return new PublicIpReader.Response(PublicIpReader.HTTP_FAILURE, "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 3600\r\n\r\n");
             }, () -> 1000);
             assertEquals(2, commands.size()); assertNull(result.publicIp); assertEquals("10.0.0.1", result.privateIp);
             assertEquals(cancelled ? 0 : 3_601_000, result.retryAtMs);
-            assertFalse(result.json().contains("retry")); // Native policy metadata never changes the server contract.
+            assertEquals(!cancelled, result.json().contains("retryAtMs"));
+        }
+    }
+    @Test public void legacyCachePreservesItsSourceAndDatesWithoutMigration() {
+        String legacy = new PublicIpReader.Observation(1000, "8.8.8.8", 900L, "10.0.0.1", 800L).json().replace("pc-egress-ipify", "node-egress-ipify");
+        assertEquals(legacy, PublicIpReader.parse(legacy).json());
+    }
+    @Test public void boundedFailuresAndHttpEvidencePreventIncorrectFallbacks() {
+        int[] codes = {127, 6, 7, 28, 60, 63};
+        String[] failures = {"missing-curl", "dns", "connection", "timeout", "tls", "invalid-response"};
+        for (int i = 0; i < codes.length; i++) {
+            final int code = codes[i]; AtomicLong requests = new AtomicLong();
+            PublicIpReader.Observation result = PublicIpReader.read("10.0.0.1", (command, max, timeout) -> {
+                if (command.equals(PcMetadata.ADDRESSES_COMMAND)) return new PublicIpReader.Response(127, "secret diagnostic");
+                requests.incrementAndGet(); return new PublicIpReader.Response(code, "secret diagnostic");
+            }, () -> 1000);
+            assertEquals(failures[i], result.publicFailure); assertEquals("interface-read-failure", result.privateFailure);
+            assertEquals(code == 6 || code == 7 || code == 28 ? 2 : 1, requests.get());
+            assertFalse(result.json().contains("secret")); assertEquals(result.json(), PublicIpReader.parse(result.json()).json());
+        }
+        for (int exit : new int[]{0, 28, 63}) for (int status : new int[]{301, 403, 429, 503}) {
+            AtomicLong requests = new AtomicLong();
+            PublicIpReader.Observation result = PublicIpReader.read("10.0.0.1", (command, max, timeout) -> {
+                if (command.equals(PcMetadata.ADDRESSES_COMMAND)) return new PublicIpReader.Response(0, "10.0.0.1");
+                requests.incrementAndGet(); return new PublicIpReader.Response(exit, "HTTP/1.1 " + status + " Refused\r\nRetry-After: 7200\r\n\r\n");
+            }, () -> 1000);
+            assertEquals(1, requests.get()); assertEquals("http-refusal", result.publicFailure);
+            assertEquals(Integer.valueOf(status), result.httpStatus); assertEquals(7201000, result.retryAtMs);
         }
     }
     @Test public void capturedNetworkRevocationAfterIpv4FailurePreventsFallbackDispatch() {
@@ -96,4 +123,15 @@ public final class PublicIpReaderTest {
         }, () -> 1000);
         assertEquals(1, externalRequests.get()); assertNull(result.publicIp); assertEquals("10.0.0.1", result.privateIp);
     }
+    @Test public void aSuccessfulResponseMustMatchTheRequestedAddressFamilyAndRetainProviderWait() {
+        PublicIpReader.Observation wrong = PublicIpReader.read("10.0.0.1", (command, max, timeout) ->
+                command.equals(PcMetadata.ADDRESSES_COMMAND) ? new PublicIpReader.Response(0, "10.0.0.1")
+                : new PublicIpReader.Response(0, "HTTP/1.1 200 OK\r\n\r\n2606:4700::1111"), () -> 1000);
+        assertNull(wrong.publicIp); assertEquals("invalid-response", wrong.publicFailure);
+        PublicIpReader.Observation wait = PublicIpReader.read("10.0.0.1", (command, max, timeout) ->
+                command.equals(PcMetadata.ADDRESSES_COMMAND) ? new PublicIpReader.Response(0, "10.0.0.1")
+                : new PublicIpReader.Response(0, "HTTP/1.1 200 OK\r\nRetry-After: 7200\r\n\r\n8.8.8.8"), () -> 1000);
+        assertEquals("8.8.8.8", wait.publicIp); assertEquals(7201000, wait.retryAtMs);
+    }
+
 }

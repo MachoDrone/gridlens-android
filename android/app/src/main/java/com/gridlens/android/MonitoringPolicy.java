@@ -5,6 +5,11 @@ final class MonitoringPolicy {
     static final long GPU_INTERVAL_MS = 30_000;
     static final long REWARDS_INTERVAL_MS = 300_000;
     static final int MAX_CONCURRENT_PCS = 4;
+    static final int IP_SLOTS = 1, NODE_SLOTS = MAX_CONCURRENT_PCS - IP_SLOTS;
+    static boolean pcNetworkPermitted(boolean approved, boolean paused, String status) {
+        return approved && !"credentials-required".equals(status) && !"identity-changed".equals(status)
+                && (!paused || "binding-changed".equals(status));
+    }
     static boolean due(boolean foreground, boolean approved, boolean paused,
                        long now, long lastAttempt, long retryAt, long interval) {
         if (!foreground || !approved || paused || now <= 0 || retryAt > now || lastAttempt > now) return false;

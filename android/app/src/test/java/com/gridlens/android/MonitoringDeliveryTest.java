@@ -51,7 +51,7 @@ public final class MonitoringDeliveryTest {
                     return new PublicIpReader.Response(0, privateIps[index] == null ? "1.1.1.1" : privateIps[index]);
                 }
                 if (index == 4 && command.equals(PublicIpReader.command(node, false, 4))) return new PublicIpReader.Response(PublicIpReader.NETWORK_FAILURE, "");
-                return new PublicIpReader.Response(publicIps[index] == null ? PublicIpReader.HTTP_FAILURE : 0, publicIps[index] == null ? "" : publicIps[index]);
+                return new PublicIpReader.Response(publicIps[index] == null ? PublicIpReader.HTTP_FAILURE : 0, publicIps[index] == null ? "HTTP/1.1 503 Unavailable\r\n\r\n" : "HTTP/1.1 200 OK\r\n\r\n" + publicIps[index]);
             }, () -> AT);
             assertTrue("Every PC asks for external egress, including public-only and private lookup failures", commands.contains(PublicIpReader.command(node, false)));
             String reward = "{\"schema\":1,\"address\":\"" + node.address + "\",\"observedAtMs\":" + AT + ",\"status\":\"ok\",\"amount\":\"12.345678\"}";

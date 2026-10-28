@@ -143,6 +143,23 @@ public final class SshDiscovery {
             java.util.function.Consumer<MonitoringResult> onResult, java.util.function.BooleanSupplier rewardsAllowed, NetworkLookup networkLookup) {
         return monitor(transport(network), candidate, trusted, credential, sudoPassword, bindings, rewardsSource, gpuSource, enable, readRewards, readGpu, gpuSince, rewardAddresses, onResult, rewardsAllowed, networkLookup);
     }
+    static List<MonitoringResult> monitor(DiscoveryNetwork network, DiscoveryPolicy.Candidate candidate, Identity trusted,
+            Credential credential, byte[] sudoPassword, List<NodeBinding> bindings, String rewardsSource, String gpuSource,
+            boolean enable, boolean readRewards, boolean readGpu, Map<String, Long> gpuSince, Set<String> rewardAddresses,
+            java.util.function.Consumer<MonitoringResult> onResult, java.util.function.BooleanSupplier rewardsAllowed,
+            NetworkLookup networkLookup, java.util.function.BooleanSupplier permitted) {
+        Transport base = transport(network);
+        Transport guarded = new Transport() {
+            public Socket connect(String address, int port, int timeout) throws IOException { ensureActive(); return base.connect(address, port, timeout); }
+            public void ensureActive() throws IOException {
+                base.ensureActive();
+                if (!permitted.getAsBoolean()) throw new IOException("Monitoring permission revoked");
+            }
+            public boolean isCancelled() { return base.isCancelled() || !permitted.getAsBoolean(); }
+        };
+        return monitor(guarded, candidate, trusted, credential, sudoPassword, bindings, rewardsSource, gpuSource,
+                enable, readRewards, readGpu, gpuSince, rewardAddresses, onResult, rewardsAllowed, networkLookup);
+    }
     static List<MonitoringResult> monitor(Transport network, DiscoveryPolicy.Candidate candidate, Identity trusted,
             Credential credential, byte[] sudoPassword, List<NodeBinding> bindings, String rewardsSource, String gpuSource,
             boolean enable, boolean readRewards, boolean readGpu, Map<String, Long> gpuSince) {
@@ -280,6 +297,50 @@ public final class SshDiscovery {
             results.set(i, new MonitoringResult(result.binding, result.rewardsJson, result.gpuJson, result.status, result.suspendRewards, result.retryAfterSeconds, networkJson));
         }
         return results;
+    }
+    static final class NetworkResult {
+        final String status;
+        final PublicIpReader.Observation observation;
+        NetworkResult(String status, PublicIpReader.Observation observation) { this.status = status; this.observation = observation; }
+    }
+    static NetworkResult readNetwork(DiscoveryNetwork network, DiscoveryPolicy.Candidate candidate, Identity trusted,
+            Credential credential, java.util.function.BooleanSupplier permitted) {
+        return readNetwork(transport(network), candidate, trusted, credential, permitted);
+    }
+    /** A separately pinned, unprivileged PC connection. No inventory, node or recorder commands. */
+    static NetworkResult readNetwork(Transport network, DiscoveryPolicy.Candidate candidate, Identity trusted,
+            Credential credential, java.util.function.BooleanSupplier permitted) {
+        if (trusted == null || credential == null || permitted == null) throw new IllegalArgumentException("Approved PC required");
+        configureCryptoForAndroid(); JSch jsch = new JSch(); Session session = null; ScheduledFuture<?> timeout = null;
+        PinnedRepository repository = new PinnedRepository(trusted);
+        PublicIpReader.Observation observation = null;
+        try {
+            if (!permitted.getAsBoolean()) return new NetworkResult("cancelled", null);
+            session = session(jsch, network, candidate, credential.username, repository);
+            if (credential.privateKey != null && credential.privateKey.length > 0) {
+                jsch.addIdentity("native-import", credential.privateKey.clone(), null, copy(credential.passphrase));
+                session.setConfig("PreferredAuthentications", "publickey");
+            } else { session.setPassword(credential.password.clone()); session.setConfig("PreferredAuthentications", "password"); }
+            timeout = limit(session, CONNECT_MS); session.connect(CONNECT_MS); timeout.cancel(false);
+            long operationMs = 35000;
+            timeout = limit(session, operationMs);
+            long deadline = System.nanoTime() + operationMs * 1000000L;
+            Session active = session;
+            observation = PublicIpReader.read(candidate.address, (command, maxBytes, timeMs) -> {
+                network.ensureActive();
+                if (!permitted.getAsBoolean()) throw new IOException("Monitoring cancelled");
+                CommandResult response = execute(active, network, command, null, deadline, maxBytes, timeMs, true);
+                return new PublicIpReader.Response(response.exit, response.output);
+            }, System::currentTimeMillis);
+            network.ensureActive();
+            return permitted.getAsBoolean() ? new NetworkResult("active", observation) : new NetworkResult("cancelled", observation != null && observation.retryAtMs > 0 ? observation : null);
+        } catch (Exception failure) {
+            boolean cancelled = network.isCancelled() || Thread.currentThread().isInterrupted() || !permitted.getAsBoolean();
+            String status = cancelled ? "cancelled" : repository.changed ? "identity-changed"
+                    : failure instanceof JSchException && failure.getMessage() != null
+                    && (failure.getMessage().startsWith("Auth fail") || failure.getMessage().startsWith("Auth cancel")) ? "credentials-required" : "unreachable";
+            return new NetworkResult(status, observation != null && observation.retryAtMs > 0 ? observation : null);
+        } finally { if (timeout != null) timeout.cancel(false); if (session != null) session.disconnect(); try { jsch.removeAllIdentity(); } catch (JSchException ignored) { } }
     }
     private static boolean isolatedMode(String mode) { return mode != null && mode.matches("[A-Za-z0-9][A-Za-z0-9_.-]{0,255}") && !mode.equals("host"); }
     private static List<String> visibleGpuUuids(Session session, Transport network, NodeBinding binding, byte[] sudoPassword, long deadline) throws IOException, JSchException {
@@ -506,6 +567,10 @@ public final class SshDiscovery {
         return execute(session, network, command, sudoPassword, inventoryDeadline, maxOutput, 8000);
     }
     private static CommandResult execute(Session session, Transport network, String command, byte[] sudoPassword, long inventoryDeadline, int maxOutput, long timeoutMs) throws IOException, JSchException {
+        return execute(session, network, command, sudoPassword, inventoryDeadline, maxOutput, timeoutMs, false);
+    }
+    private static CommandResult execute(Session session, Transport network, String command, byte[] sudoPassword, long inventoryDeadline,
+            int maxOutput, long timeoutMs, boolean retainHttpFailure) throws IOException, JSchException {
         network.ensureActive();
         if (System.nanoTime() >= inventoryDeadline) throw new IOException("Inventory timed out");
         long deadline = Math.min(inventoryDeadline, System.nanoTime() + timeoutMs * 1000000L);
@@ -520,11 +585,20 @@ public final class SshDiscovery {
             stdin.close(); byte[] buffer = new byte[4096];
             for (;;) {
                 network.ensureActive();
-                if (System.nanoTime() >= deadline) throw new IOException("Inventory timed out");
+                if (System.nanoTime() >= deadline) {
+                    if (retainHttpFailure) return new CommandResult(28, output.toString(StandardCharsets.UTF_8.name()));
+                    throw new IOException("Inventory timed out");
+                }
                 while (input.available() > 0) {
                     int read = input.read(buffer, 0, Math.min(buffer.length, input.available()));
                     if (read < 0) break;
-                    if (output.size() + read > maxOutput) throw new IOException("Inventory response too large");
+                    if (output.size() + read > maxOutput) {
+                        if (retainHttpFailure) {
+                            output.write(buffer, 0, maxOutput - output.size());
+                            return new CommandResult(63, output.toString(StandardCharsets.UTF_8.name()));
+                        }
+                        throw new IOException("Inventory response too large");
+                    }
                     output.write(buffer, 0, read);
                 }
                 if (channel.isClosed() && input.available() == 0) return new CommandResult(channel.getExitStatus(), output.toString(StandardCharsets.UTF_8.name()));

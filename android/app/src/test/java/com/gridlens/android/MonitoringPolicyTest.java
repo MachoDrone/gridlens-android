@@ -55,4 +55,16 @@ public final class MonitoringPolicyTest {
         }
         assertEquals(200, visited.size());
     }
+    @Test public void pcLaneReservesOneSlotAndIgnoresOnlyNodeBindingPauses() {
+        assertEquals(1, MonitoringPolicy.IP_SLOTS); assertEquals(3, MonitoringPolicy.NODE_SLOTS);
+        assertEquals(MonitoringPolicy.MAX_CONCURRENT_PCS, MonitoringPolicy.IP_SLOTS + MonitoringPolicy.NODE_SLOTS);
+        assertTrue(MonitoringPolicy.pcNetworkPermitted(true, true, "binding-changed"));
+        assertTrue(MonitoringPolicy.pcNetworkPermitted(true, false, "gpu-access-required"));
+        assertTrue(MonitoringPolicy.pcNetworkPermitted(true, false, "authorization-required"));
+        for (String status : new String[]{"paused", "identity-changed", "credentials-required", "authorization-required"})
+            assertFalse(MonitoringPolicy.pcNetworkPermitted(true, true, status));
+        assertFalse(MonitoringPolicy.pcNetworkPermitted(false, false, "active"));
+        assertFalse(MonitoringPolicy.pcNetworkPermitted(true, false, "identity-changed"));
+    }
+
 }

@@ -1,5 +1,5 @@
-import { parseSavedObservation } from "../fleet/pc-observations.ts";
-import type { PcObservation, PcObservationIndex } from "../fleet/pc-observations.ts";
+import { parseSavedObservation, parsePcNetworkRecord } from "../fleet/pc-observations.ts";
+import type { PcObservation, PcObservationIndex, PcNetworkRecord } from "../fleet/pc-observations.ts";
 
 async function read(url: string, signal: AbortSignal, maximum: number): Promise<Record<string, unknown>> {
   const response = await fetch(url, { credentials: "same-origin", cache: "no-store", signal });
@@ -15,7 +15,8 @@ async function read(url: string, signal: AbortSignal, maximum: number): Promise<
   return value as Record<string, unknown>;
 }
 /** Reads only the phone's cache. Native Android owns connections and authorization. */
-export function createMobileMonitoring(options: { fleetId: string; visible: () => boolean; hosts: () => readonly string[]; changed: () => void }) {
+export function createMobileMonitoring(options: { fleetId: string; visible: () => boolean; hosts: () => readonly string[]; pcIds: () => readonly string[]; changed: () => void }) {
+  const pcNetworks = new Map<string, PcNetworkRecord>();
   const index = new Map<string, PcObservationIndex>(), details = new Map<string, PcObservation>();
   const attempted = new Map<string, number>(), queued = new Set<string>(), active = new Map<string, AbortController>();
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -48,7 +49,17 @@ export function createMobileMonitoring(options: { fleetId: string; visible: () =
         }
         next.set(item.address, item);
       }
+      const networks = new Map<string, PcNetworkRecord>(), allowedPcs = new Set(options.pcIds());
+      if (value.pcNetworks !== undefined) {
+        if (!Array.isArray(value.pcNetworks) || value.pcNetworks.length > 2048) throw new Error();
+        for (const raw of value.pcNetworks) {
+          const parsed = parsePcNetworkRecord(raw);
+          if (!allowedPcs.has(parsed.pcId) || networks.has(parsed.pcId)) throw new Error();
+          networks.set(parsed.pcId, parsed);
+        }
+      }
       if (indexController !== controller || !options.visible()) return;
+      pcNetworks.clear(); for (const [pcId, item] of networks) pcNetworks.set(pcId, item);
       index.clear(); for (const [address, item] of next) index.set(address, item);
       for (const address of details.keys()) if (!next.has(address)) details.delete(address);
       error = value.error ? "Saved PC observations need attention." : null;
@@ -94,7 +105,7 @@ export function createMobileMonitoring(options: { fleetId: string; visible: () =
     indexController?.abort(); indexController = undefined;
     for (const controller of active.values()) controller.abort(); active.clear(); queued.clear();
   }
-  return { index, detail, get error() { return error; }, refresh,
+  return { index, pcNetworks, detail, get error() { return error; }, refresh,
     resume() { if (options.visible()) { stopped = false; if (timer !== undefined) clearTimeout(timer); void refresh(); pump(); } else pause(); },
     stop() { stopped = true; pause(); },
   };

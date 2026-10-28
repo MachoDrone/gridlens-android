@@ -30,7 +30,7 @@ public final class PublicNetworkCacheTest {
     @Test public void failuresAreCachedAndClockRollbackNeverTriggersAnotherLookup() throws Exception {
         Store store = new Store(); AtomicLong now = new AtomicLong(1000); AtomicInteger reads = new AtomicInteger();
         PublicNetworkCache cache = new PublicNetworkCache(store, now::get);
-        PublicNetworkCache.Reader reader = () -> { reads.incrementAndGet(); throw new IllegalStateException("fixture remote failure"); };
+        PublicNetworkCache.Reader reader = () -> { reads.incrementAndGet(); return PublicIpReader.unavailable(now.get()); };
         assertNull(cache.getOrRead(PC, reader).publicIp);
         assertNull(cache.getOrRead(PC, reader).publicIp); assertEquals(1, reads.get());
         now.set(999); assertNull(cache.getOrRead(PC, reader)); assertEquals(1, reads.get());
@@ -46,7 +46,7 @@ public final class PublicNetworkCacheTest {
         store.writes = 0; store.failWrite = 2;
         assertThrows(IllegalStateException.class, () -> recovered.getOrRead(PC, reader)); assertEquals(1, reads.get());
         assertNull(recovered.getOrRead(PC, reader)); assertEquals(1, reads.get());
-        assertNull(new PublicNetworkCache(store, () -> 1000).getOrRead(PC, reader).publicIp); assertEquals(1, reads.get());
+        assertNull(new PublicNetworkCache(store, () -> 1000).getOrRead(PC, reader)); assertEquals(1, reads.get());
     }
     @Test public void concurrentBindingsShareOneInFlightPcRead() throws Exception {
         Store store = new Store(); PublicNetworkCache cache = new PublicNetworkCache(store, () -> 1000);
@@ -78,8 +78,8 @@ public final class PublicNetworkCacheTest {
         Store store = new Store(); AtomicLong now = new AtomicLong(1000); AtomicInteger reads = new AtomicInteger();
         PublicNetworkCache cache = new PublicNetworkCache(store, now::get);
         PublicIpReader.Observation held = cache.getOrRead(PC, () -> { reads.incrementAndGet(); now.set(500); return reading(500); });
-        assertEquals(1000, held.observedAtMs); assertNull(held.publicIp);
-        now.set(60_999); assertNull(cache.getOrRead(PC, () -> { reads.incrementAndGet(); return reading(now.get()); }).publicIp); assertEquals(1, reads.get());
+        assertNull(held);
+        now.set(60_999); assertNull(cache.getOrRead(PC, () -> { reads.incrementAndGet(); return reading(now.get()); })); assertEquals(1, reads.get());
         now.set(61_000); assertEquals("8.8.8.8", cache.getOrRead(PC, () -> { reads.incrementAndGet(); return reading(now.get()); }).publicIp); assertEquals(2, reads.get());
     }
     @Test public void explicitProviderWaitPersistsBeyondTheOrdinaryFailureRetryAcrossRestart() throws Exception {
@@ -102,4 +102,28 @@ public final class PublicNetworkCacheTest {
         assertThrows(IllegalStateException.class, () -> cache.getOrRead(PC, reader));
         assertNull(cache.getOrRead(PC, reader)); assertEquals(0, reads.get()); assertEquals(1, writes.get());
     }
+    @Test public void cancelledReadPreservesCachedSourceAndDurableAttemptBarrier() throws Exception {
+        Store store = new Store(); AtomicLong now = new AtomicLong(1000);
+        PublicNetworkCache cache = new PublicNetworkCache(store, now::get);
+        PublicIpReader.Observation original = cache.getOrRead(PC, () -> reading(now.get()));
+        now.addAndGet(PublicNetworkCache.CACHE_MS);
+        assertThrows(PublicNetworkCache.Aborted.class, () -> cache.getOrRead(PC, () -> { throw new PublicNetworkCache.Aborted(); }));
+        assertEquals(original.json(), cache.peek(PC).json());
+        assertEquals(now.get() + PublicNetworkCache.FAILURE_RETRY_MS, new PublicNetworkCache(store, now::get).nextReadAt(PC));
+        assertEquals(original.json(), cache.getOrRead(PC, () -> { fail("Cancelled attempt must retain retry allowance"); return null; }).json());
+    }
+    @Test public void deliveryRetryUsesExactCachedObservationWithoutAnotherReadOrTimeChange() throws Exception {
+        Store store = new Store(); AtomicLong now = new AtomicLong(1000); AtomicInteger reads = new AtomicInteger();
+        PublicNetworkCache cache = new PublicNetworkCache(store, now::get);
+        String fleet = "11111111-1111-4111-8111-111111111111";
+        PublicIpReader.Observation original = cache.getOrRead(PC, () -> { reads.incrementAndGet(); return reading(now.get()); });
+        assertTrue(cache.pendingDelivery(fleet, PC)); cache.deliveryAttempt(fleet, PC);
+        assertEquals(61000, cache.nextDeliveryAt(fleet, PC));
+        now.set(61000); PublicNetworkCache restarted = new PublicNetworkCache(store, now::get);
+        assertTrue(restarted.pendingDelivery(fleet, PC)); assertEquals(original.json(), restarted.peek(PC).json());
+        restarted.delivered(fleet, PC, restarted.peek(PC)); assertFalse(restarted.pendingDelivery(fleet, PC));
+        assertEquals(1, reads.get()); assertEquals(1000, restarted.peek(PC).publicObservedAtMs.longValue());
+        assertTrue(restarted.pendingDelivery("22222222-2222-4222-8222-222222222222", PC));
+    }
+
 }

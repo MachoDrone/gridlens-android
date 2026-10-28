@@ -8,41 +8,35 @@ continues independently.
 
 **[Download the signed Android APK](https://github.com/MachoDrone/gridlens-android-releases/releases/latest/download/gridlens-android.apk)**
 
-**Version 0.2.8** removes reward clocks. All known Rewards to claim amounts stay
-dark green with the same regular text weight as NOS, including retained readings.
-Exact amounts and read status remain in their descriptions; timestamps mean
-**last read by GridLens**, not when Nosana updated rewards. Unknown amounts remain
-a dash.
+**Version 0.2.9** collects public IP directly from each approved PC using its
+installed `curl`, independently of Nosana containers and GPU collection. It uses
+the saved SSH connection and pinned PC identity without sudo or package installs.
+IPv4 is preferred, with IPv6 fallback after connectivity failures; provider refusals
+and requested waits are preserved. Private addresses come from PC interfaces.
 
-A GPU recorder permission problem no longer pauses saved SSH logins or discards
-successful rewards and IP readings. Cancelled connection attempts are also kept
-separate from rejected credentials. If an earlier version paused your saved
-connections, choose **Check saved connections** in the fleet. The app checks its
-saved trusted endpoints and resumes previously approved monitoring only after
-verification. This does not rescan the network or reauthorize denied wallet reads.
+The IP toggle now cycles **hidden → both full addresses → external full → external
+last octet → internal full → internal last octet → hidden**. IPv4 suffixes include
+a leading dot, IPv6 stays complete, and missing values use **−**. Existing saved
+modes remain supported. Toggle taps only change display; full addresses still sort.
 
-The IP column shows external/public and internal/private addresses. Verified IP
-readings arrive before slower rewards/GPU work, and each source is delivered
-separately so a malformed GPU report cannot reject valid IPs or rewards. PCs behind
-the same NAT router can all display the same public address. Public-only PCs are
-also checked and display **public IP / −** without a private address. Public-IP checks
-prefer external IPv4, with IPv6 fallback; failed lookups normally retry after one
-minute while honoring longer provider-requested waits.
+PC network readings are shared with every associated host, including shared NAT
+and public-only PCs, without overwriting rewards, GPU history or node status.
+A dedicated foreground collection slot lets IP reads proceed while node work is
+blocked. Successes remain cached for thirty minutes; failed lookups become locally
+eligible after one minute, subject to longer provider waits. IP details show bounded
+failure reasons. Failed delivery retries preserve the measured source timestamp.
 
-The background-download improvements from 0.2.5 remain included: approved downloads
-can continue across screen changes and show downloaded MB / total MB and percent.
-Installation still needs your action. Installed version stays visible.
+Existing credentials, approvals and observations survive installation over the
+previous app. Genuine SSH rejection, changed identity, revoked approval and manual
+pauses remain enforced. **Check saved connections** remains available for an old
+ambiguous credential pause. The app performs operator-PC verification; development
+tests use isolated fixtures.
 
-The Fleet columns match the reference Fleet column presentation: PC uses the
-normal table text size; IP cycles hidden → public/private → public suffix → private
-suffix; Rewards to claim uses rounded whole NOS links to the host’s Nosana page.
-Exact amounts still drive sorting and remain in details. Enabled PC monitoring
-now checks public egress from a verified node using ipify and reads the PC’s
-private interface address. Successful public-IP readings are shared per PC for
-30 minutes; failed attempts normally become eligible to retry after one minute while the
-saved fleet is open and its monitoring is enabled.
-Longer provider-requested waits are honored.
-The phone’s IP is never substituted, and old readings keep their source times.
+Known Rewards to claim amounts stay dark green with regular text weight and no
+clock icon. Exact amounts and read status remain in details; timestamps mean
+**last read by GridLens**, not when Nosana updated rewards. Unknown is not zero.
+Approved update downloads can continue across screen changes, with downloaded MB,
+total MB and percentage; installation still needs your action.
 
 Open a saved fleet and choose **Enable / repair monitoring** once if it is not
 already enabled. Existing enabled monitoring picks up these IP reads after the

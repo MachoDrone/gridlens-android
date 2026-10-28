@@ -360,7 +360,7 @@ public final class SshDiscoveryTest {
                 fixture.outputs.put(DiscoveryPolicy.bindingAddressCommand(binding, false), binding.address + "\n");
             }
             fixture.outputs.put(PcMetadata.ADDRESSES_COMMAND, "192.168.3.20 172.17.0.1\n");
-            fixture.outputs.put(PublicIpReader.command(first, false), "8.8.8.8\n");
+            fixture.outputs.put(PublicIpReader.command(first, false), "HTTP/1.1 200 OK\r\n\r\n8.8.8.8\n");
             AtomicInteger lookups = new AtomicInteger();
             SshDiscovery.NetworkLookup lookup = (binding, runner) -> {
                 assertSame(first, binding); lookups.incrementAndGet();
@@ -372,7 +372,7 @@ public final class SshDiscoveryTest {
             assertEquals(1, lookups.get()); assertEquals(result.get(0).networkJson, result.get(1).networkJson);
             PublicIpReader.Observation observed = PublicIpReader.parse(result.get(0).networkJson);
             assertEquals("8.8.8.8", observed.publicIp); assertEquals("192.168.3.20", observed.privateIp); assertEquals(1000, observed.observedAtMs);
-            assertFalse(fixture.commands.contains(PublicIpReader.command(second, false)));
+            assertEquals(1, Collections.frequency(fixture.commands, PublicIpReader.command(4)));
         }
     }
     @Test public void publicIpLookupNeverRunsWhenHostOrNodeIdentityFailsVerification() throws Exception {
@@ -492,6 +492,69 @@ public final class SshDiscoveryTest {
                     }, () -> true, (node, runner) -> PublicIpReader.parse(network));
             assertEquals(List.of(first.address, second.address), delivered);
             assertEquals(2, results.size());
+        }
+    }
+
+    @Test public void independentPcReadNeedsNoRunningNodeAndUsesOnlyHostCommands() throws Exception {
+        try (Fixture fixture = new Fixture(); SshDiscovery.Credential credential = new SshDiscovery.Credential("operator", bytes("fixture-password"), null, null)) {
+            fixture.outputs.clear();
+            fixture.outputs.put(PcMetadata.ADDRESSES_COMMAND, "10.0.0.20");
+            fixture.outputs.put(PublicIpReader.command(4), "HTTP/1.1 200 OK\r\n\r\n8.8.8.8");
+            SshDiscovery.NetworkResult result = SshDiscovery.readNetwork(fixture, fixture.candidate(), SshDiscovery.inspectIdentity(fixture, fixture.candidate()), credential, () -> true);
+            assertEquals("active", result.status); assertEquals("8.8.8.8", result.observation.publicIp);
+            assertEquals("10.0.0.20", result.observation.privateIp);
+            assertEquals(List.of(PcMetadata.ADDRESSES_COMMAND, PublicIpReader.command(4)), fixture.commands);
+            assertFalse(String.join("\n", fixture.commands).matches("(?s).*(docker|podman|sudo).*"));
+        }
+    }
+    @Test public void independentPcReadPreservesIdentityApprovalAndCredentialRejections() throws Exception {
+        try (Fixture fixture = new Fixture(); Fixture other = new Fixture();
+                SshDiscovery.Credential good = new SshDiscovery.Credential("operator", bytes("fixture-password"), null, null);
+                SshDiscovery.Credential bad = new SshDiscovery.Credential("operator", bytes("incorrect"), null, null)) {
+            SshDiscovery.Identity trusted = SshDiscovery.inspectIdentity(fixture, fixture.candidate());
+            assertEquals("identity-changed", SshDiscovery.readNetwork(other, other.candidate(), trusted, good, () -> true).status);
+            assertEquals(0, other.passwords.get()); assertTrue(other.commands.isEmpty());
+            assertEquals("cancelled", SshDiscovery.readNetwork(fixture, fixture.candidate(), trusted, good, () -> false).status);
+            assertEquals(0, fixture.passwords.get());
+            SshDiscovery.NetworkResult refused = SshDiscovery.readNetwork(fixture, fixture.candidate(), trusted, bad, () -> true);
+            assertEquals("credentials-required", refused.status); assertNull(refused.observation);
+            assertEquals(1, fixture.passwords.get()); assertTrue(fixture.commands.isEmpty());
+        }
+    }
+    @Test public void independentPcReadCancelsBeforeCurlOnRevocationAndDuringBlockedCommand() throws Exception {
+        try (Fixture fixture = new Fixture(); SshDiscovery.Credential credential = new SshDiscovery.Credential("operator", bytes("fixture-password"), null, null)) {
+            SshDiscovery.Identity identity = SshDiscovery.inspectIdentity(fixture, fixture.candidate());
+            SshDiscovery.NetworkResult revoked = SshDiscovery.readNetwork(fixture, fixture.candidate(), identity, credential,
+                    () -> !fixture.commands.contains(PcMetadata.ADDRESSES_COMMAND));
+            assertEquals("cancelled", revoked.status); assertNull(revoked.observation);
+            assertEquals(List.of(PcMetadata.ADDRESSES_COMMAND), fixture.commands);
+            fixture.commands.clear(); fixture.stalled.add(PublicIpReader.command(4));
+            ExecutorService worker = Executors.newSingleThreadExecutor();
+            try {
+                Future<SshDiscovery.NetworkResult> active = worker.submit(() -> SshDiscovery.readNetwork(fixture, fixture.candidate(), identity, credential, () -> true));
+                long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while (!fixture.commands.contains(PublicIpReader.command(4)) && System.nanoTime() < until) Thread.sleep(5);
+                assertTrue(fixture.commands.contains(PublicIpReader.command(4))); fixture.cancelled.set(true);
+                SshDiscovery.NetworkResult cancelled = active.get(3, TimeUnit.SECONDS);
+                assertEquals("cancelled", cancelled.status); assertNull(cancelled.observation);
+                assertFalse(fixture.commands.contains(PublicIpReader.command(6)));
+            } finally { worker.shutdownNow(); }
+        }
+    }
+    @Test public void independentPcReadRetainsProviderWaitFromOversizeBodyAndAfterRevocation() throws Exception {
+        try (Fixture fixture = new Fixture(); SshDiscovery.Credential credential = new SshDiscovery.Credential("operator", bytes("fixture-password"), null, null)) {
+            SshDiscovery.Identity identity = SshDiscovery.inspectIdentity(fixture, fixture.candidate());
+            fixture.outputs.put(PublicIpReader.command(4), "HTTP/1.1 429 Refused\r\nRetry-After: 7200\r\n\r\n" + "secret".repeat(4000));
+            SshDiscovery.NetworkResult oversized = SshDiscovery.readNetwork(fixture, fixture.candidate(), identity, credential, () -> true);
+            assertEquals("http-refusal", oversized.observation.publicFailure); assertEquals(Integer.valueOf(429), oversized.observation.httpStatus);
+            assertTrue(oversized.observation.retryAtMs >= System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(119));
+            assertFalse(oversized.observation.json().contains("secret")); assertFalse(fixture.commands.contains(PublicIpReader.command(6)));
+            fixture.commands.clear(); fixture.outputs.put(PublicIpReader.command(4), "HTTP/1.1 429 Refused\r\nRetry-After: 7200\r\n\r\n");
+            SshDiscovery.NetworkResult cancelled = SshDiscovery.readNetwork(fixture, fixture.candidate(), identity, credential,
+                    () -> !fixture.commands.contains(PublicIpReader.command(4)));
+            assertEquals("cancelled", cancelled.status); assertNotNull(cancelled.observation);
+            assertEquals(oversized.observation.publicFailure, cancelled.observation.publicFailure);
+            assertTrue(cancelled.observation.retryAtMs > System.currentTimeMillis());
         }
     }
 

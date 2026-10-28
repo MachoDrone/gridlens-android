@@ -268,6 +268,53 @@ final class DiscoveryStore {
             saveCredentials(candidate); return;
         }
     }
+    /** PC trust failure pauses connections without changing source permissions or history. */
+    synchronized void restrictPcConnection(JSONObject expected, String status) throws Exception {
+        if (!"identity-changed".equals(status)) throw new IllegalArgumentException("PC identity restriction required");
+        JSONObject candidate = new JSONObject(credentials().toString());
+        JSONArray targets = candidate.optJSONArray("monitoringTargets");
+        if (targets == null) return;
+        for (int i = 0; i < targets.length(); i++) {
+            JSONObject current = targets.getJSONObject(i);
+            if (!sameAuthorization(current, expected)) continue;
+            current.put("paused", true).put("status", status);
+            saveCredentials(candidate); return;
+        }
+    }
+    /** IP scheduler state changes no node/rewards/GPU or authorization fields. */
+    synchronized void recordNetworkAttempt(JSONObject expected, long at) throws Exception {
+        JSONObject candidate = new JSONObject(credentials().toString());
+        JSONArray targets = candidate.optJSONArray("monitoringTargets");
+        if (targets == null) return;
+        for (int i = 0; i < targets.length(); i++) {
+            JSONObject current = targets.getJSONObject(i);
+            if (!sameAuthorization(current, expected)) continue;
+            current.put("lastNetworkAttemptAtMs", at).put("networkRetryAtMs", at + PublicNetworkCache.FAILURE_RETRY_MS);
+            saveCredentials(candidate); return;
+        }
+    }
+    private static boolean sameAuthorization(JSONObject current, JSONObject expected) throws Exception {
+        return current.getString("id").equals(expected.getString("id"))
+                && current.optString("authorizationId").equals(expected.optString("authorizationId"))
+                && current.getString("credentialId").equals(expected.getString("credentialId"))
+                && current.getString("keyBase64").equals(expected.getString("keyBase64"));
+    }
+    /** A completed worker cannot replace a concurrent revocation or IP-lane restriction. */
+    synchronized void saveMonitoringProgress(JSONObject target) throws Exception {
+        JSONArray targets = monitoringTargets();
+        for (int i = 0; i < targets.length(); i++) {
+            JSONObject current = targets.getJSONObject(i);
+            if (!sameAuthorization(current, target)) continue;
+            if (!current.optBoolean("approved") || current.optBoolean("aliasReplaced")) return;
+            JSONObject copy = new JSONObject(target.toString());
+            for (String field : new String[]{"lastNetworkAttemptAtMs", "networkRetryAtMs"})
+                if (current.has(field)) copy.put(field, Math.max(copy.optLong(field), current.optLong(field)));
+            if (current.optBoolean("paused") && ("identity-changed".equals(current.optString("status"))
+                    || "credentials-required".equals(current.optString("status")) || "paused".equals(current.optString("status"))))
+                copy.put("paused", true).put("status", current.getString("status"));
+            saveMonitoringTarget(copy); return;
+        }
+    }
     synchronized void saveMonitoringTarget(JSONObject target) throws Exception {
         MonitoringController.validateTarget(target);
         if (target.optBoolean("approved") && credential(target.getString("credentialId")) == null)

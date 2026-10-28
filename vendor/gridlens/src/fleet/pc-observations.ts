@@ -13,11 +13,16 @@ export interface NodeGpuObservation {
   intervalSeconds: 15; fromAtMs: number; toAtMs: number; truncated: boolean; clockTrusted: boolean; samples: GpuSample[];
 }
 export interface MonitoringState { status: string; checkedAtMs: number }
+export type PublicNetworkFailure = "missing-curl" | "dns" | "connection" | "timeout" | "tls" | "http-refusal" | "invalid-response";
 export interface PcNetworkObservation {
-  schema: 1; observedAtMs: number; status: "ok" | "unavailable"; source: "node-egress-ipify";
+  schema: 1; observedAtMs: number; status: "ok" | "unavailable"; source: "node-egress-ipify" | "pc-egress-ipify";
   publicIp: string | null; publicObservedAtMs: number | null;
   privateIp: string | null; privateObservedAtMs: number | null;
+  publicFailure?: PublicNetworkFailure; privateFailure?: "interface-read-failure";
+  httpStatus?: number; retryAtMs?: number;
 }
+export interface PcNetworkUpdate { pcId: string; network: PcNetworkObservation }
+export interface PcNetworkRecord extends PcNetworkUpdate { receivedAtMs: number; lastGoodNetwork?: PcNetworkObservation }
 export interface PcUpdate { address: string; binding: NodeBinding; rewards?: RewardObservation; gpu?: NodeGpuObservation; monitoring?: MonitoringState; network?: PcNetworkObservation }
 export interface PcObservation extends PcUpdate { receivedAtMs: number; lastGoodRewards?: RewardObservation; lastGoodNetwork?: PcNetworkObservation }
 export interface PcObservationIndex extends Omit<PcObservation, "gpu"> { gpu?: Omit<NodeGpuObservation, "samples"> & { sampleCount: number } }
@@ -50,15 +55,36 @@ export function publicIp(value: string): boolean {
     && !(a === 203 && b === 0 && c === 113);
 }
 export function parsePcNetwork(value: unknown): PcNetworkObservation {
-  const input = object(value, ["schema", "observedAtMs", "status", "source", "publicIp", "publicObservedAtMs", "privateIp", "privateObservedAtMs"]);
-  if (input.schema !== 1 || input.source !== "node-egress-ipify" || !time(input.observedAtMs) || input.observedAtMs === 0
-    || !["ok", "unavailable"].includes(String(input.status))) throw new Error("Invalid PC network observation.");
+  const input = object(value, ["schema", "observedAtMs", "status", "source", "publicIp", "publicObservedAtMs", "privateIp", "privateObservedAtMs"],
+    ["publicFailure", "privateFailure", "httpStatus", "retryAtMs"]);
+  if (input.schema !== 1 || typeof input.source !== "string" || !["node-egress-ipify", "pc-egress-ipify"].includes(input.source)
+    || !time(input.observedAtMs) || input.observedAtMs === 0 || typeof input.status !== "string"
+    || !["ok", "unavailable"].includes(input.status)) throw new Error("Invalid PC network observation.");
   for (const [field, at, valid] of [["publicIp", "publicObservedAtMs", publicIp], ["privateIp", "privateObservedAtMs", privateIp]] as const) {
     if (input[field] === null ? input[at] !== null : typeof input[field] !== "string" || !valid(input[field])
       || !time(input[at]) || input[at] === 0 || input[at] > input.observedAtMs) throw new Error("Invalid observed IP address.");
   }
   if ((input.status === "ok") !== (input.publicIp !== null)) throw new Error("Invalid public IP observation status.");
+  if (input.publicFailure !== undefined && (input.publicIp !== null || typeof input.publicFailure !== "string"
+    || !["missing-curl", "dns", "connection", "timeout", "tls", "http-refusal", "invalid-response"].includes(input.publicFailure)))
+    throw new Error("Invalid public IP failure.");
+  if (input.privateFailure !== undefined && (input.privateIp !== null || input.privateFailure !== "interface-read-failure")) throw new Error("Invalid private IP failure.");
+  if (input.httpStatus !== undefined && (input.publicFailure !== "http-refusal" || typeof input.httpStatus !== "number"
+    || !Number.isInteger(input.httpStatus) || input.httpStatus < 100 || input.httpStatus > 599)) throw new Error("Invalid IP HTTP status.");
+  if (input.retryAtMs !== undefined && (!time(input.retryAtMs) || input.retryAtMs === 0)) throw new Error("Invalid IP retry deadline.");
   return { ...input, publicIp: input.publicIp === null ? null : normalizedIp(input.publicIp), privateIp: input.privateIp === null ? null : normalizedIp(input.privateIp) } as PcNetworkObservation;
+}
+export function parsePcNetworkUpdate(value: unknown): PcNetworkUpdate {
+  const input = object(value, ["pcId", "network"]);
+  if (typeof input.pcId !== "string" || !/^[a-f0-9]{64}$/.test(input.pcId)) throw new Error("Invalid observed PC.");
+  return { pcId: input.pcId, network: parsePcNetwork(input.network) };
+}
+export function parsePcNetworkRecord(value: unknown): PcNetworkRecord {
+  const input = object(value, ["pcId", "network", "receivedAtMs"], ["lastGoodNetwork"]);
+  if (!time(input.receivedAtMs)) throw new Error("Invalid network receipt time.");
+  const output: PcNetworkRecord = { ...parsePcNetworkUpdate({ pcId: input.pcId, network: input.network }), receivedAtMs: input.receivedAtMs };
+  if (input.lastGoodNetwork !== undefined) output.lastGoodNetwork = parsePcNetwork(input.lastGoodNetwork);
+  return output;
 }
 export function networkView(record: Pick<PcObservation, "network" | "lastGoodNetwork"> | undefined, now: number) {
   const latest = record?.network, retained = record?.lastGoodNetwork;

@@ -54,32 +54,46 @@ Release signing material belongs only in protected local storage or GitHub Actio
 secrets. Do not force-push. Keep the application ID and signing identity stable.
 
 Android PC text matches the normal table style: 11px, regular weight. IP cycles
-hidden, full public/private, public suffix and private suffix without leading
-dots; IPv6 stays complete. Rewards use rounded whole-NOS links in #0f5c2b with
-the same regular text weight as NOS #15803d, making the darker color visible.
-All known reward amounts keep that green, including retained amounts, without
-clock icons. Preserve read status and label timestamps as last read by GridLens,
-not when Nosana updated rewards. Never
-represent recoloring as a successful refresh. Unknown amounts remain unknown.
-Exact reward amounts and source times remain unchanged for sorting and details;
-unknown is not zero. Public IP comes from the fixed native ipify read inside one
-verified node per PC, preferring external IPv4 with an IPv6 fallback. Successful
-public readings are shared for 30 minutes; failed attempts become eligible to
-retry after one minute while approved monitoring is active, subject to longer
-provider-requested waits. Private addresses come
-from PC interfaces. Never substitute the phone's IP or SSH ingress for measured
-public egress; preserve independent retained timestamps on failure.
-Shared NAT addresses are valid on every independently observed PC/host; never
-deduplicate rows by their public IP. Read public egress even without a private
-interface, showing public IP / − when private is unknown. Verify bindings and
-deliver IP before slower rewards/GPU collection. Deliver network, rewards and GPU
-as independent observations through the existing API so rejection of a malformed
-source cannot reject the others. GPU recorder access failures must not be
-treated as SSH credential rejection or discard successful IP/reward observations.
-Cancelled authentication is not proof of rejected credentials. Old ambiguous
-credential pauses require an explicit native saved-connection check before
-resuming existing approval; preserve real denials, revoked permissions, trust pins,
-wallet suspensions and provider deadlines.
+hidden → full public/private → full public → public last octet → full private →
+private last octet → hidden. IPv4 last octets include a leading dot; IPv6 stays
+complete. Missing values use − and combined mode always preserves both positions.
+Keep the existing preference key and dot/full/ext/int meanings, adding
+public-full/private-full. Invalid or absent preferences default to hidden. Sorting
+uses full addresses; display changes start no requests.
+Rewards use rounded whole-NOS links in #0f5c2b with regular text weight, including
+retained amounts, without clock icons. Preserve exact amounts, read status and
+source times; timestamps mean last read by GridLens, not when Nosana updated them.
+Unknown amounts remain unknown.
+
+Public IP comes directly from installed host curl on each approved PC using its
+saved pinned SSH identity, without sudo or container commands. Curl disables its
+startup configuration, preserves TLS verification, rejects redirects and bounds
+responses. Each request has a ten-second limit. Prefer IPv4 at api.ipify.org;
+only connectivity failures may fall back to IPv6 at api6.ipify.org. HTTP refusals
+and provider-requested waits never trigger fallback. Install no packages. Private
+addresses come independently from PC interfaces. Never substitute the phone's IP
+or SSH ingress for measured public egress. Shared NAT is valid across PCs.
+
+Reserve one of the existing four native connection slots for independently
+scheduled PC IP reads; rewards/GPU retain three. Node-binding failures cannot
+block IP work. Genuine SSH rejection, changed trust, missing/revoked approval and
+manual pauses remain authoritative across both lanes. Public successes stay cached
+for thirty minutes; failures become eligible after one minute, preserving longer
+provider waits. Background/scenario changes cancel collection. Retry failed local
+delivery from the cached observation without repeating curl or advancing time.
+
+Schema-1 /mobile/observations accepts a network-only {pcId,network} update, validated
+against saved fleet PC metadata. Store these readings separately by fleet and PC;
+share them with all currently associated hosts without changing node bindings,
+rewards, GPU history or node-monitoring status. Retain old node-egress observations,
+source labels, times and deadlines. Public/private failures are bounded categories;
+never expose command output, credentials or private keys.
+
+GPU recorder access failures must not be treated as SSH credential rejection or
+discard successful IP/reward observations. Cancelled authentication is not proof
+of rejection. Old ambiguous credential pauses require an explicit native saved
+connection check before resuming approval; preserve real denials, revoked
+permissions, trust pins, wallet suspensions and provider deadlines.
 
 Keep the installed APK version visible in the native toolbar and update outcomes.
 Update color is not the only status: show last successful check/result separately

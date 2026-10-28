@@ -1,108 +1,102 @@
 import assert from "node:assert/strict";
-import { EventEmitter } from "node:events";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawnSync } from "node:child_process";
-import { isIP } from "node:net";
+import { spawn, spawnSync } from "node:child_process";
+import { createServer } from "node:https";
+import type { AddressInfo } from "node:net";
 import { runInNewContext } from "node:vm";
 import test from "node:test";
 
-const java = readFileSync(new URL("../android/app/src/main/java/com/gridlens/android/PublicIpReader.java", import.meta.url), "utf8");
-const expression = java.split("static final String SCRIPT = ")[1]!.split("private static final Pattern STORED")[0]!;
-const script = [...expression.matchAll(/"(?:\\.|[^"\\])*"/g)].map(match => JSON.parse(match[0]) as string).join("");
-
-function fixture(family = "4") {
-  const request = new EventEmitter();
-  let callback: ((response: EventEmitter & { statusCode: number; headers: Record<string, string>; resume(): void }) => void) | undefined;
-  let timeout: (() => void) | undefined;
-  let options: Record<string, unknown> | undefined;
-  let output = "";
-  const exit = (code: number): never => { throw new Error(`exit:${code}`); };
-  runInNewContext(script, {
-    Buffer,
-    require: (name: string) => {
-      if (name === "node:net") return { isIP };
-      assert.equal(name, "node:https");
-      return { get: (args: Record<string, unknown>, next: typeof callback) => { options = args; callback = next; return request; } };
-    },
-    setTimeout: (next: () => void, ms: number) => { assert.equal(ms, 5000); timeout = next; return 1; },
-    clearTimeout: (id: number) => { assert.equal(id, 1); timeout = undefined; },
-    process: { exit, argv: ["node", family, "https://example.invalid"], stdout: { write: (value: string, complete?: () => void) => { output += value; complete?.(); } } },
+// Execute the production command expression, with only its transport redirected
+// by an isolated PATH wrapper. Actual curl performs TLS, HTTP, family selection,
+// configuration suppression, body bounds and the ten-second request timeout.
+const java = await readFile(new URL("../android/app/src/main/java/com/gridlens/android/PublicIpReader.java", import.meta.url), "utf8");
+const commandMethod = java.split("static String command(int family) {")[1]!.split("\n    }")[0]!;
+const expression = commandMethod.match(/return ([\s\S]*);\s*$/)![1]!;
+const command = (family: 4 | 6): string => runInNewContext(expression, { family }) as string;
+const execute = (text: string, env: NodeJS.ProcessEnv): Promise<{ code: number | null; stdout: string; stderr: string }> =>
+  new Promise((accept, reject) => {
+    const child = spawn("/bin/sh", ["-c", text], { env, timeout: 15_000 });
+    let stdout = "", stderr = "";
+    child.stdout.on("data", data => { stdout += String(data); });
+    child.stderr.on("data", data => { stderr += String(data); });
+    child.on("error", reject);
+    child.on("close", code => accept({ code, stdout, stderr }));
   });
-  return {
-    options: () => options,
-    output: () => output,
-    timeout: () => timeout?.(),
-    error: () => request.emit("error", new Error("fixture certificate failure")),
-    respond: (statusCode: number, body: string, headers: Record<string, string> = {}) => {
-      const response = Object.assign(new EventEmitter(), { statusCode, headers, resume() {} });
-      callback!(response);
-      response.emit("data", Buffer.from(body)); response.emit("end");
-    },
-  };
-}
 
-test("actual native helper measures NAT IPv4 with one fixed bounded TLS request", () => {
-  const source = fixture();
-  const options = source.options()!;
-  assert.equal(options.hostname, "api.ipify.org"); assert.equal(options.family, 4); assert.equal(options.port, 443);
-  assert.equal(options.path, "/"); assert.equal(options.method, "GET"); assert.equal(options.agent, false);
-  assert.equal(options.maxHeaderSize, 8192);
-  assert.deepEqual(Object.keys(options.headers as object), ["Accept"]);
-  assert.equal((options.headers as Record<string, string>).Accept, "text/plain");
-  assert.equal(options.rejectUnauthorized, undefined); // Keep Node's certificate verification default.
-  source.respond(200, "8.8.8.8\n"); assert.equal(source.output(), "8.8.8.8\n");
-  source.timeout(); // Successful completion cleared the total deadline.
-});
-
-test("native-approved IPv6 fallback has a fixed destination and refuses another address family", () => {
-  const ipv6 = fixture("6");
-  assert.equal(ipv6.options()!.hostname, "api64.ipify.org"); assert.equal(ipv6.options()!.family, 6);
-  ipv6.respond(200, "2606:4700::1111"); assert.equal(ipv6.output(), "2606:4700::1111\n");
-  assert.throws(() => fixture("https://example.invalid"), /exit:13/);
-  assert.throws(() => fixture().respond(200, "2606:4700::1111"), /exit:13/);
-  assert.throws(() => fixture("6").respond(200, "8.8.8.8"), /exit:13/);
-});
-
-test("redirects, non-IP bodies, overflow and TLS failure cannot become an address", () => {
-  for (const [status, body] of [[301, "8.8.8.8"], [503, "8.8.8.8"], [200, "{\"ip\":\"8.8.8.8\"}"], [200, "x".repeat(129)]] as const) {
-    const source = fixture(); assert.throws(() => source.respond(status, body), status === 200 ? /exit:13/ : /exit:12/); assert.equal(source.output(), "");
-  }
-  const tls = fixture(); assert.throws(() => tls.error(), /exit:10/); assert.equal(tls.output(), "");
-  const stalled = fixture(); assert.throws(() => stalled.timeout(), /exit:11/); assert.equal(stalled.output(), "");
-});
-
-test("HTTP refusal exports only bounded retry metadata and never starts another request", () => {
-  const throttled = fixture();
-  assert.throws(() => throttled.respond(429, "untrusted response", { "retry-after": "3600" }), /exit:12/);
-  assert.equal(throttled.output(), "retry-seconds:3600\n");
-  const dated = fixture();
-  assert.throws(() => dated.respond(503, "untrusted response", { "retry-after": "Wed, 01 Jan 2031 00:00:00 GMT" }), /exit:12/);
-  assert.equal(dated.output(), `retry-at:${Date.parse("Wed, 01 Jan 2031 00:00:00 GMT")}\n`);
-  const invalid = fixture();
-  assert.throws(() => invalid.respond(403, "secret fixture", { "retry-after": "2031-01-01" }), /exit:12/);
-  assert.equal(invalid.output(), "");
-});
-
-test("the shipped script also works through real Node -e argument and stdout handling", () => {
-  const directory = mkdtempSync(join(tmpdir(), "gridlens-public-ip-script-"));
+test("actual host curl commands use isolated IPv4/IPv6 HTTPS with TLS, no redirects/config, bounds and waits", { timeout: 40_000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "gridlens-host-curl-"));
+  const cert = join(directory, "cert.pem"), key = join(directory, "key.pem");
+  const generated = spawnSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key,
+    "-out", cert, "-days", "1", "-subj", "/CN=api.ipify.org", "-addext", "subjectAltName=DNS:api.ipify.org,DNS:api6.ipify.org"], { stdio: "ignore" });
+  assert.equal(generated.status, 0, "isolated TLS certificate generation");
+  let mode = "nat";
+  const requests: { host: string | undefined; path: string | undefined; family: string | undefined }[] = [];
+  const server = createServer({ key: await readFile(key), cert: await readFile(cert) }, (request, response) => {
+    requests.push({ host: request.headers.host, path: request.url, family: request.socket.remoteFamily });
+    if (mode === "timeout") return;
+    if (mode === "redirect") { response.writeHead(302, { Location: "https://example.invalid/forbidden" }); response.end(); return; }
+    if (mode === "refused") { response.writeHead(429, { "Retry-After": "7200" }); response.end("wait"); return; }
+    if (mode === "oversize") { response.writeHead(200, { "Content-Length": "129" }); response.end("x".repeat(129)); return; }
+    response.end(mode === "ipv6" ? "2606:4700::1111\n" : mode === "malformed" ? "not-an-ip\n" : "8.8.8.8\n");
+  });
+  server.on("tlsClientError", () => {});
+  await new Promise<void>((accept, reject) => { server.once("error", reject); server.listen(0, "::", accept); });
+  const port = (server.address() as AddressInfo).port;
   try {
-    const preload = join(directory, "https-fixture.cjs");
-    writeFileSync(preload, `const {EventEmitter}=require('node:events');
-require('node:https').get=(options, callback)=>{
-  if(options.hostname!==(options.family===4?'api.ipify.org':'api64.ipify.org'))throw Error('Unexpected destination');
-  const request=new EventEmitter();
-  queueMicrotask(()=>{const response=Object.assign(new EventEmitter(),{statusCode:200,headers:{}});callback(response);
-    response.emit('data',Buffer.from(options.family===4?'8.8.8.8':'2606:4700::1111'));response.emit('end');});
-  return request;
-};`);
-    for (const [family, address] of [["4", "8.8.8.8"], ["6", "2606:4700::1111"]]) {
-      const child = spawnSync(process.execPath, ["--require", preload, "-e", script, family!], {
-        encoding: "utf8", timeout: 7000, maxBuffer: 2048, env: { NODE_NO_WARNINGS: "1" },
-      });
-      assert.equal(child.status, 0, child.stderr);
-      assert.equal(child.stdout, `${address}\n`);
-    }
-  } finally { rmSync(directory, { recursive: true, force: true }); }
+    await writeFile(join(directory, "curl"), `#!${process.execPath}
+const {spawnSync}=require('node:child_process');
+const args=process.argv.slice(2);
+if(args[0]!=='-q')process.exit(99);
+const family=args[1]; const host=family==='-4'?'api.ipify.org':'api6.ipify.org';
+if(!['-4','-6'].includes(family)||args[args.length-1]!=='https://'+host)process.exit(98);
+const transport=host+':443:'+(family==='-4'?'127.0.0.1':'[::1]')+':${port}';
+const trust=process.env.FIXTURE_UNTRUSTED==='yes'?[]:['--cacert',${JSON.stringify(cert)}];
+const r=spawnSync('/usr/bin/curl',['-q',...trust,'--noproxy','*','--connect-to',transport,...args.slice(1)],{stdio:'inherit'});
+process.exit(r.status??97);
+`, { mode: 0o700 });
+    // If startup config were read, these options could permit redirects or add
+    // requests. The production first -q must suppress it completely.
+    await writeFile(join(directory, ".curlrc"), 'insecure\nlocation\nurl = "https://example.invalid/forbidden"\n');
+    const env = { ...process.env, PATH: directory, CURL_HOME: directory, NODE_OPTIONS: "" };
+    const nat = await execute(command(4), env);
+    assert.equal(nat.code, 0, nat.stderr); assert.match(nat.stdout, /HTTP\/1\.1 200/); assert.match(nat.stdout, /8\.8\.8\.8\n$/);
+    const sharedNat = await execute(command(4), env);
+    assert.equal(sharedNat.code, 0); assert.match(sharedNat.stdout, /8\.8\.8\.8\n$/);
+    assert.deepEqual(requests.map(value => value.host), ["api.ipify.org", "api.ipify.org"]);
+    mode = "ipv6";
+    const ipv6 = await execute(command(6), env);
+    assert.equal(ipv6.code, 0, ipv6.stderr); assert.match(ipv6.stdout, /2606:4700::1111\n$/);
+    assert.equal(requests.at(-1)!.host, "api6.ipify.org"); assert.equal(requests.at(-1)!.family, "IPv6");
+    mode = "redirect";
+    const redirect = await execute(command(4), env);
+    assert.equal(redirect.code, 0); assert.match(redirect.stdout, /HTTP\/1\.1 302/);
+    assert.equal(requests.length, 4, "redirect must not dispatch another request");
+    mode = "refused";
+    const refused = await execute(command(4), env);
+    assert.match(refused.stdout, /HTTP\/1\.1 429/); assert.match(refused.stdout, /Retry-After: 7200/);
+    mode = "oversize";
+    assert.equal((await execute(command(4), env)).code, 63, "curl must reject bodies over 128 bytes");
+    mode = "malformed";
+    assert.match((await execute(command(4), env)).stdout, /not-an-ip/, "bounded invalid body is supplied to native validation");
+    assert.equal((await execute(command(4), { ...env, FIXTURE_UNTRUSTED: "yes" })).code, 60, "TLS must reject an untrusted certificate");
+    mode = "timeout";
+    const started = performance.now();
+    assert.equal((await execute(command(4), env)).code, 28);
+    assert.ok(performance.now() - started >= 9000 && performance.now() - started < 14000, "actual curl ten-second total deadline");
+    assert.ok(requests.every(value => value.path === "/"));
+    assert.doesNotMatch(command(4), /sudo|docker|podman|node |--insecure|--location/);
+  } finally {
+    server.closeAllConnections(); await new Promise<void>(accept => server.close(() => accept()));
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("missing host curl fails explicitly without package or container fallback", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "gridlens-no-curl-"));
+  try {
+    const result = await execute(command(4), { ...process.env, PATH: directory });
+    assert.equal(result.code, 127); assert.equal(result.stdout, "");
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });

@@ -1,13 +1,15 @@
 import { appendFile, mkdir, open, readdir, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { atomicPrivateJson, parseUniqueJson, FLEET_ID } from "./saved-fleets.ts";
-import { MAX_GPU_SAMPLES, parsePcUpdate, parseSavedObservation, sameBinding } from "../vendor/gridlens/src/fleet/pc-observations.ts";
-import type { PcUpdate, PcObservation, PcObservationIndex, NodeGpuObservation, PcNetworkObservation } from "../vendor/gridlens/src/fleet/pc-observations.ts";
+import { MAX_GPU_SAMPLES, parsePcNetworkRecord, parsePcNetworkUpdate, parsePcUpdate, parseSavedObservation, sameBinding } from "../vendor/gridlens/src/fleet/pc-observations.ts";
+import type { PcUpdate, PcObservation, PcObservationIndex, NodeGpuObservation, PcNetworkObservation, PcNetworkRecord, PcNetworkUpdate } from "../vendor/gridlens/src/fleet/pc-observations.ts";
 
 const MAX_FILE = 4 * 1024 * 1024;
 const MAX_CACHE = 64 * 1024 * 1024;
 const MAX_JOURNALS = 128 * 1024 * 1024;
 const MAX_HOSTS = 2048;
+const MAX_NETWORK_FILE = 8192;
+const MAX_NETWORK_CACHE = MAX_HOSTS * MAX_NETWORK_FILE;
 const keyOf = (fleet: string, address: string): string => `${fleet}--${address}`;
 function knownNetwork(previous: PcNetworkObservation | undefined, latest: PcNetworkObservation): PcNetworkObservation | undefined {
   const publicNew = latest.publicIp !== null && (latest.publicObservedAtMs ?? 0) >= (previous?.publicObservedAtMs ?? 0);
@@ -17,8 +19,18 @@ function knownNetwork(previous: PcNetworkObservation | undefined, latest: PcNetw
   if (publicIp === null && privateIp === null) return undefined;
   const publicObservedAtMs = publicNew ? latest.publicObservedAtMs : previous?.publicObservedAtMs ?? null;
   const privateObservedAtMs = privateNew ? latest.privateObservedAtMs : previous?.privateObservedAtMs ?? null;
-  return { schema: 1, source: "node-egress-ipify", status: publicIp === null ? "unavailable" : "ok",
+  return { schema: 1, source: publicNew || !previous?.publicIp ? latest.source : previous.source, status: publicIp === null ? "unavailable" : "ok",
     publicIp, privateIp, publicObservedAtMs, privateObservedAtMs, observedAtMs: Math.max(publicObservedAtMs ?? 0, privateObservedAtMs ?? 0) };
+}
+function applyNetwork(prior: PcNetworkRecord | undefined, update: PcNetworkUpdate, receivedAtMs: number): PcNetworkRecord {
+  let network = structuredClone(update.network);
+  const retryAtMs = Math.max(network.retryAtMs ?? 0, prior?.network.retryAtMs ?? 0);
+  if (network.observedAtMs > receivedAtMs + 5000) network = { schema: 1, source: network.source, status: "unavailable", observedAtMs: receivedAtMs,
+    publicIp: null, privateIp: null, publicObservedAtMs: null, privateObservedAtMs: null, publicFailure: "invalid-response" };
+  if (prior && prior.network.observedAtMs > network.observedAtMs) network = structuredClone(prior.network);
+  if (retryAtMs) network.retryAtMs = retryAtMs;
+  const lastGoodNetwork = knownNetwork(prior?.lastGoodNetwork, network);
+  return { pcId: update.pcId, network, receivedAtMs, ...(lastGoodNetwork ? { lastGoodNetwork } : {}) };
 }
 function mergeGpu(prior: NodeGpuObservation | undefined, update: NodeGpuObservation): NodeGpuObservation {
   if (prior && !update.clockTrusted) return { ...structuredClone(prior), status: update.status, clockTrusted: false };
@@ -40,7 +52,7 @@ function apply(prior: PcObservation | undefined, update: PcUpdate, receivedAtMs:
   }
   if (update.gpu && update.gpu.toAtMs > receivedAtMs + 5000) update.gpu = { ...update.gpu, status: "clock-untrusted", clockTrusted: false,
     samples: update.gpu.samples.filter(sample => sample[0] <= receivedAtMs + 5000) };
-  if (update.network && update.network.observedAtMs > receivedAtMs + 5000) update.network = { schema: 1, source: "node-egress-ipify", status: "unavailable",
+  if (update.network && update.network.observedAtMs > receivedAtMs + 5000) update.network = { schema: 1, source: update.network.source, status: "unavailable",
     observedAtMs: receivedAtMs, publicIp: null, privateIp: null, publicObservedAtMs: null, privateObservedAtMs: null };
   const base = prior && sameBinding(prior.binding, update.binding) ? prior : undefined;
   const next: PcObservation = { ...(base ?? {}), ...structuredClone(update), receivedAtMs };
@@ -62,6 +74,7 @@ function apply(prior: PcObservation | undefined, update: PcUpdate, receivedAtMs:
 /** Durable public observation cache. SSH permission/credentials never enter this store. */
 export class PcObservations {
   private records = new Map<string, PcObservation>();
+  private networkRecords = new Map<string, PcNetworkRecord>();
   private sizes = new Map<string, number>();
   private diskSizes = new Map<string, number>();
   private chain: Promise<void> = Promise.resolve();
@@ -73,7 +86,22 @@ export class PcObservations {
   static async load(directory: string, now = Date.now): Promise<PcObservations> {
     const store = new PcObservations(join(directory, "pc-observations"), now);
     await mkdir(store.directory, { recursive: true, mode: 0o700 });
-    const files = (await readdir(store.directory)).filter(file => /^[a-f0-9-]{36}--[1-9A-HJ-NP-Za-km-z]{32,44}\.jsonl$/.test(file));
+    const entries = await readdir(store.directory);
+    const networkFiles = entries.filter(file => /^[a-f0-9-]{36}--[a-f0-9]{64}\.network\.json$/.test(file));
+    if (networkFiles.length > MAX_HOSTS) { store.error = "PC network cache exceeds its capacity."; store.writable = false; return store; }
+    for (const filename of networkFiles) {
+      try {
+        const key = filename.slice(0, -13), fleet = key.slice(0, 36), pcId = key.slice(38);
+        if (!FLEET_ID.test(fleet)) throw new Error();
+        const file = await open(join(store.directory, filename), "r");
+        let contents: string;
+        try { if ((await file.stat()).size > MAX_NETWORK_FILE) throw new Error(); contents = await file.readFile("utf8"); } finally { await file.close(); }
+        const result = parsePcNetworkRecord(parseUniqueJson(contents));
+        if (result.pcId !== pcId) throw new Error();
+        store.networkRecords.set(key, result);
+      } catch { store.error = "Some saved PC observations could not be read; their files were preserved."; store.writable = false; }
+    }
+    const files = entries.filter(file => /^[a-f0-9-]{36}--[1-9A-HJ-NP-Za-km-z]{32,44}\.jsonl$/.test(file));
     if (files.length > MAX_HOSTS) { store.error = "PC observation cache exceeds its capacity."; store.writable = false; return store; }
     let total = 0;
     for (const filename of files) {
@@ -105,6 +133,12 @@ export class PcObservations {
     return store;
   }
   get(fleet: string, address: string): PcObservation | undefined { return structuredClone(this.records.get(keyOf(fleet, address))); }
+  getNetwork(fleet: string, pcId: string): PcNetworkRecord | undefined { return structuredClone(this.networkRecords.get(keyOf(fleet, pcId))); }
+  listNetworks(fleet: string, pcIds: readonly string[]): PcNetworkRecord[] {
+    return [...new Set(pcIds)].flatMap(pcId => {
+      const record = this.networkRecords.get(keyOf(fleet, pcId)); return record ? [structuredClone(record)] : [];
+    });
+  }
   list(fleet: string, addresses: readonly string[]): PcObservationIndex[] {
     return addresses.flatMap(address => {
       const record = this.records.get(keyOf(fleet, address)); if (!record) return [];
@@ -114,19 +148,42 @@ export class PcObservations {
       return [{ ...structuredClone(rest), gpu: { ...structuredClone(summary), sampleCount: samples.length } }];
     });
   }
-  async update(fleet: string, roster: readonly string[], values: unknown[]): Promise<void> {
+  async update(fleet: string, roster: readonly string[], values: unknown[], savedPcIds: readonly string[] = []): Promise<void> {
     const work = this.chain.then(async () => {
       if (!this.writable) throw new Error("Saved PC observations need recovery; existing records were preserved.");
       if (!FLEET_ID.test(fleet) || values.length < 1 || values.length > 64) throw new Error("Invalid PC observation batch.");
-      const allowed = new Set(roster), seen = new Set<string>();
-      const updates = values.map(value => {
-        const update = parsePcUpdate(value);
-        if (!allowed.has(update.address) || seen.has(update.address)) throw new Error("Choose distinct hosts from this saved fleet.");
-        seen.add(update.address); return update;
-      });
+      const allowed = new Set(roster), allowedPcs = new Set(savedPcIds), seen = new Set<string>(), seenPcs = new Set<string>();
+      const updates: PcUpdate[] = [], networkUpdates: PcNetworkUpdate[] = [];
+      for (const value of values) {
+        if (value && typeof value === "object" && Object.hasOwn(value, "pcId")) {
+          const update = parsePcNetworkUpdate(value);
+          if (!allowedPcs.has(update.pcId) || seenPcs.has(update.pcId)) throw new Error("Choose distinct PCs associated with this saved fleet.");
+          seenPcs.add(update.pcId); networkUpdates.push(update);
+        } else {
+          const update = parsePcUpdate(value);
+          if (!allowed.has(update.address) || seen.has(update.address)) throw new Error("Choose distinct hosts from this saved fleet.");
+          seen.add(update.address); updates.push(update);
+        }
+      }
       const received = this.now();
       const candidate = new Map(this.records);
+      const networkCandidate = new Map(this.networkRecords);
       const sizes = new Map(this.sizes);
+      for (const update of networkUpdates) {
+        const key = keyOf(fleet, update.pcId);
+        let prior = networkCandidate.get(key);
+        // Existing node-egress journals remain untouched. Their successful observations
+        // can seed retention for the same saved PC without renewing the source time.
+        if (!prior) for (const address of roster) {
+          const old = this.records.get(keyOf(fleet, address));
+          if (old?.binding.pcId !== update.pcId) continue;
+          for (const network of [old.lastGoodNetwork, old.network]) if (network)
+            prior = applyNetwork(prior, { pcId: update.pcId, network }, old.receivedAtMs);
+        }
+        networkCandidate.set(key, applyNetwork(prior, update, received));
+      }
+      if (networkCandidate.size > MAX_HOSTS || [...networkCandidate.values()].reduce((sum, value) => sum + Buffer.byteLength(JSON.stringify(value)), 0) > MAX_NETWORK_CACHE)
+        throw new Error("PC network cache is full.");
       for (const update of updates) {
         const key = keyOf(fleet, update.address), next = apply(candidate.get(key), update, received);
         candidate.set(key, next); sizes.set(key, Buffer.byteLength(JSON.stringify(next)));
@@ -143,6 +200,10 @@ export class PcObservations {
       }
       if (total > MAX_CACHE) throw new Error("PC observation cache is full.");
       try {
+        for (const update of networkUpdates) {
+          const key = keyOf(fleet, update.pcId);
+          await atomicPrivateJson(join(this.directory, key + ".network.json"), networkCandidate.get(key)!);
+        }
         for (const key of compacted) {
           await atomicPrivateJson(join(this.directory, key + ".jsonl"), { snapshot: candidate.get(key)! });
           this.diskSizes.set(key, Buffer.byteLength(JSON.stringify({ snapshot: candidate.get(key)! })) + 1);
@@ -182,15 +243,18 @@ export class PcObservations {
         this.writable = false; this.error = "PC observation persistence failed. Reopen the app to reconcile saved records.";
         throw new Error(this.error);
       }
-      this.records = candidate; this.sizes = sizes;
+      this.records = candidate; this.sizes = sizes; this.networkRecords = networkCandidate;
     });
     this.chain = work.catch(() => {}); await work;
   }
-  async forget(fleet: string, roster: readonly string[]): Promise<void> {
-    const keep = new Set(roster);
+  async forget(fleet: string, roster: readonly string[], savedPcIds: readonly string[] = []): Promise<void> {
+    const keep = new Set(roster), keepPcs = new Set(savedPcIds);
     const work = this.chain.then(async () => {
       for (const key of [...this.records.keys()]) if (key.startsWith(fleet + "--") && !keep.has(key.slice(38))) {
         await unlink(join(this.directory, key + ".jsonl")); this.records.delete(key); this.sizes.delete(key); this.diskSizes.delete(key);
+      }
+      for (const key of [...this.networkRecords.keys()]) if (key.startsWith(fleet + "--") && !keepPcs.has(key.slice(38))) {
+        await unlink(join(this.directory, key + ".network.json")); this.networkRecords.delete(key);
       }
     });
     this.chain = work.catch(() => {}); await work;

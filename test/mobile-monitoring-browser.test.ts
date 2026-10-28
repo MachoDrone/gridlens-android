@@ -168,11 +168,18 @@ test("phone Fleet reads exact rewards and retained failures from the native cach
       const style = getComputedStyle(element);
       return [style.fontSize, style.fontWeight, style.color, style.textDecorationLine];
     }), ["11px", "400", "rgb(136, 136, 136)", "none"]);
-    await page.locator('#ip-display-toggle').click(); await exactText(ip, "4");
-    await exactText(row(page, second).locator('td[data-col="ip"]'), "4");
-    await exactText(row(page, publicOnly).locator('td[data-col="ip"]'), "1");
+    await page.locator('#ip-display-toggle').click(); await exactText(ip, "8.8.4.4");
+    await exactText(row(page, second).locator('td[data-col="ip"]'), "8.8.4.4");
+    await exactText(row(page, publicOnly).locator('td[data-col="ip"]'), "1.1.1.1");
     await exactText(row(page, ipv6Host).locator('td[data-col="ip"]'), "2606:4700:4700::1111");
-    await page.locator('#ip-display-toggle').click(); await exactText(ip, "42");
+    await page.locator('#ip-display-toggle').click(); await exactText(ip, ".4");
+    await exactText(row(page, second).locator('td[data-col="ip"]'), ".4");
+    await exactText(row(page, publicOnly).locator('td[data-col="ip"]'), ".1");
+    await exactText(row(page, ipv6Host).locator('td[data-col="ip"]'), "2606:4700:4700::1111");
+    await page.locator('#ip-display-toggle').click(); await exactText(ip, "192.168.9.42");
+    await exactText(row(page, publicOnly).locator('td[data-col="ip"]'), "−");
+    await exactText(row(page, ipv6Host).locator('td[data-col="ip"]'), "fd12:3456::1");
+    await page.locator('#ip-display-toggle').click(); await exactText(ip, ".42");
     await exactText(row(page, publicOnly).locator('td[data-col="ip"]'), "−");
     await exactText(row(page, ipv6Host).locator('td[data-col="ip"]'), "fd12:3456::1");
     await page.locator('#ip-display-toggle').click(); await exactText(ip, "•");
@@ -197,6 +204,13 @@ test("phone Fleet reads exact rewards and retained failures from the native cach
 
     await conditions.filter({ hasText: "Thermal slowdown" }).waitFor();
     assert.equal(await conditions.count(), 4);
+    const presentationOnly = await page.evaluate(address => {
+      const details = document.querySelector(`tr[data-job-history-host="${address}"]`)!;
+      const cells = Array.from(details.querySelectorAll("td"));
+      for (let step = 0; step < 6; step++) document.querySelector<HTMLButtonElement>("#ip-display-toggle")!.click();
+      return details.isConnected && cells.every(cell => cell.isConnected);
+    }, first);
+    assert.equal(presentationOnly, true, "IP display changes leave expanded job/GPU detail rendering and reads alone");
     await exactText(unended, "—");
     assert.match(await unended.getAttribute("aria-label") ?? "", /not currently confirmed/);
     const recordedJob = history(page, first).locator(`tr[data-job="${"1".repeat(31)}4"] td[data-history-col="gpu conditions"]`);

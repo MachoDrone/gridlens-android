@@ -12,13 +12,28 @@ export function mobilePcAddresses(pc: MobilePc | undefined): { internal: string 
   return { internal: pc?.ipAddresses.find(local) ?? null, global: pc?.ipAddresses.find(ip => !local(ip)) ?? null };
 }
 
-/** Reference Android cycle: hidden, public/private, public suffix, private suffix. */
-export function formatMobileIPDisplay(addresses: IPAddresses, mode: IPDisplayMode): { text: string; description: string } {
+/** Keep the original preference values, adding full single-address modes on Android. */
+export type MobileIPDisplayMode = IPDisplayMode | "public-full" | "private-full";
+const MOBILE_IP_MODES = ["dot", "full", "public-full", "ext", "private-full", "int"] as const;
+export function normalizeMobileIPMode(value: unknown): MobileIPDisplayMode {
+  return MOBILE_IP_MODES.find(mode => mode === value) ?? "dot";
+}
+export function nextMobileIPMode(mode: MobileIPDisplayMode): MobileIPDisplayMode {
+  return MOBILE_IP_MODES[(MOBILE_IP_MODES.indexOf(mode) + 1) % MOBILE_IP_MODES.length]!;
+}
+export function mobileIPModeLabel(mode: MobileIPDisplayMode): string {
+  return { dot: "hidden", full: "both full addresses", "public-full": "external IP / NAT",
+    ext: "external last octet", "private-full": "internal IP", int: "internal last octet" }[mode];
+}
+export function formatMobileIPDisplay(addresses: IPAddresses, mode: MobileIPDisplayMode): { text: string; description: string } {
   if (mode === "dot") return { text: "•", description: "IP addresses hidden." };
-  const base = formatIPDisplay(addresses, mode);
-  const description = `External/public: ${addresses.global ?? "not reported"}. Internal/private: ${addresses.internal ?? "not reported"}.`;
-  if (mode === "full") return { text: `${addresses.global ?? "−"} / ${addresses.internal ?? "−"}`, description };
-  return { text: base.text === "—" ? "−" : base.text.replace(/^\.(?=\d+$)/, ""), description };
+  const global = addresses.global?.trim() || null, internal = addresses.internal?.trim() || null;
+  const description = `External/public: ${global ?? "not reported"}. Internal/private: ${internal ?? "not reported"}.`;
+  if (mode === "full") return { text: `${global ?? "−"} / ${internal ?? "−"}`, description };
+  if (mode === "public-full") return { text: global ?? "−", description };
+  if (mode === "private-full") return { text: internal ?? "−", description };
+  const base = formatIPDisplay({ global, internal }, mode);
+  return { text: base.text === "—" ? "−" : base.text, description };
 }
 
 export interface MobileScenarios {

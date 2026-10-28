@@ -121,7 +121,8 @@ export async function startAndroidRuntime({ dataDirectory, directory = fileURLTo
           || !("updates" in value) || !Array.isArray(value.updates)) throw new Error("Invalid PC observation batch.");
         const fleet = savedFleets.get(value.fleetId);
         if (!fleet) throw new Error("Choose a known saved fleet.");
-        await observations.update(fleet.id, fleet.hosts.map(host => host.address), value.updates);
+        await observations.update(fleet.id, fleet.hosts.map(host => host.address), value.updates,
+          fleet.hosts.flatMap(host => host.pcMetadata ? [host.pcMetadata.pcId] : []));
         reply(response, 200, { ok: true });
       }).catch(() => { reply(response, 400, { error: "PC observations could not be accepted. Cached values keep their original source times." }); request.resume(); });
       return false;
@@ -133,6 +134,8 @@ export async function startAndroidRuntime({ dataDirectory, directory = fileURLTo
       if ([...query.keys()].some(key => key !== "fleet" && key !== "address") || query.getAll("fleet").length !== 1 || query.getAll("address").length > 1
         || !fleet || address !== null && !fleet.hosts.some(host => host.address === address)) reply(response, 404, { error: "Choose a known saved fleet and host." });
       else reply(response, 200, { schema: 1, fleetId: fleet.id, error: observations.error,
+        pcNetworks: observations.listNetworks(fleet.id, fleet.hosts.filter(host => address === null || host.address === address)
+          .flatMap(host => host.pcMetadata ? [host.pcMetadata.pcId] : [])),
         ...(address !== null ? { host: observations.get(fleet.id, address) ?? null } : { hosts: observations.list(fleet.id, fleet.hosts.map(host => host.address)) }) });
       return false;
     }
@@ -145,7 +148,9 @@ export async function startAndroidRuntime({ dataDirectory, directory = fileURLTo
         if (result.changedId) {
           for (const [pending, selected] of active) if (selected === `fleet:${result.changedId}`) pending.destroy();
           updateSavedPins?.();
-          void observations.forget(result.changedId, savedFleets.get(result.changedId)?.hosts.map(host => host.address) ?? []).catch(() => {});
+          const saved = savedFleets.get(result.changedId);
+          void observations.forget(result.changedId, saved?.hosts.map(host => host.address) ?? [],
+            saved?.hosts.flatMap(host => host.pcMetadata ? [host.pcMetadata.pcId] : []) ?? []).catch(() => {});
         }
         reply(response, 200, { ok: true, ...result.listing, ...(result.fleetId ? { fleetId: result.fleetId } : {}) });
       }, error => {

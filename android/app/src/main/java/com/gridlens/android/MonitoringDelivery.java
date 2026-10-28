@@ -17,12 +17,16 @@ final class MonitoringDelivery {
             if (values[i] == null) continue;
             hasSource = true;
             if (!permitted.getAsBoolean()) return accepted;
-            try { sender.send(names[i], update(pcId, checkedAtMs, result.binding, result.status), values[i]); accepted.add(names[i]); }
+            try { sender.send(names[i], "network".equals(names[i]) ? networkUpdate(pcId) : update(pcId, checkedAtMs, result.binding, result.status), values[i]); accepted.add(names[i]); }
             catch (Exception rejected) { /* A malformed/rejected source cannot reject its siblings. */ }
         }
         if (!hasSource && permitted.getAsBoolean()) try { sender.send("monitoring", update(pcId, checkedAtMs, result.binding, result.status), null); }
         catch (Exception rejected) { /* Native permissions remain authoritative if delivery is unavailable. */ }
         return accepted;
+    }
+    static String networkUpdate(String pcId) {
+        if (pcId == null || !pcId.matches("[a-f0-9]{64}")) throw new IllegalArgumentException("Invalid PC identity");
+        return "{\"pcId\":\"" + pcId + "\"}";
     }
     static String update(String pcId, long checkedAtMs, NodeBinding binding, String status) {
         if (pcId == null || !pcId.matches("[a-f0-9]{64}") || binding == null || checkedAtMs <= 0 || checkedAtMs > PublicIpReader.MAX_SAFE_INTEGER

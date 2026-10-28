@@ -27,10 +27,17 @@ final class MonitoringController {
     private final String origin, token;
     private final PublicNetworkCache networkCache;
     private final Handler handler = new Handler(Looper.getMainLooper());
-    private final ExecutorService workers = Executors.newFixedThreadPool(MonitoringPolicy.MAX_CONCURRENT_PCS);
+    private final ExecutorService workers = Executors.newFixedThreadPool(MonitoringPolicy.NODE_SLOTS);
+    private final ExecutorService ipWorker = Executors.newSingleThreadExecutor();
+    private final Set<String> ipInFlight = Collections.synchronizedSet(new HashSet<>());
+    private final PcNetworkReader fixtureNetworkReader;
+    private final NodeOperation fixtureNodeOperation;
+    interface PcNetworkReader { SshDiscovery.NetworkResult read(JSONObject target, SshDiscovery.Credential credential, java.util.function.BooleanSupplier permitted) throws Exception; }
+    interface NodeOperation { void run(JSONObject target, boolean enable, boolean rewards, boolean gpu) throws Exception; }
     private final Set<String> inFlight = Collections.synchronizedSet(new HashSet<>());
     private final Set<DiscoveryNetwork> networks = Collections.synchronizedSet(new HashSet<>());
     private final Map<DiscoveryNetwork, String> networkCredentials = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<DiscoveryNetwork, String> networkTargets = new java.util.concurrent.ConcurrentHashMap<>();
     private final Set<String> blockedCredentialProfiles = Collections.synchronizedSet(new HashSet<>());
     private volatile boolean foreground, destroyed;
     private volatile boolean storageBlocked;
@@ -41,7 +48,13 @@ final class MonitoringController {
     private final Runnable tick = this::poll;
 
     MonitoringController(Activity activity, DiscoveryStore store, String origin, String token) {
+        this(activity, store, origin, token, null, null);
+    }
+    /** Debug instrumentation seam; no web/native navigation can supply an implementation. */
+    MonitoringController(Activity activity, DiscoveryStore store, String origin, String token, PcNetworkReader reader, NodeOperation nodeOperation) {
+        if (!BuildConfig.DEBUG && (reader != null || nodeOperation != null)) throw new IllegalArgumentException("Fixture transport is debug-only");
         this.activity = activity; this.store = store; this.origin = origin; this.token = token;
+        this.fixtureNetworkReader = reader; this.fixtureNodeOperation = nodeOperation;
         android.content.SharedPreferences observations = activity.getSharedPreferences("pc-network-observations", android.content.Context.MODE_PRIVATE);
         networkCache = new PublicNetworkCache(new PublicNetworkCache.Store() {
             public String read(String pcId) { return observations.getString(pcId, null); }
@@ -256,7 +269,7 @@ final class MonitoringController {
     }
     void resume() { foreground = true; handler.removeCallbacks(tick); handler.post(tick); }
     void pause() { foreground = false; cancelActive(); handler.removeCallbacks(tick); }
-    void destroy() { destroyed = true; pause(); workers.shutdownNow(); }
+    void destroy() { destroyed = true; pause(); workers.shutdownNow(); ipWorker.shutdownNow(); }
     private synchronized void cancelActive() {
         generation++;
         synchronized (networks) { for (DiscoveryNetwork network : networks) network.cancel(); }
@@ -269,10 +282,19 @@ final class MonitoringController {
             Map<String, JSONObject> eligible = new java.util.LinkedHashMap<>();
             Map<String, Long> oldest = new java.util.LinkedHashMap<>();
             Map<String, boolean[]> operations = new java.util.HashMap<>();
+            Map<String, JSONObject> ipEligible = new java.util.LinkedHashMap<>();
+            Map<String, Long> ipOldest = new java.util.LinkedHashMap<>();
             for (int i = 0; i < targets.length(); i++) {
                 JSONObject target = targets.getJSONObject(i); validateTarget(target);
-                if (!selectedFleet.equals(target.getString("fleetId")) || inFlight.contains(target.getString("id"))
-                        || blockedCredentialProfiles.contains(target.getString("credentialId"))) continue;
+                if (!selectedFleet.equals(target.getString("fleetId")) || blockedCredentialProfiles.contains(target.getString("credentialId"))) continue;
+                String pc = target.getString("pcId"), fleet = target.getString("fleetId");
+                boolean pending = networkCache.pendingDelivery(fleet, pc);
+                long ipDeadline = pending ? networkCache.nextDeliveryAt(fleet, pc) : networkCache.nextReadAt(pc);
+                if (!ipInFlight.contains(pc) && permittedNetworkObservation(store, target)
+                        && ipDeadline <= now && target.optLong("networkRetryAtMs") <= now) {
+                    ipEligible.put(pc, target); ipOldest.put(pc, target.optLong("lastNetworkAttemptAtMs"));
+                }
+                if (inFlight.contains(target.getString("id"))) continue;
                 boolean approved = target.optBoolean("approved"), paused = target.optBoolean("paused");
                 boolean setup = target.optBoolean("setupPending") && MonitoringPolicy.due(true, approved, paused, now,
                         target.optLong("lastSetupAttemptAtMs"), target.optLong("retryAtMs"), 300_000);
@@ -286,11 +308,12 @@ final class MonitoringController {
                     oldest.put(id, attempt);
                 }
             }
-            for (String id : MonitoringPolicy.oldestFirst(oldest, MonitoringPolicy.MAX_CONCURRENT_PCS - inFlight.size())) {
+            for (String id : MonitoringPolicy.oldestFirst(oldest, MonitoringPolicy.NODE_SLOTS - inFlight.size())) {
                 boolean[] actions = operations.get(id); dispatch(eligible.get(id), actions[0], actions[1], actions[2]);
             }
+            for (String pc : MonitoringPolicy.oldestFirst(ipOldest, MonitoringPolicy.IP_SLOTS - ipInFlight.size())) dispatchNetwork(ipEligible.get(pc));
         } catch (Exception ignored) { /* Vault unavailable: no credentials or endpoints are guessed. */ }
-        handler.postDelayed(tick, inFlight.isEmpty() ? 5000 : 1000);
+        handler.postDelayed(tick, inFlight.isEmpty() && ipInFlight.isEmpty() ? 5000 : 1000);
     }
     private void dispatch(JSONObject target, boolean enable, boolean rewards, boolean gpu) throws Exception {
         String id = target.getString("id");
@@ -299,7 +322,7 @@ final class MonitoringController {
         if (enable) target.put("lastSetupAttemptAtMs", now);
         if (rewards) target.put("lastRewardsAttemptAtMs", now);
         if (gpu) target.put("lastGpuAttemptAtMs", now);
-        try { store.saveMonitoringTarget(target); }
+        try { store.saveMonitoringProgress(target); }
         catch (Exception error) { inFlight.remove(id); throw error; }
         long run = generation;
         workers.execute(() -> {
@@ -307,6 +330,7 @@ final class MonitoringController {
             byte[] sudo = null;
             try {
                 if (!activeTarget(run, target)) return;
+                if (fixtureNodeOperation != null) { fixtureNodeOperation.run(target, enable, rewards, gpu); return; }
                 JSONObject credential;
                 try { credential = store.credential(target.getString("credentialId")); }
                 catch (Exception unavailable) { failure(target, "credentials-required", run); return; }
@@ -322,6 +346,7 @@ final class MonitoringController {
                 try { network = DiscoveryNetwork.capture(activity); } catch (Exception unavailable) { failure(target, "network-unavailable", run); return; }
                 networks.add(network);
                 networkCredentials.put(network, target.getString("credentialId"));
+                networkTargets.put(network, target.getString("id"));
                 if (!activeTarget(run, target)) { network.cancel(); return; }
                 if (target.optBoolean("sudoApproved")) sudo = target.optString("sudoPassword", "").getBytes(StandardCharsets.UTF_8);
                 try (SshDiscovery.Credential selected = DiscoveryController.decodeCredential(credential)) {
@@ -357,6 +382,7 @@ final class MonitoringController {
                                         boolean stop = MonitoringPolicy.pausesTarget(result.status) && !(result.suspendRewards && "authorization-required".equals(result.status));
                                         if (MonitoringPolicy.suspendsCredentialProfile(result.status)) blockCredentialProfile(target);
                                         store.restrictMonitoring(target, result.binding.address, result.suspendRewards, stop, result.status, deadline);
+                                        if ("identity-changed".equals(result.status)) cancelTargetConnections(target.optString("id"));
                                         if (result.suspendRewards) { suspendedRewards.add(result.binding.address); verifiedRewards.remove(result.binding.address); }
                                         target.put("rewardsSuspended", new JSONArray(suspendedRewards)).put("rewardsVerified", new JSONArray(verifiedRewards));
                                         target.put("rewardsAuthorized", suspendedRewards.size() < bindings.size());
@@ -376,10 +402,7 @@ final class MonitoringController {
                                 if (accepted.contains("rewards")) deliveredRewards.add(result.binding.address);
                                 if (accepted.contains("gpu")) deliveredGpu.add(result.binding.address);
                             }, () -> activeTarget(run, target) && !storageBlocked && Math.max(observedProviderRetryAt, store.rewardsRetryAtMs()) <= System.currentTimeMillis(),
-                            (binding, runner) -> networkCache.getOrRead(target.getString("pcId"), () -> {
-                                if (!activeTarget(run, target)) throw new IllegalStateException("Monitoring cancelled");
-                                return PublicIpReader.read(binding, target.getString("address"), target.optBoolean("sudoApproved"), runner, System::currentTimeMillis);
-                            }));
+                            null, () -> activeTarget(run, target) && !storageBlocked && permittedTarget(store, target, false));
                     if (!activeTarget(run, target)) return;
                     boolean paused = target.optBoolean("paused");
                     boolean setupComplete = enable;
@@ -428,10 +451,112 @@ final class MonitoringController {
             }
             finally {
                 if (sudo != null) Arrays.fill(sudo, (byte) 0);
-                if (network != null) { networkCredentials.remove(network); networks.remove(network); network.close(); }
+                if (network != null) { networkTargets.remove(network); networkCredentials.remove(network); networks.remove(network); network.close(); }
                 inFlight.remove(id);
             }
         });
+    }
+    private void dispatchNetwork(JSONObject target) throws Exception {
+        String pc = target.getString("pcId"), fleet = target.getString("fleetId");
+        if (!ipInFlight.add(pc)) return;
+        long run = generation;
+        try { store.recordNetworkAttempt(target, System.currentTimeMillis()); }
+        catch (Exception unavailable) { ipInFlight.remove(pc); throw unavailable; }
+        ipWorker.execute(() -> {
+            try {
+                if (!canCollectNetwork(run, target)) return;
+                if (!currentFleetHasPc(fleet, pc)) return;
+                // Delivery retries consume no SSH connection or source timestamp, even
+                // if the underlying source cache would otherwise be eligible again.
+                PublicIpReader.Observation observation = networkCache.pendingDelivery(fleet, pc) ? networkCache.peek(pc) : null;
+                if (observation == null) {
+                    observation = networkCache.getOrRead(pc, () -> {
+                        if (!canCollectNetwork(run, target)) throw new PublicNetworkCache.Aborted();
+                        JSONObject saved = store.credential(target.getString("credentialId"));
+                        if (saved == null) throw new PublicNetworkCache.Aborted();
+                        try (SshDiscovery.Credential credential = DiscoveryController.decodeCredential(saved)) {
+                            SshDiscovery.NetworkResult result = fixtureNetworkReader == null ? readPcNetwork(run, target, credential)
+                                    : fixtureNetworkReader.read(target, credential, () -> canCollectNetwork(run, target));
+                            try {
+                                if (MonitoringPolicy.suspendsCredentialProfile(result.status)) blockCredentialProfile(target);
+                                else if ("identity-changed".equals(result.status)) {
+                                    store.restrictPcConnection(target, result.status);
+                                    cancelTargetConnections(target.optString("id"));
+                                }
+                            } catch (Exception unavailable) {
+                                storageBlocked = true;
+                                cancelActive();
+                                throw new IllegalStateException("PC connection restriction could not be saved");
+                            }
+                            if (result.observation != null && result.observation.retryAtMs > 0) networkCache.preserveRetry(pc, result.observation.retryAtMs);
+                            if (!canCollectNetwork(run, target) || "cancelled".equals(result.status)) throw new PublicNetworkCache.Aborted();
+                            if (result.observation == null) return new PublicIpReader.Observation(System.currentTimeMillis(), null, null, null, null, 0,
+                                    PublicIpReader.SOURCE, "connection", "interface-read-failure", null);
+                            return result.observation;
+                        }
+                    });
+                }
+                if (observation == null || observation.observedAtMs > System.currentTimeMillis() || !canCollectNetwork(run, target) || !currentFleetHasPc(fleet, pc)) return;
+                networkCache.deliveryAttempt(fleet, pc);
+                JSONObject update = sourceUpdate("{\"pcId\":\"" + pc + "\"}", "network", observation.json());
+                if (!canCollectNetwork(run, target)) return;
+                postObservation(fleet, update);
+                if (canCollectNetwork(run, target)) networkCache.delivered(fleet, pc, observation);
+            } catch (Exception unavailable) { /* Dated cached observations remain eligible for delivery retry. */ }
+            finally { ipInFlight.remove(pc); }
+        });
+    }
+    private SshDiscovery.NetworkResult readPcNetwork(long run, JSONObject target, SshDiscovery.Credential credential) throws Exception {
+        DiscoveryNetwork network = DiscoveryNetwork.capture(activity);
+        networks.add(network); networkCredentials.put(network, target.getString("credentialId"));
+        networkTargets.put(network, target.getString("id"));
+        try {
+            if (!canCollectNetwork(run, target)) { network.cancel(); return new SshDiscovery.NetworkResult("cancelled", null); }
+            return SshDiscovery.readNetwork(network, new DiscoveryPolicy.Candidate(target.getString("address"), target.getInt("port"), ""),
+                    new SshDiscovery.Identity(target.getString("keyBase64"), target.getString("algorithm")), credential,
+                    () -> canCollectNetwork(run, target));
+        } finally { networkTargets.remove(network); networkCredentials.remove(network); networks.remove(network); network.close(); }
+    }
+    private boolean currentFleetHasPc(String fleetId, String pcId) throws Exception {
+        JSONArray fleets = request("/mobile/fleets", null, 4 * 1024 * 1024).getJSONArray("fleets");
+        for (int i = 0; i < fleets.length(); i++) {
+            JSONObject fleet = fleets.getJSONObject(i);
+            if (!fleetId.equals(fleet.getString("id"))) continue;
+            JSONArray hosts = fleet.getJSONArray("hosts");
+            for (int j = 0; j < hosts.length(); j++) {
+                JSONObject pc = hosts.getJSONObject(j).optJSONObject("pcMetadata");
+                if (pc != null && pcId.equals(pc.optString("pcId"))) return true;
+            }
+        }
+        return false;
+    }
+    private boolean canCollectNetwork(long run, JSONObject target) {
+        return activeTarget(run, target) && !storageBlocked && permittedNetworkObservation(store, target) && activeTarget(run, target);
+    }
+    static boolean permittedNetworkObservation(DiscoveryStore store, JSONObject expected) { return permittedTarget(store, expected, true); }
+    private static boolean permittedTarget(DiscoveryStore store, JSONObject expected, boolean pcNetwork) {
+        try {
+            JSONArray targets = store.monitoringTargets();
+            for (int i = 0; i < targets.length(); i++) {
+                JSONObject current = targets.getJSONObject(i);
+                if (!current.getString("id").equals(expected.getString("id"))) continue;
+                if (!(pcNetwork ? MonitoringPolicy.pcNetworkPermitted(current.optBoolean("approved"), current.optBoolean("paused"), current.optString("status"))
+                        : current.optBoolean("approved") && !current.optBoolean("paused"))
+                        || current.optBoolean("aliasReplaced") || !current.getString("pcId").equals(expected.getString("pcId"))
+                        || !current.optString("authorizationId").equals(expected.optString("authorizationId"))
+                        || !current.getString("credentialId").equals(expected.getString("credentialId"))
+                        || !current.getString("keyBase64").equals(expected.getString("keyBase64"))
+                        || !current.getString("address").equals(expected.getString("address")) || current.getInt("port") != expected.getInt("port")
+                        || store.credential(current.getString("credentialId")) == null) return false;
+                String endpoint = new DiscoveryPolicy.Candidate(current.getString("address"), current.getInt("port"), "").endpointKey();
+                return current.getString("keyBase64").equals(store.trustedKey(current.getString("profileId"), endpoint));
+            }
+        } catch (Exception unavailable) { return false; }
+        return false;
+    }
+    private void cancelTargetConnections(String targetId) {
+        for (Map.Entry<DiscoveryNetwork, String> connection : networkTargets.entrySet())
+            if (targetId.equals(connection.getValue())) connection.getKey().cancel();
     }
     private boolean active(long run) { return !destroyed && foreground && generation == run; }
     private boolean activeTarget(long run, JSONObject target) { return active(run) && !blockedCredentialProfiles.contains(target.optString("credentialId")); }
@@ -464,7 +589,7 @@ final class MonitoringController {
     private synchronized void noteProviderRetry(long deadline) { observedProviderRetryAt = Math.max(observedProviderRetryAt, deadline); }
     boolean storageNeedsRecovery() { return storageBlocked; }
     private synchronized void commit(JSONObject target, long run) throws Exception {
-        if (activeTarget(run, target)) store.saveMonitoringTarget(target);
+        if (activeTarget(run, target)) store.saveMonitoringProgress(target);
     }
     private synchronized String source(boolean rewards) throws Exception {
         String value = rewards ? rewardsSource : gpuSource;
@@ -489,6 +614,9 @@ final class MonitoringController {
     private void failure(JSONObject target, String status, long run) throws Exception {
         if (!active(run)) return;
         if (MonitoringPolicy.suspendsCredentialProfile(status)) blockCredentialProfile(target);
+        if ("identity-changed".equals(status)) {
+            store.restrictPcConnection(target, status); cancelTargetConnections(target.optString("id"));
+        }
         boolean alreadyPaused = target.optBoolean("paused");
         if (!alreadyPaused) target.put("status", status);
         target.put("paused", alreadyPaused || MonitoringPolicy.pausesTarget(status)).put("retryAtMs", System.currentTimeMillis() + 60_000);
@@ -526,7 +654,7 @@ final class MonitoringController {
                         || !current.getString("keyBase64").equals(expected.getString("keyBase64"))
                         || store.credential(current.getString("credentialId")) == null) return false;
                 boolean restriction = MonitoringPolicy.pausesTarget(result.status);
-                if (current.optBoolean("paused") && !restriction) return false;
+                if (current.optBoolean("paused") && (!restriction || !current.optString("status").equals(result.status))) return false;
                 String endpoint = new DiscoveryPolicy.Candidate(current.getString("address"), current.getInt("port"), "").endpointKey();
                 if (!current.getString("keyBase64").equals(store.trustedKey(current.getString("profileId"), endpoint))) return false;
                 for (NodeBinding saved : recoveryBindings(current, Collections.singleton(result.binding.address)))

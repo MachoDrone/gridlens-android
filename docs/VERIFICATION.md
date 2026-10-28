@@ -531,3 +531,61 @@ same system image and normal Android protections. The owned AVD was stopped and
 removed afterward. The final passive screenshot attempt found the emulator
 offline, so no new emulator screenshot is claimed. These isolated checks do not
 establish physical-phone or GrapheneOS acceptance.
+
+## Android 0.2.9 — independent PC IP collection and six modes, October 28, 2026
+
+Version code 12 collects public egress through installed host curl on the saved,
+approved SSH connection, without a node/container dependency, sudo or packages.
+One native slot is reserved for IP work and three for rewards/GPU. The IP toggle
+cycles hidden, both full addresses, external full, external last octet, internal
+full and internal last octet; IPv4 suffixes include the leading dot and IPv6 stays
+complete. The existing preference key, source observations and provider waits are
+preserved. No desktop checkout or operator PC was changed.
+
+Completed verification:
+
+- `npm run check` passed: 115 Android runtime/helper/browser tests, 27 Python
+  recorder tests, 816 inherited Node tests and all 332 inherited browser tests
+  (12.3 minutes). After the final strict-enum validation change, typechecking,
+  31 relevant contract/storage tests and 11 affected storage/browser/provenance
+  checks passed against the rebuilt runtime. Native-generated and checked-in
+  observations both passed actual API/storage/render/reopen tests.
+- Actual host curl commands ran against an isolated TLS server, covering IPv4,
+  IPv6, shared NAT, redirect refusal, ignored curl startup configuration, oversized
+  and invalid bodies, HTTP refusal/Retry-After, certificate rejection, missing curl
+  and the ten-second request deadline. Separate actual SSH fixtures verified only
+  host interface/curl commands with stopped node containers, pin and credential
+  rejection, revoked permission, cancellation and retained HTTP provider waits.
+- All 154 Android unit tests passed in each debug and release variant. Release
+  lint and debug, instrumentation and signed release APK builds passed. Cache
+  checks cover thirty-minute success reuse, one-minute failed retry eligibility,
+  legacy source/timestamp parsing, provider waits, cancellation, clock regression
+  and delivery retry without repeating the read or advancing its source time.
+- Fresh API 36 emulator native-only instrumentation passed in 10.493 seconds;
+  full embedded Node/WebView smoke passed in 27.713 seconds, both without reruns.
+  The real native controller used an isolated encrypted vault, injected source
+  transport and the actual observation API/storage/WebView. Four PC readings
+  reached five associated hosts while all three node slots were blocked; a
+  node-binding pause did not block IP delivery. Malformed GPU requests were
+  rejected independently, seeded reward/GPU/binding/status records were unchanged,
+  all six displayed modes passed, and a result completing after backgrounding and
+  revocation was not delivered. Provider routes were intercepted before reaching
+  public readers. No operator-PC or physical-device connection was made. The owned
+  emulator and its synthetic data were removed after verification.
+- The release remains `com.gridlens.android`, signed by the pinned certificate,
+  matching the previous public APK. Signature, package/version, ZIP alignment and
+  native ELF support for 16 KiB pages passed. All 47 runtime files and four helper
+  assets match reviewed sources. Packaged six-mode, PC storage and fixed host-curl
+  implementations were checked; the old node-exec IP helper and native test
+  fixtures are absent. The update manifest exactly matches the signed APK.
+- The adaptation patch reproduces all 196 vendored files from 192 verified
+  originals. Credentials, signing material, operator inputs and local evidence
+  are excluded from publication. Existing approval/credential-rejection controls
+  remain enforced across both native lanes.
+
+The tests establish implementation behavior in isolated fixtures. The app performs
+operator-PC verification; factory-OS phone and GrapheneOS acceptance of this exact
+release remain separate from emulator results.
+
+Verified signed APK size: 197337012 bytes. SHA-256:
+`45f5140292d8da1e859b9b74db57168bd8a2991e5e977d9db77979a812aadc34`.
