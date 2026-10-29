@@ -54,6 +54,7 @@ final class DiscoveryUiVerification {
             verifyResult(driver, screen);
             verifyEmptyProfileShortcut(driver, controller);
             verifyCredentialMethods(driver, screen, controller);
+            verifySharedPairing(driver, screen, controller);
             DiscoveryStore reopened = new DiscoveryStore(driver.getTargetContext());
             require(reopened.profiles().length() == 0 && reopened.credentialProfiles().length() == 0
                     && reopened.knownEndpoints().length() == 0 && reopened.monitoringTargets().length() == 0,
@@ -64,7 +65,7 @@ final class DiscoveryUiVerification {
                     + "both selection actions fully visible at 320dp with 1.6× text and the keyboard open/closed; "
                     + "200 virtualized candidates, prominent live count of 56 selected across partial-IP searches; "
                     + "512-PC limit, read-only identity review with changed keys blocked and saved keys bypassing review, highlighted inspection action, empty-profile and empty-credential shortcuts, key/password visibility and secret clearing, "
-                    + "cancelled document picker, secure credential dialog, compact 320dp layout with enlarged text, and expandable Fleet saved details. "
+                    + "cancelled document picker, secure credential and shared-pairing dialogs, explicit shared Retry/Use standalone actions, compact 320dp layout with enlarged text, and expandable Fleet saved details. "
                     + "No network discovery, SSH connection, operator roster, persistent credential, or monitoring grant. Physical-device acceptance remains separate.\n");
             outcome = Activity.RESULT_OK;
         } catch (Exception | AssertionError error) {
@@ -78,6 +79,31 @@ final class DiscoveryUiVerification {
             }
         }
         driver.finish(outcome, result);
+    }
+
+    private static void verifySharedPairing(Instrumentation driver, Activity activity, DiscoveryController controller) throws Exception {
+        ui(driver, () -> controller.pairShared(null));
+        driver.waitForIdleSync();
+        AlertDialog dialog = (AlertDialog) field(controller, "selectionDialog");
+        try {
+            ui(driver, () -> {
+                require(dialog != null && dialog.isShowing(), "Native shared pairing did not open");
+                require((dialog.getWindow().getAttributes().flags & WindowManager.LayoutParams.FLAG_SECURE) != 0,
+                        "Connection code is visible to screenshots");
+                require("discovery-highlighted-primary".equals(dialog.getButton(AlertDialog.BUTTON_POSITIVE).getTag()), "Pair is not highlighted");
+                require(!hasCheckboxView(dialog.getWindow().getDecorView()), "Pairing unexpectedly asks for SSH permissions");
+                EditText code = tag(dialog, "shared-connection-code"); code.setText("generated-unused-code");
+            });
+            verifyCompactLayout(driver, activity, dialog);
+            ui(driver, () -> dialog.getButton(AlertDialog.BUTTON_NEGATIVE).performClick());
+            require(((EditText) tag(dialog, "shared-connection-code")).getText().length() == 0, "Cancelled pairing retained its connection code");
+            require(!new java.io.File(activity.getFilesDir(), "private-data/shared-cache.json").exists(), "Opening/cancelling pairing saved a backend token");
+        } finally { ui(driver, dialog::dismiss); }
+        ui(driver, () -> controller.manageShared("11111111-1111-4111-8111-111111111111"));
+        driver.waitForIdleSync();
+        require(AutomaticPcIpVerification.hasText(driver, "Retry"), "Shared management omits Retry");
+        require(AutomaticPcIpVerification.hasText(driver, "Use standalone"), "Shared management omits explicit standalone switch");
+        require(AutomaticPcIpVerification.clickText(driver, "Close"), "Cannot close shared management");
     }
 
     /** Exercise Android input dispatch, not only programmatic EditText.setText. */

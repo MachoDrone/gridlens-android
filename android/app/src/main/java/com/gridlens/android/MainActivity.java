@@ -210,9 +210,17 @@ public final class MainActivity extends Activity {
                     Uri destination = request.getUrl();
                     if ("/mobile/discovery".equals(destination.getPath()) || "/mobile/select".equals(destination.getPath())
                             || "/mobile/monitoring".equals(destination.getPath()) || "/mobile/monitoring-retry".equals(destination.getPath())
-                            || "/mobile/ip-check".equals(destination.getPath())) {
+                            || "/mobile/ip-check".equals(destination.getPath()) || "/mobile/shared-pair".equals(destination.getPath())
+                            || "/mobile/shared-manage".equals(destination.getPath())) {
                         if (request.isForMainFrame() && request.hasGesture() && discovery != null) {
-                            if ("/mobile/ip-check".equals(destination.getPath())) {
+                            if ("/mobile/shared-pair".equals(destination.getPath()) || "/mobile/shared-manage".equals(destination.getPath())) {
+                                String fleet = destination.getQueryParameter("fleet");
+                                if (destination.getFragment() == null && destination.getQueryParameterNames().stream().allMatch(key -> "fleet".equals(key))
+                                        && destination.getQueryParameters("fleet").size() <= 1
+                                        && (fleet == null || fleet.matches("[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}"))) {
+                                    if ("/mobile/shared-pair".equals(destination.getPath())) discovery.pairShared(fleet); else discovery.manageShared(fleet);
+                                }
+                            } else if ("/mobile/ip-check".equals(destination.getPath())) {
                                 String fleet = destination.getQueryParameter("fleet"), pc = destination.getQueryParameter("pc");
                                 if (destination.getFragment() == null
                                         && destination.getQueryParameterNames().equals(new java.util.HashSet<>(java.util.Arrays.asList("fleet", "pc")))

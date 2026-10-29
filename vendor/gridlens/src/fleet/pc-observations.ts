@@ -25,7 +25,7 @@ export interface PcNetworkUpdate { pcId: string; network: PcNetworkObservation }
 export interface PcNetworkRecord extends PcNetworkUpdate { receivedAtMs: number; lastGoodNetwork?: PcNetworkObservation }
 export interface PcUpdate { address: string; binding: NodeBinding; rewards?: RewardObservation; gpu?: NodeGpuObservation; monitoring?: MonitoringState; network?: PcNetworkObservation }
 export interface PcObservation extends PcUpdate { receivedAtMs: number; lastGoodRewards?: RewardObservation; lastGoodNetwork?: PcNetworkObservation }
-export interface PcObservationIndex extends Omit<PcObservation, "gpu"> { gpu?: Omit<NodeGpuObservation, "samples"> & { sampleCount: number } }
+export interface PcObservationIndex extends Omit<PcObservation, "gpu"> { gpu?: Omit<NodeGpuObservation, "samples"> & { sampleCount: number | null } }
 export const time = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= 8_640_000_000_000_000;
 function object(value: unknown, required: readonly string[], optional: readonly string[] = []): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value) || required.some(key => !Object.hasOwn(value, key))

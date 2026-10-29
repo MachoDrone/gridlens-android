@@ -546,3 +546,11 @@ td[data-col="queued-duration"][data-stacked="true"] .queued-duration-source butt
   .job-history-actions button { min-height: 28px; padding: 3px 5px; }
   .job-history-toolbar button { min-height: 36px; }
 }
+html[data-gridlens-mobile="android"] #mobile-shared-cache { color: #60a5fa; text-decoration: underline; margin-inline-start: .6rem; }
+html[data-gridlens-mobile="android"] #mobile-fleet-status[data-shared-status="connected"] { color: #4ade80; }
+html[data-gridlens-mobile="android"] #mobile-fleet-status[data-shared-status="unavailable"],
+html[data-gridlens-mobile="android"] #mobile-fleet-status[data-shared-status="provider-wait"] { color: #fbbf24; }
+html[data-gridlens-mobile="android"] #mobile-fleet-status[data-shared-status="access-denied"],
+html[data-gridlens-mobile="android"] #mobile-fleet-status[data-shared-status="identity-changed"],
+html[data-gridlens-mobile="android"] #mobile-fleet-status[data-shared-status="invalid-response"],
+html[data-gridlens-mobile="android"] #mobile-fleet-status[data-shared-status="roster-changed"] { color: #f87171; }

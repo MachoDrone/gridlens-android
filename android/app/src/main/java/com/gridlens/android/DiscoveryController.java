@@ -81,6 +81,7 @@ final class DiscoveryController {
         presentation.menu(rescanFleet == null ? "Network Discovery" : "Rescan saved fleet", "Choose what you want to do.", Arrays.asList(
                 new DiscoveryUi.Action(rescanFleet == null ? "Search network" : "Rescan network", "Find computers on your Wi-Fi or existing VPN.", this::prepare),
                 new DiscoveryUi.Action("Saved fleets", "Open or manage hosts you already saved.", this::fleets),
+                new DiscoveryUi.Action("Connect shared cache", "Pair an authorized backend over your existing VPN. Local fleets and SSH credentials stay separate.", () -> pairShared(null)),
                 new DiscoveryUi.Action("Network profiles", "Manage networks and connection settings.", () -> profiles(false)),
                 new DiscoveryUi.Action("Forget credentials", "Remove saved SSH credentials and monitoring permissions. Your fleets stay saved.", this::forget)), "Close", null);
     }
@@ -778,8 +779,9 @@ final class DiscoveryController {
     }
     private void fleetActions(JSONObject fleet) {
         String id = fleet.optString("id");
+        if (fleet.has("shared")) { manageShared(id); return; }
         presentation.builder(fleet.optString("name"))
-            .setItems(new String[]{"Open fleet", "Check saved connections", "Enable / repair monitoring", "Monitoring status", "Rescan and merge", "Rename", "Remove selected hosts", "Delete fleet"}, (d, which) -> {
+            .setItems(new String[]{"Open fleet", "Check saved connections", "Enable / repair monitoring", "Monitoring status", "Rescan and merge", "Rename", "Remove selected hosts", "Delete fleet", "Connect shared cache"}, (d, which) -> {
                 if (which == 0) mutate("select", null, "scenario", "fleet:" + id, true);
                 else if (which == 1) checkSavedConnections(id);
                 else if (which == 2) enableMonitoring(id);
@@ -788,9 +790,84 @@ final class DiscoveryController {
                 else if (which == 5) { LinearLayout form = form(); EditText name = field(form, "Fleet name", fleet.optString("name"), false);
                     presentation.builder("Rename fleet").setView(form).setPositiveButton("Save", (dd, w) -> mutate("rename", id, "name", name.getText().toString(), false)).setNegativeButton("Cancel", null).show();
                 } else if (which == 6) removeHosts(fleet);
+                else if (which == 8) pairShared(id);
                 else presentation.builder("Delete saved fleet?").setMessage("This removes only this public-address fleet. Credentials and network profiles remain.")
                     .setPositiveButton("Delete", (dd, w) -> mutate("delete", id, null, null, true)).setNegativeButton("Cancel", null).show();
             }).setNegativeButton("Close", null).show();
+    }
+    /** Native-only pairing inputs never pass through WebView fields or a JavaScript bridge. */
+    void pairShared(String localFleetId) {
+        if (working || destroyed) return;
+        LinearLayout fields = form();
+        EditText name = field(fields, "Fleet name", "Shared fleet", false);
+        EditText server = field(fields, "HTTPS origin", "", false);
+        EditText identity = field(fields, "Server ID", "", false);
+        EditText fingerprint = field(fields, "SHA-256 pin", "", false);
+        EditText code = field(fields, "Code", "", true);
+        code.setTag("shared-connection-code");
+        EditText ca = field(fields, "Public CA", "", false);
+        ca.setContentDescription("Optional public CA certificate in PEM format");
+        ca.setSingleLine(false); ca.setMinLines(2); ca.setMaxLines(4);
+        android.widget.ScrollView scrolling = new android.widget.ScrollView(activity); scrolling.addView(fields);
+        AlertDialog dialog = presentation.builder("Connect shared cache")
+                .setMessage("Copy the details from the backend terminal over your trusted setup channel. HTTPS trust and the certificate fingerprint must both match. Import only a public CA certificate if the backend uses private trust. No VPN settings are changed. The backend fleet stays separate from saved local rosters and SSH permissions.")
+                .setView(scrolling).setPositiveButton("Pair", null).setNegativeButton("Cancel", (d, w) -> code.setText(""))
+                .setOnCancelListener(d -> code.setText("")).create();
+        selectionDialog = dialog;
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(button -> {
+            try {
+                JSONObject configuration = new JSONObject().put("name", name.getText().toString().trim())
+                        .put("origin", server.getText().toString().trim()).put("serverId", identity.getText().toString().trim())
+                        .put("fingerprint", fingerprint.getText().toString().replace(":", "").trim())
+                        .put("code", code.getText().toString().trim()).put("deviceName", "GridLens Android");
+                if (localFleetId != null) configuration.put("localFleetId", localFleetId);
+                if (!ca.getText().toString().trim().isEmpty()) configuration.put("caPem", ca.getText().toString().trim());
+                code.setText(""); dialog.dismiss(); sharedOperation(new JSONObject().put("op", "pair").put("configuration", configuration));
+            } catch (Exception invalid) { message("Pairing details", "Enter the exact connection details shown by your backend terminal."); }
+        }));
+        dialog.getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE);
+        dialog.show(); presentation.style(dialog); presentation.highlightPrimary(dialog);
+    }
+    void manageShared(String id) {
+        if (id == null || !id.matches("[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}")) return;
+        presentation.menu("Shared cache", "Shared mode is separate from reading freshness. VPN/backend loss retains dated readings. Access denial or changed identity never starts standalone collection automatically.", Arrays.asList(
+                new DiscoveryUi.Action("Retry", "Reconnect to the same trusted server and authorized fleet.", () -> sharedAction("retry", id)),
+                new DiscoveryUi.Action("Use standalone", "Open the linked local fleet, or Network Discovery if none was linked. Known provider waits remain enforced.", () -> sharedAction("standalone", id)),
+                new DiscoveryUi.Action("Forget connection", "Remove this phone's connection token and remote cache. This does not revoke the device on the backend; revoke there separately.", () -> presentation.show(presentation.builder("Forget shared connection?")
+                        .setMessage("Local saved fleets, credentials and provider waits remain.")
+                        .setPositiveButton("Forget", (d, w) -> sharedAction("forget", id)).setNegativeButton("Cancel", null)))
+        ), "Close", null);
+    }
+    private void sharedAction(String operation, String id) {
+        try { sharedOperation(new JSONObject().put("op", operation).put("id", id)); }
+        catch (Exception invalid) { message("Shared cache", "The connection could not be changed."); }
+    }
+    private void sharedOperation(JSONObject operation) {
+        if (working || destroyed) return;
+        working = true; if (monitoring != null) monitoring.pause();
+        io.execute(() -> {
+            HttpURLConnection connection = null;
+            try {
+                connection = (HttpURLConnection) new URL(origin + "/mobile/shared").openConnection();
+                connection.setRequestProperty("X-GridLens-Token", token); connection.setInstanceFollowRedirects(false);
+                connection.setConnectTimeout(15000); connection.setReadTimeout(20000);
+                byte[] bytes = operation.toString().getBytes(StandardCharsets.UTF_8);
+                connection.setRequestMethod("POST"); connection.setRequestProperty("Content-Type", "application/json");
+                connection.setDoOutput(true); connection.setFixedLengthStreamingMode(bytes.length);
+                try (java.io.OutputStream output = connection.getOutputStream()) { output.write(bytes); }
+                java.util.Arrays.fill(bytes, (byte) 0);
+                if (connection.getResponseCode() != 200) throw new java.io.IOException("Shared operation rejected");
+                JSONObject result;
+                try (InputStream input = connection.getInputStream()) { result = new JSONObject(new String(NodeRuntime.readBounded(input, 8 * 1024 * 1024), StandardCharsets.UTF_8)); }
+                String next = result.getString("selectedScenario");
+                activity.runOnUiThread(() -> { working = false; if (!destroyed) { navigation.open(next); if (foreground && monitoring != null) monitoring.resume(); } });
+            } catch (Exception failure) {
+                activity.runOnUiThread(() -> { working = false; if (!destroyed) {
+                    message("Shared cache needs attention", "The connection could not be confirmed. Check VPN access, the code, trusted certificate and paired server identity. Existing fleets and dated readings remain. No automatic standalone fallback occurred.");
+                    if (foreground && monitoring != null) monitoring.resume();
+                } });
+            } finally { if (connection != null) connection.disconnect(); }
+        });
     }
     void enableMonitoring(String id) {
         if (working) { if (progress != null) progress.show(); return; }
@@ -989,6 +1066,7 @@ final class DiscoveryController {
             DiscoveryNetwork captured = null;
             try {
                 if (run != generation || destroyed || !foreground) return;
+                monitoring.preserveSharedWait(plan.pcId);
                 captured = DiscoveryNetwork.capture(activity); network = captured;
                 if (run != generation || destroyed || !foreground) { captured.cancel(); return; }
                 PcIpRepair.Result result = repair.execute(plan, endpoint, credentialId, approval, captured,

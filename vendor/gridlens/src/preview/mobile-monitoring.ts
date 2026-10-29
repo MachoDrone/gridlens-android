@@ -15,7 +15,7 @@ async function read(url: string, signal: AbortSignal, maximum: number): Promise<
   return value as Record<string, unknown>;
 }
 /** Reads only the phone's cache. Native Android owns connections and authorization. */
-export function createMobileMonitoring(options: { fleetId: string; visible: () => boolean; hosts: () => readonly string[]; pcIds: () => readonly string[]; changed: () => void }) {
+export function createMobileMonitoring(options: { fleetId: string; visible: () => boolean; hosts: () => readonly string[]; pcIds: () => readonly string[]; changed: () => void; shared?: boolean }) {
   const pcNetworks = new Map<string, PcNetworkRecord>();
   const index = new Map<string, PcObservationIndex>(), details = new Map<string, PcObservation>();
   const attempted = new Map<string, number>(), queued = new Set<string>(), active = new Map<string, AbortController>();
@@ -41,7 +41,8 @@ export function createMobileMonitoring(options: { fleetId: string; visible: () =
         const { gpu: _unused, ...base } = parsed;
         const item: PcObservationIndex = base;
         if (gpu !== undefined) {
-          if (!gpu || typeof gpu !== "object" || !Number.isInteger(gpu.sampleCount) || gpu.sampleCount < 0 || gpu.sampleCount > 6000) throw new Error();
+          if (!gpu || typeof gpu !== "object" || !(options.shared && gpu.sampleCount === null)
+            && (!Number.isInteger(gpu.sampleCount) || gpu.sampleCount < 0 || gpu.sampleCount > 6000)) throw new Error();
           const { sampleCount, ...summary } = gpu;
           const checked = parseSavedObservation({ ...rest, gpu: { ...summary, samples: [] } });
           const { samples: _samples, ...valid } = checked.gpu!;

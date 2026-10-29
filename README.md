@@ -6,6 +6,23 @@ for current Nosana and Solana readings. This repository supports Android only;
 the [desktop application](https://github.com/MachoDrone/gridlens-typescript)
 continues independently.
 
+**Version 0.2.16 / version code 19** adds optional **Connect shared cache** in Network
+Discovery or a saved fleet. Pair using the HTTPS origin, server identity,
+certificate fingerprint and short-lived code displayed by the backend terminal.
+Private-certificate installations additionally need that server's public CA
+certificate. The bundled UI stays on the phone; it reads the authorized backend
+fleet through the phone-local API. Shared-cache mode requires a separately
+installed backend reachable over the existing network or VPN; the Android update
+does not install that backend. Existing standalone use remains available.
+
+Shared fleets appear separately from local saved fleets. **Shared cache** describes
+the selected data source; each reading retains its own date and freshness.
+**Retry / Use standalone** reconnects or explicitly returns to the linked local
+fleet. VPN loss, denied access, changed identity or malformed responses retain
+dated readings without starting direct-provider fallback. Received provider waits
+survive mode switches and app restart. Local discovery, credentials and explicit
+native actions remain available on their original fleets.
+
 **[Download the signed Android APK](https://github.com/MachoDrone/gridlens-android-releases/releases/latest/download/gridlens-android.apk)**
 
 **Version 0.2.15** uses one list for choosing computers. Choose the computers once,

@@ -1,5 +1,59 @@
 # Android development and releases
 
+## Shared backend connection
+
+`runtime/shared-cache.ts` supplies a production HTTPS adapter to the phone-local
+API. Pairing is native-only and pins the expected server ID plus SHA-256 of the
+leaf certificate, in addition to normal CA and hostname verification. Private CA
+input accepts public PEM certificates only. The adapter follows no redirects,
+bounds responses and deadlines, validates the existing Fleet snapshots, and sends
+the paired fleet/revision headers with every authenticated read. Bearer tokens
+remain in a mode-0600 app-private file outside WebView; Android backup remains
+disabled. No SSH credential or local approval is exported or inferred.
+
+Remote fleets receive separate random virtual IDs. Their namespace is the paired
+server ID, fleet scope and roster revision; their addresses never overwrite a
+local saved roster. Normal native monitoring has no approved targets under the
+virtual ID and public preview reads are intercepted before provider dispatch.
+Routine PC observation reads contain bounded GPU summaries. Expanding a host's
+details uses the fixed authenticated `POST /api/shared/gpu-history` read with the
+summary's validated interval, at most seven days. History is separately cached
+under the exact node binding; a changed binding cannot reuse old history.
+Known provider deadlines persist separately from links, survive forgetting or
+explicit standalone selection, and conservatively gate public/native routine
+reads. Existing local provider instances and native deadlines are retained.
+
+Snapshot reads, denial/failure status, source dates and optional PC observations
+persist atomically. An unreadable state file is preserved and blocks automatic
+recovery; no older backup is used to revive access or shorten waits. A changed
+roster revision requires fresh pairing. Cached backend transport timestamps are
+never replayed as current server time. Retry uses the pinned connection;
+standalone is an explicit native operation. Forgetting a connection deletes its
+local token/cache but does not claim server-side revocation.
+
+Received provider waits use the backend's `serverTimeMs` to preserve the remaining
+delay on the phone's receipt clock, including when its clock is ahead. Original
+remote deadline/source fields are unchanged. Retained envelopes suspend display
+freshness per resource, including API reachability and nested staking readings,
+and a validated response for that resource restores its ordinary source rules.
+GPU summaries carry a verified sample count separately from bounded full history;
+an absent summary count remains unknown.
+
+Android's explicit recorder installation checks for an existing TypeScript owner
+before creating resources. Canonical names, public node-address labels and
+overlapping GPU UUIDs prevent another writer, including stopped or older bindings.
+Disjoint UUID labels must match the actual Docker DeviceRequests. These checks
+only list/inspect foreign recorders; they never restart, relabel, replace or read
+through them. Existing Android-owned readers retain their lifecycle ownership.
+
+Tests use generated TLS keys/certificates, injected backends and synthetic fleets.
+No physical phone or operator PC is accessed. The preserved 0.2.15/code18 release
+is independent of the 0.2.16/code19 APK, which uses that same release signing
+identity and a higher version code. It was verified as a private candidate before
+publication. Distribution through the Update button requires a published release;
+installation remains an explicit Android action. Never uninstall or clear phone
+data to apply this compatible update. The shared backend is installed separately.
+
 The desktop checkout is independent. Do not modify its external host files,
 preview process or publication branches when building Android. The Android
 snapshot includes the current Fleet UI and public providers. Any changes to

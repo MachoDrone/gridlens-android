@@ -59,6 +59,31 @@ final class NodeGpuCollector {
             if (!container.isEmpty() && !container.equals(CONTAINER)) return outcome(Status.OWNERSHIP_CONFLICT);
             if (container.isEmpty()) {
                 if (!enable) return outcome(Status.NOT_INSTALLED);
+                // Another lifecycle owner must not acquire a competing writer,
+                // including a stopped recorder or a prior binding of this node.
+                Response sharedName = runner.execute(listSharedContainer(sudo), 256, 8000);
+                if (sharedName.exit != 0) return outcome(Status.ACCESS_REQUIRED);
+                if (!sharedName.output.trim().isEmpty()) return outcome(Status.OWNERSHIP_CONFLICT);
+                Response sharedNode = runner.execute(listSharedNode(sudo), 4096, 8000);
+                if (sharedNode.exit != 0) return outcome(Status.ACCESS_REQUIRED);
+                if (!sharedNode.output.trim().isEmpty()) return outcome(Status.OWNERSHIP_CONFLICT);
+                Response sharedGpus = runner.execute(listSharedGpus(sudo), 64 * 1024, 8000);
+                if (sharedGpus.exit != 0) return outcome(Status.ACCESS_REQUIRED);
+                if (!sharedGpus.output.trim().isEmpty()) {
+                    String[] rows = sharedGpus.output.trim().split("\\r?\\n", -1);
+                    if (rows.length > 512) return outcome(Status.OWNERSHIP_CONFLICT);
+                    for (String row : rows) {
+                        String[] fields = row.split("\\t", -1);
+                        if (fields.length != 3 || !fields[0].matches("[a-f0-9]{64}") || !fields[1].matches("[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")) return outcome(Status.OWNERSHIP_CONFLICT);
+                        java.util.List<String> recorded;
+                        try { recorded = parseGpuUuids(fields[2].replace(',', '\n')); }
+                        catch (IllegalArgumentException invalid) { return outcome(Status.OWNERSHIP_CONFLICT); }
+                        if (recorded.isEmpty() || recorded.stream().anyMatch(gpuUuids::contains)) return outcome(Status.OWNERSHIP_CONFLICT);
+                        Response devices = runner.execute(inspectSharedGpuRequest(sudo, fields[0]), 8192, 8000);
+                        String exact = "0::" + String.join(",", recorded) + ",:gpu,:";
+                        if (devices.exit != 0 || !(devices.output.trim().equals(exact + "{};") || devices.output.trim().equals(exact + "null;"))) return outcome(Status.OWNERSHIP_CONFLICT);
+                    }
+                }
                 Response volumes = runner.execute(listVolume(sudo), 256, 8000);
                 if (volumes.exit != 0) return outcome(Status.INSTALL_FAILED);
                 String volume = volumes.output.trim();
@@ -152,6 +177,10 @@ final class NodeGpuCollector {
     private String containerLabel(String key) { return "{{index .Config.Labels \"" + key + "\"}}"; }
     String quote(String value) { return "'" + value.replace("'", "'\\''") + "'"; }
     String listContainer(boolean sudo) { return docker(sudo) + "container ls -a --filter 'name=^/" + CONTAINER + "$' --format '{{.Names}}'"; }
+    String listSharedContainer(boolean sudo) { return docker(sudo) + "container ls -a --filter 'name=^/" + CONTAINER.replace("gridlens-node-gpu-", "gridlens-ts-node-gpu-") + "$' --format '{{.Names}}'"; }
+    String listSharedNode(boolean sudo) { return docker(sudo) + "container ls -a --filter label=io.gridlens.owner=typescript --filter label=io.gridlens.component=node-gpu-recorder --filter label=io.gridlens.node-address=" + binding.address + " --format '{{.Names}}'"; }
+    String listSharedGpus(boolean sudo) { return docker(sudo) + "container ls -a --no-trunc --filter label=io.gridlens.owner=typescript --filter label=io.gridlens.component=node-gpu-recorder --format '{{.ID}}\t{{.Names}}\t{{.Label \"io.gridlens.gpu-uuids\"}}'"; }
+    String inspectSharedGpuRequest(boolean sudo, String id) { return docker(sudo) + "container inspect --format '{{range .HostConfig.DeviceRequests}}{{.Count}}:{{.Driver}}:{{range .DeviceIDs}}{{.}},{{end}}:{{range .Capabilities}}{{range .}}{{.}},{{end}}{{end}}:{{json .Options}};{{end}}' " + ownedId(id); }
     String listVolume(boolean sudo) { return docker(sudo) + "volume ls --filter 'name=^" + VOLUME + "$' --format '{{.Name}}'"; }
     String inspectVolume(boolean sudo) { return docker(sudo) + "volume inspect --format " + quote(label(OWNER) + "\t" + label(COMPONENT) + "\t" + label(VERSION) + "\t{{.Driver}}\t{{.Scope}}\t{{json .Options}}") + " " + VOLUME; }
     String createVolume(boolean sudo) { return docker(sudo) + "volume create --label " + OWNER + "=android --label " + COMPONENT + "=node-gpu-recorder --label " + VERSION + "=1 " + VOLUME; }

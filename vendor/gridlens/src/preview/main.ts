@@ -2,7 +2,7 @@ import { createMobileMonitoring } from "./mobile-monitoring.ts";
 import { rewardView, rewardAtoms, jobGpuConditions, networkView } from "../fleet/pc-observations.ts";
 import { gpuRecordingFacts } from "./mobile-telemetry.ts";
 import "./sidebar.ts";
-import { isSavedFleetScenario, readMobileScenarios, mobilePcAddresses, formatMobileIPDisplay, normalizeMobileIPMode, nextMobileIPMode, mobileIPModeLabel, mobilePcIpCheckHref } from "./mobile-scenarios.ts";
+import { isSavedFleetScenario, readMobileScenarios, mobilePcAddresses, formatMobileIPDisplay, normalizeMobileIPMode, nextMobileIPMode, mobileIPModeLabel, mobilePcIpCheckHref, parseMobileShared } from "./mobile-scenarios.ts";
 import type { MobileIPDisplayMode } from "./mobile-scenarios.ts";
 import { bindFleetViewport } from "./viewport.ts";
 import { bindFleetTableScroll } from "./table-scroll.ts";
@@ -70,9 +70,11 @@ const requestedScenario = fleetConfig.sourceMode === "snapshot" ? null
   : new URLSearchParams(location.search).get("scenario") ?? (mobileScenarios.enabled ? mobileScenarios.selectedScenario : null);
 const evidenceClock = createEvidenceClock();
 const liveNow = () => evidenceClock.now();
+const retainedSharedResources = new Set<FleetResource>();
 // Expiry uses a conservative time bound. Elapsed clocks, source validation and
 // refresh/backoff scheduling continue to use the unchanged reference estimate.
-const freshnessNow = () => evidenceClock.freshnessNow();
+const freshnessNow = (resource?: FleetResource) => resource !== undefined && retainedSharedResources.has(resource)
+  ? 8_640_000_000_000_000 : evidenceClock.freshnessNow();
 const deadlines = createRefreshDeadlines(liveNow);
 let onlineRosterController: ReturnType<typeof createOnlineRosterController> | undefined;
 const fleetTransport = createFleetTransport({
@@ -318,7 +320,7 @@ function showInfo(title: string, content: InfoContent, pcIpCheck?: PcIpCheckActi
   element("info-title").textContent = title;
   const body = element("info-body");
   renderInfoContent(body, content);
-  const href = mobileScenarios.enabled && pcIpCheck ? mobilePcIpCheckHref(pcIpCheck.fleetId, pcIpCheck.pcId) : null;
+  const href = mobileScenarios.enabled && pcIpCheck && !savedFleet?.shared ? mobilePcIpCheckHref(pcIpCheck.fleetId, pcIpCheck.pcId) : null;
   if (href) {
     const action = document.createElement("div");
     action.className = "mobile-ip-check";
@@ -867,26 +869,65 @@ if (mobileScenarios.enabled) {
   notice.id = "mobile-fleet-status";
   notice.className = "scenario-description";
   notice.setAttribute("role", "status");
-  notice.textContent = mobileScenarios.error ?? (discoveredScenario
-    ? `Saved fleet. Last verified discovery: ${savedFleet?.lastDiscoveredAtMs ? new Date(savedFleet.lastDiscoveredAtMs).toISOString() : "unavailable"}. Refresh reads public data; discovery dates do not establish fresh measurements.`
+  notice.textContent = mobileScenarios.error ?? (savedFleet?.shared ? "Shared cache. Connecting to the paired backend. Reading freshness is shown separately in each value's details."
+    : discoveredScenario
+    ? `Standalone. Last verified discovery: ${savedFleet?.lastDiscoveredAtMs ? new Date(savedFleet.lastDiscoveredAtMs).toISOString() : "unavailable"}. Refresh reads public data; discovery dates do not establish fresh measurements.`
     : "Search your network to find computers, then select and trust their SSH identities in Android. Saved fleets refresh over ordinary internet access.");
   const search = document.createElement("a");
   search.id = "mobile-network-search";
   search.href = `/mobile/discovery${discoveredScenario ? `?fleet=${encodeURIComponent(liveScenario.slice(6))}` : ""}`;
   search.textContent = discoveredScenario ? "Rescan" : "Search network";
-  search.hidden = !networkDiscoveryScenario && !discoveredScenario;
+  search.hidden = !!savedFleet?.shared || !networkDiscoveryScenario && !discoveredScenario;
   select.parentElement!.append(search);
   const monitoring = document.createElement("a"); monitoring.id = "mobile-enable-monitoring";
   monitoring.href = `/mobile/monitoring?fleet=${discoveredScenario ? encodeURIComponent(liveScenario.slice(6)) : ""}`;
-  monitoring.textContent = "Enable / repair monitoring"; monitoring.hidden = !discoveredScenario;
+  monitoring.textContent = "Enable / repair monitoring"; monitoring.hidden = !discoveredScenario || !!savedFleet?.shared;
   select.parentElement!.append(monitoring);
   const reconnect = document.createElement("a"); reconnect.id = "mobile-check-connections";
   reconnect.href = `/mobile/monitoring-retry?fleet=${discoveredScenario ? encodeURIComponent(liveScenario.slice(6)) : ""}`;
   reconnect.textContent = "Check saved connections"; reconnect.hidden = true;
   reconnect.title = "Verify saved PC connections, then resume their previously approved monitoring.";
   select.parentElement!.append(reconnect);
+  const sharedAction = document.createElement("a"); sharedAction.id = "mobile-shared-cache";
+  sharedAction.href = savedFleet?.shared ? `/mobile/shared-manage?fleet=${encodeURIComponent(savedFleet.id)}`
+    : `/mobile/shared-pair${savedFleet ? `?fleet=${encodeURIComponent(savedFleet.id)}` : ""}`;
+  sharedAction.textContent = savedFleet?.shared ? "Retry / Use standalone" : "Connect shared cache";
+  select.parentElement!.append(sharedAction);
   select.parentElement!.after(notice);
   notice.hidden = !mobileScenarios.error && !networkDiscoveryScenario && !discoveredScenario;
+  if (savedFleet?.shared) {
+    const updateSharedStatus = async (): Promise<void> => {
+      if (document.hidden) return;
+      try {
+        const response = await fetch("/mobile/shared", { credentials: "same-origin", cache: "no-store", signal: AbortSignal.timeout(8000) });
+        if (!response.ok) throw new Error();
+        const value = await response.json() as { version?: number; links?: { id?: string; shared?: Record<string, unknown> }[] };
+        if (value.version !== 1 || !Array.isArray(value.links) || value.links.length > 20) throw new Error();
+        const raw = value.links.find(link => link.id === savedFleet.id)?.shared, status = parseMobileShared(raw);
+        if (status.serverId !== savedFleet.shared!.serverId || status.scopeId !== savedFleet.shared!.scopeId || status.rosterRevision !== savedFleet.shared!.rosterRevision) throw new Error();
+        savedFleet.shared = status;
+        if (Array.isArray(raw?.pcs) && raw.pcs.length <= 2048) for (const pc of raw.pcs) {
+          if (!pc || typeof pc !== "object" || typeof pc.address !== "string" || typeof pc.pcId !== "string" || !/^[a-f0-9]{64}$/.test(pc.pcId)) continue;
+          savedFleet.pcs[pc.address] = { pcId: pc.pcId, pcName: typeof pc.name === "string" && pc.name.length <= 256 && !/[\u0000-\u001f\u007f]/.test(pc.name) ? pc.name : null,
+            ipAddresses: [], observedAtMs: Number.isSafeInteger(pc.verifiedAtMs) && pc.verifiedAtMs >= 0 ? pc.verifiedAtMs : 0 };
+        }
+        const description = { connected: "Last backend check succeeded", unavailable: "VPN or backend unavailable", "access-denied": "Access denied",
+          "identity-changed": "Server identity changed", "invalid-response": "Invalid backend response", "provider-wait": "Provider wait", "roster-changed": "Fleet revision changed; pair again" }[status.status] ?? "Needs attention";
+        notice.textContent = `Shared cache · ${description}.${status.lastContactAtMs === null ? "" : ` Last contact: ${new Date(status.lastContactAtMs).toISOString()}.`} Readings keep their original dates; connection mode does not establish freshness.`;
+        notice.dataset.sharedStatus = status.status;
+      } catch { notice.textContent = "Shared cache · Connection status unavailable. Retained readings keep their original dates. Retry or choose Use standalone."; notice.dataset.sharedStatus = "unavailable"; }
+    };
+    let sharedStatusTimer: ReturnType<typeof setInterval> | undefined;
+    const stopSharedStatus = (): void => { clearInterval(sharedStatusTimer); sharedStatusTimer = undefined; };
+    const resumeSharedStatus = (): void => {
+      if (document.hidden || sharedStatusTimer !== undefined) return;
+      void updateSharedStatus(); sharedStatusTimer = setInterval(() => { void updateSharedStatus(); }, 10_000);
+    };
+    resumeSharedStatus();
+    addEventListener("pagehide", stopSharedStatus);
+    addEventListener("pageshow", resumeSharedStatus);
+    document.addEventListener("visibilitychange", () => { if (document.hidden) stopSharedStatus(); else resumeSharedStatus(); });
+  }
 }
 const onlineScenario = liveScenario === "online-gpu-hosts";
 let onlineStatus: OnlineRosterStatus | undefined;
@@ -972,6 +1013,7 @@ let freshnessRenderPending = false;
 const progressRows = new Map<string, Set<ReadKind>>();
 let pageHidden = false;
 const mobileMonitoring = mobileScenarios.enabled && discoveredScenario ? createMobileMonitoring({
+  shared: !!savedFleet?.shared,
   fleetId: liveScenario.slice(6), visible: () => visibleStateView(), hosts: () => suppliedAddresses, pcIds: () => Object.values(savedFleet?.pcs ?? {}).map(pc => pc.pcId),
   changed: () => { if (supplied) render(); },
 }) : undefined;
@@ -988,7 +1030,7 @@ const jobHistory = createJobHistoryView({
     addresses, hosts: addresses, refresh, signal, progressive: true,
     current: () => visibleStateView(),
     ...(onlineStatus?.revision ? { onlineRevision: onlineStatus.revision } : {}),
-    onSnapshot: snapshot => apply(snapshot),
+    onSnapshot: (snapshot, _complete, envelope) => { retainSharedDisplay("job-history", envelope); apply(snapshot); },
   }),
   changed: () => {
     if (supplied) render();
@@ -1127,6 +1169,13 @@ function scheduleProgressRender(kind: ReadKind, records: readonly { address: str
 }
 
 /** The transport owns bounds/identities; each column applies its original source rules. */
+function retainSharedDisplay(resource: FleetResource, envelope: Record<string, unknown>): void {
+  if (!savedFleet?.shared) return;
+  const before = retainedSharedResources.has(resource);
+  if (envelope.sharedRetained === true) retainedSharedResources.add(resource); else retainedSharedResources.delete(resource);
+  if (before === retainedSharedResources.has(resource)) return;
+  freshnessRenderPending = true; scheduleProgressRender("state", []);
+}
 async function readProgressive<T extends { address: string }>(
   resource: FleetResource, kind: ReadKind, controller: AbortController,
   valid: (value: unknown) => value is T,
@@ -1138,6 +1187,7 @@ async function readProgressive<T extends { address: string }>(
     onSnapshot: (snapshot, complete, payload) => {
       const records: unknown[] = snapshot.hosts;
       if (!records.every(valid)) throw new Error("Invalid Fleet observations.");
+      retainSharedDisplay(resource, payload);
       apply(records, complete, payload);
     },
   });
@@ -1180,7 +1230,7 @@ function solCurrent(record: SolRecord | undefined, at: number): boolean {
   if (!evidenceClock.trusted) return false;
   if (record === undefined || record.lamports === null || record.retained || record.error !== null || solError !== null) return false;
   const deadline = solDeadline(record);
-  return deadline !== null && at < deadline && freshnessNow() < deadline;
+  return deadline !== null && at < deadline && freshnessNow("sol") < deadline;
 }
 
 function renderSolCell(cell: HTMLTableCellElement, address: string, at: number): void {
@@ -1313,7 +1363,7 @@ function nosCurrent(record: NosRecord | undefined, at: number): boolean {
   if (!evidenceClock.trusted) return false;
   if (record === undefined || record.amount === null || record.retained || record.error !== null || nosError !== null) return false;
   const deadline = nosDeadline(record);
-  return deadline !== null && at < deadline && freshnessNow() < deadline;
+  return deadline !== null && at < deadline && freshnessNow("nos") < deadline;
 }
 
 function renderNosCell(cell: HTMLTableCellElement, address: string, at: number): void {
@@ -1414,6 +1464,7 @@ async function loadNos(): Promise<void> {
   try {
     const payload = await fleetTransport.read("nos", previewURL("nos"), {
       addresses: suppliedAddresses, signal: controller.signal, current: () => currentRead("nos", controller), progressive: false,
+      onSnapshot: (_snapshot, _complete, envelope) => retainSharedDisplay("nos", envelope),
       ...(onlineStatus?.revision ? { onlineRevision: onlineStatus.revision } : {}),
     });
     if (!currentRead("nos", controller)) return;
@@ -1445,7 +1496,7 @@ async function loadNos(): Promise<void> {
 
 function stakingView(address: string, at: number) {
   const view = projectStaking(stakingRecords.get(address), metadataRecords.get(address), at, stakingError, metadataError,
-    supplied ? freshnessNow() : at);
+    supplied ? freshnessNow("staking") : at);
   return !supplied || evidenceClock.trusted ? view : { ...view, amountCurrent: false, targetCurrent: false,
     marketCurrent: false, comparisonCurrent: false, satisfied: false, nextExpiryAtMs: null };
 }
@@ -1592,6 +1643,7 @@ async function loadStaking(marketChanged = false): Promise<void> {
   try {
     const payload = await fleetTransport.read("staking", previewURL("staking"), {
       addresses: suppliedAddresses, signal: controller.signal, current: () => currentRead("staking", controller), progressive: false,
+      onSnapshot: (_snapshot, _complete, envelope) => retainSharedDisplay("staking", envelope),
       ...(onlineStatus?.revision ? { onlineRevision: onlineStatus.revision } : {}),
     });
     if (!currentRead("staking", controller)) return;
@@ -1736,7 +1788,7 @@ function liveQueue(address: string, nowMs: number): QueueView {
   const job = liveActivity(address, nowMs).eligibleJob;
   const state = nodeInfoRecords.get(address);
   const view = projectQueue(queueRecords.get(address), address, metadata?.values?.marketAddress ?? null, nowMs, {
-    freshnessAtMs: freshnessNow(),
+    freshnessAtMs: freshnessNow("queue"),
     ...(job ? { job: jobsError ? { ...job, error: jobsError, retained: true } : job } : {}),
     ...(state ? { state: nodeInfoError ? { ...state, error: nodeInfoError, retained: true } : state } : {}),
     connectionError: queueError ?? metadataError ?? metadata?.error ??
@@ -1867,12 +1919,13 @@ function resumeQueueView(): void {
 
 const CLOCK_RETAINED_NOTE = "The server time reference is awaiting refresh after suspension. Earlier readings are retained; their original check times are unchanged.";
 const DELIVERY_RETAINED_NOTE = "Delivery timing is uncertain, so the original freshness deadline may already have passed. The reading is retained with its original check time; no new source failure is inferred.";
+const SHARED_RETAINED_NOTE = "The shared backend reading is unavailable. This previously received observation keeps its original date and does not establish a new source failure.";
 
 function liveApi(record: NodeInfoRecord | undefined, at: number) {
   const view = projectNodeApi(record, at, nodeInfoError);
-  const uncertain = view.current && view.expiresAtMs !== null && freshnessNow() >= view.expiresAtMs;
+  const uncertain = view.current && view.expiresAtMs !== null && freshnessNow("node-info") >= view.expiresAtMs;
   return evidenceClock.trusted && !uncertain ? view : { ...view, current: false, expiresAtMs: null,
-    description: `${evidenceClock.trusted ? DELIVERY_RETAINED_NOTE : CLOCK_RETAINED_NOTE}\n\n${view.description}` };
+    description: `${retainedSharedResources.has("node-info") ? SHARED_RETAINED_NOTE : evidenceClock.trusted ? DELIVERY_RETAINED_NOTE : CLOCK_RETAINED_NOTE}\n\n${view.description}` };
 }
 
 function onlineHostProof(address: string, at: number): number | null {
@@ -1902,9 +1955,9 @@ function liveActivity(address: string, nowMs: number): LiveActivityView {
   });
   // Clock uncertainty is presentation-only. Feeding a fabricated source error
   // into the history reconciler would permanently invalidate cached evidence.
-  const at = freshnessNow();
+  const at = freshnessNow(view.state.source === "job" ? "jobs" : "node-info");
   const uncertainState = view.state.current !== null && view.state.validUntilMs !== null && at >= view.state.validUntilMs;
-  const uncertainDuration = view.duration.freshness === "current" && view.duration.validUntilMs != null && at >= view.duration.validUntilMs;
+  const uncertainDuration = view.duration.freshness === "current" && view.duration.validUntilMs != null && freshnessNow("jobs") >= view.duration.validUntilMs;
   const note = evidenceClock.trusted ? DELIVERY_RETAINED_NOTE : CLOCK_RETAINED_NOTE;
   const state = evidenceClock.trusted && !uncertainState ? view.state : {
     ...view.state, current: null, retained: view.state.reported !== null,
@@ -2531,6 +2584,7 @@ function renderSuppliedStatus(nodeProjectionTime: number): void {
   setText(element("scenario-description"), fleetConfig.sourceMode === "snapshot"
     ? "The source supplies this fleet’s host list. Reload to read a changed roster; refreshing values preserves the current roster."
     : onlineScenario ? "Online GPU Hosts checks Explorer’s queued/running candidates and shows only hosts with a current, validated API Online result. Online proof expires after 30 seconds; offline, unknown and expired results are hidden while their checks continue. Discovery refreshes every minute while viewed; removal from its candidate list requires two complete checks. Diagnostics cover all Explorer candidates, including hidden hosts. Duration reuses cached timing collected for Supplied Host Addresses or Real200; this scenario starts no job lookups. API reachability does not establish GPU health or current job activity. Shared request limits can leave readings pending or stale. No host file or restart is required when membership changes."
+    : savedFleet?.shared ? "Shared cache reads the paired backend's authorized fleet. Local saved fleets and SSH permissions remain independent. Retry reconnects; Use standalone is an explicit switch and preserves known provider waits."
     : mobileScenarios.enabled ? discoveredScenario
       ? "Public Fleet readings refresh over the internet. Enabled PC monitoring reuses saved trusted connections while this fleet is open. Rescan discovers new computers; removal is explicit in Fleets."
       : networkDiscoveryScenario ? "Search network opens native discovery. No scan starts automatically. Credentials stay in Android; they never enter this page."
@@ -2604,9 +2658,11 @@ function renderMobilePc(cell: HTMLTableCellElement, key: "pc" | "ip", address: s
   const ipOutcomeFact = [...failures,
     ...(network?.status === "unavailable" ? ["The public IP lookup did not succeed.", checkedFact(network.observedAtMs, "Public IP attempt"),
       "A failed lookup normally becomes eligible to retry after one minute. Provider-requested waits are honored. Enabled monitoring retries while this fleet is open; an offline PC or paused monitoring can delay it."] : [])].join(" ");
-  const discoveryFact = pc ? `${checkedFact(pc.observedAtMs, "Discovered")} Discovered addresses: ${pc.ipAddresses.join(", ")}.`
+  const discoveryFact = pc ? savedFleet?.shared ? `${checkedFact(pc.observedAtMs, "Backend association verified")} This association grants no phone SSH permission.`
+    : `${checkedFact(pc.observedAtMs, "Discovered")} Discovered addresses: ${pc.ipAddresses.join(", ")}.`
     : "No saved PC discovery details are available.";
-  const method = "PC IP checks use this PC’s saved connection and installed curl, independently of node containers and GPU setup. They prefer IPv4 with IPv6 fallback. Shared public addresses are valid for multiple PCs and hosts. A PC-side VPN can change the outward address.";
+  const method = savedFleet?.shared ? "The authorized backend supplies these dated PC readings. Its verified SSH ingress is not substituted for a measured interface address. No phone SSH permission is inferred."
+    : "PC IP checks use this PC’s saved connection and installed curl, independently of node containers and GPU setup. They prefer IPv4 with IPv6 fallback. Shared public addresses are valid for multiple PCs and hosts. A PC-side VPN can change the outward address.";
   rememberInfo(cell, {
     summary: [ink(key === "ip" ? "Public and private IP observations." : pc ? `PC: ${pc.pcName ?? "name unavailable"}.` : "PC name unavailable.", pc || key === "ip" ? "plain" : "warning")],
     // The shared dialog shows four facts. Keep current IPs and failure/retry status
@@ -2638,7 +2694,7 @@ function renderMobileGpuRecordings(): void {
   panel.hidden = !discoveredScenario;
   const revision = [...(mobileMonitoring?.index.values() ?? [])].map(value => `${value.address}:${value.receivedAtMs}`).join("|");
   if (panel.open && panel.dataset.revision !== revision) { panel.dataset.revision = revision; updateMobileGpuDetails(panel); }
-  if (mobileMonitoring) {
+  if (mobileMonitoring && !savedFleet?.shared) {
     const states = [...mobileMonitoring.index.values()];
     const gpuAccess = states.filter(value => value.monitoring?.status === "gpu-access-required").length;
     const active = states.filter(value => value.monitoring?.status === "active").length + gpuAccess;
@@ -2657,19 +2713,22 @@ function updateMobileGpuDetails(panel: HTMLDetailsElement): void {
       const title = document.createElement("h3"); title.textContent = `${savedFleet?.pcs[record.address]?.pcName ?? "PC"} / ${record.address.slice(0, 5)}`; content.append(title);
       const state = document.createElement("p"); state.textContent = `Monitoring: ${record.monitoring?.status ?? "unknown"}. Recorder: ${record.gpu?.status ?? "not connected"}.`; content.append(state);
       if (record.gpu) {
-        const details = document.createElement("p"); details.textContent = `Verified node GPU allocation: ${record.gpu.gpuUuids.join(", ") || "unavailable"}. ${record.gpu.sampleCount} cached samples; last source check ${timestamp(record.gpu.observedAtMs)}.`; content.append(details);
+        const details = document.createElement("p"); details.textContent = `Verified node GPU allocation: ${record.gpu.gpuUuids.join(", ") || "unavailable"}. ${record.gpu.sampleCount === null ? "Sample count unavailable" : `${record.gpu.sampleCount} cached samples`}; last source check ${timestamp(record.gpu.observedAtMs)}.`; content.append(details);
       }
     }
-    const note = document.createElement("p"); note.textContent = "Expand a host’s Jobs to see GPU conditions observed during each reported job interval. The app refreshes enabled PCs automatically while open; recorders retain history while the phone is closed. Gaps and unsupported signals stay unknown."; content.append(note);
+    const note = document.createElement("p"); note.textContent = savedFleet?.shared
+      ? "Expand Jobs for bounded GPU history from the shared backend. Source dates, gaps and unsupported signals remain visible; opening this view grants no recorder ownership."
+      : "Expand a host’s Jobs to see GPU conditions observed during each reported job interval. The app refreshes enabled PCs automatically while open; recorders retain history while the phone is closed. Gaps and unsupported signals stay unknown."; content.append(note);
     return;
   }
   const pcs = new Map(Object.values(savedFleet?.pcs ?? {}).map(pc => [pc.pcId, pc]));
-  if (!pcs.size) { const text = document.createElement("p"); text.textContent = "Enable monitoring to verify saved PC connections and start recording."; content.append(text); }
+  if (!pcs.size) { const text = document.createElement("p"); text.textContent = savedFleet?.shared ? "No verified PC recording is available in the shared cache." : "Enable monitoring to verify saved PC connections and start recording."; content.append(text); }
   for (const pc of pcs.values()) {
     const title = document.createElement("h3"); title.textContent = pc.pcName ?? "Unnamed PC"; content.append(title);
     for (const fact of gpuRecordingFacts(pc.gpuTelemetry, Date.now())) { const line = document.createElement("p"); line.textContent = fact; content.append(line); }
   }
-  const note = document.createElement("p"); note.textContent = "These are older PC-level recordings. Enable monitoring once for automatic node-bound refresh and job-time association; no routine rescan is required."; content.append(note);
+  const note = document.createElement("p"); note.textContent = savedFleet?.shared ? "Shared readings retain their source dates. Backend setup controls monitoring access."
+    : "These are older PC-level recordings. Enable monitoring once for automatic node-bound refresh and job-time association; no routine rescan is required."; content.append(note);
 }
 
 let mobileMonitoringStarted = false;

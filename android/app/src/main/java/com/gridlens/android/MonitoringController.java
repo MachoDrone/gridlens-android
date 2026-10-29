@@ -65,6 +65,13 @@ final class MonitoringController {
         }, System::currentTimeMillis);
     }
     PublicNetworkCache pcIpCache() { return networkCache; }
+    void preserveSharedWait(String pcId) throws Exception {
+        if (!new java.io.File(activity.getFilesDir(), "private-data/shared-cache.json").isFile()) return;
+        JSONObject result = request("/mobile/shared/waits", null, 4096);
+        long until = result.getLong("retryAtMs");
+        if (result.getInt("version") != 1 || until < 0 || until > PublicIpReader.MAX_SAFE_INTEGER) throw new java.io.IOException("Invalid shared wait");
+        if (until > System.currentTimeMillis()) { networkCache.preserveRetry(pcId, until); store.delayRewardsUntil(until); }
+    }
     void enqueueDirectPcIp(Runnable operation) { ipWorker.execute(operation); }
     void acceptDirectPcIpApproval(JSONObject target) {
         blockedCredentialProfiles.remove(target.optString("credentialId"));
@@ -674,6 +681,7 @@ final class MonitoringController {
             try {
                 if (!activeTarget(run, target)) return;
                 if (fixtureNodeOperation != null) { fixtureNodeOperation.run(target, enable, rewards, gpu); return; }
+                if (sharedProviderWait()) return;
                 JSONObject credential;
                 try { credential = store.credential(target.getString("credentialId")); }
                 catch (Exception unavailable) { failure(target, "credentials-required", run); return; }
@@ -813,6 +821,7 @@ final class MonitoringController {
                 // if the underlying source cache would otherwise be eligible again.
                 PublicIpReader.Observation observation = networkCache.pendingDelivery(fleet, pc) ? networkCache.peek(pc) : null;
                 if (observation == null) {
+                    if (sharedProviderWait()) return;
                     observation = networkCache.getOrRead(pc, () -> {
                         if (!canCollectNetwork(run, target)) throw new PublicNetworkCache.Aborted();
                         JSONObject saved = store.credential(target.getString("credentialId"));
@@ -848,6 +857,14 @@ final class MonitoringController {
             } catch (Exception unavailable) { /* Dated cached observations remain eligible for delivery retry. */ }
             finally { ipInFlight.remove(pc); }
         });
+    }
+    /** Retain a received backend wait when an operator explicitly returns to standalone. */
+    private boolean sharedProviderWait() {
+        if (!new java.io.File(activity.getFilesDir(), "private-data/shared-cache.json").isFile()) return false;
+        try {
+            JSONObject result = request("/mobile/shared/waits", null, 4096);
+            return result.getInt("version") != 1 || result.getLong("retryAtMs") > System.currentTimeMillis();
+        } catch (Exception unavailable) { return true; }
     }
     private SshDiscovery.NetworkResult readPcNetwork(long run, JSONObject target, SshDiscovery.Credential credential) throws Exception {
         DiscoveryNetwork network;

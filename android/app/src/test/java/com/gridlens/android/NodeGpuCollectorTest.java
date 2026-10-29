@@ -21,6 +21,9 @@ public final class NodeGpuCollectorTest {
         Fixture(boolean sudo) {
             this.sudo = sudo;
             put(POLICY.listContainer(sudo), 0, POLICY.CONTAINER);
+            put(POLICY.listSharedContainer(sudo), 0, "");
+            put(POLICY.listSharedNode(sudo), 0, "");
+            put(POLICY.listSharedGpus(sudo), 0, "");
             put(POLICY.inspectContainer(SOURCE, sudo), 0, inspection(true));
             put(POLICY.inspectVolume(sudo), 0, "android\tnode-gpu-recorder\t1\tlocal\tlocal\tnull\n");
             put(POLICY.runningCommand(sudo, OWNED), 0, "true\n");
@@ -93,6 +96,39 @@ public final class NodeGpuCollectorTest {
         assertFalse(fixture.commands.contains(POLICY.createVolume(false)));
         assertFalse(fixture.commands.contains(POLICY.createContainer(SOURCE, false)));
         assertFalse(fixture.commands.stream().anyMatch(command -> command.contains(" rm ") || command.contains("remove")));
+    }
+    @Test public void sharedBackendRecorderPreventsDuplicateCreationWithoutChangingItsOwner() {
+        for (boolean previousBinding : new boolean[]{false, true}) {
+            Fixture fixture = new Fixture(false);
+            fixture.put(POLICY.listContainer(false), 0, "");
+            fixture.put(previousBinding ? POLICY.listSharedNode(false) : POLICY.listSharedContainer(false), 0, "gridlens-ts-node-gpu-generated");
+            assertEquals(NodeGpuCollector.Status.OWNERSHIP_CONFLICT, fixture.collect(true).status);
+            assertTrue(fixture.commands.stream().allMatch(command -> command.contains("container ls -a")));
+            assertFalse(fixture.commands.contains(POLICY.createVolume(false)));
+            assertFalse(fixture.commands.contains(POLICY.createContainer(SOURCE, false)));
+        }
+    }
+    @Test public void sharedPhysicalGpuAndUnknownSharedGpuLabelsBlockAnotherWriter() {
+        for (String labels : List.of(OWNED + "\tdifferent-node\t" + UUID, OWNED + "\tdifferent-node\tinvalid-uuid", OWNED + "\tdifferent-node\t")) {
+            Fixture fixture = new Fixture(false);
+            fixture.put(POLICY.listContainer(false), 0, "");
+            fixture.put(POLICY.listSharedGpus(false), 0, labels);
+            assertEquals(NodeGpuCollector.Status.OWNERSHIP_CONFLICT, fixture.collect(true).status);
+            assertTrue(fixture.commands.stream().allMatch(command -> command.contains("container ls -a")));
+        }
+    }
+    @Test public void disjointSharedGpuLabelsRequireMatchingActualDeviceRequests() {
+        String other = "GPU-11111111-1111-2222-3333-444444444444";
+        for (boolean correct : new boolean[]{false, true}) {
+            Fixture fixture = new Fixture(false);
+            fixture.put(POLICY.listContainer(false), 0, "");
+            fixture.put(POLICY.listSharedGpus(false), 0, OWNED + "\tdifferent-node\t" + other);
+            fixture.put(POLICY.inspectSharedGpuRequest(false, OWNED), 0, "0::" + (correct ? other : UUID) + ",:gpu,:{};");
+            fixture.put(POLICY.listVolume(false), 1, "generated unavailable volume listing");
+            assertEquals(correct ? NodeGpuCollector.Status.INSTALL_FAILED : NodeGpuCollector.Status.OWNERSHIP_CONFLICT, fixture.collect(true).status);
+            assertEquals(correct, fixture.commands.contains(POLICY.listVolume(false)));
+            assertFalse(fixture.commands.contains(POLICY.createContainer(SOURCE, false)));
+        }
     }
     @Test public void unownedContainerOrVolumeIsNeverExecutedOrReplaced() {
         Fixture container = new Fixture(false);

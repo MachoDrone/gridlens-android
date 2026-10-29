@@ -5,6 +5,57 @@ behavior. Physical-phone verification has not been done in this workspace;
 emulator results do not establish every phone's touch behavior, battery use,
 installed WebView compatibility or long-running network reliability.
 
+## Android 0.2.16 shared-cache verification — October 28–29, 2026
+
+The source checkpoint and signed 0.2.15/code18 release were copied privately
+before editing. Restoration matched all 348 source paths, modes, Git refs,
+staged/unstaged diffs and status, including the local-only summary document.
+The preserved APK's hash, package/version and signing certificate were verified.
+No phone data or encrypted credential vault was copied or cleared.
+
+Candidate verification uses generated credentials/certificates and synthetic
+hosts only:
+
+- Strict TypeScript checks, self-contained runtime build and 127 Android runtime,
+  policy and phone-browser tests. New cases cover pinned HTTPS/CA rejection,
+  pairing identity, separate rosters, source dates, malformed/denied/revised
+  responses, offline retention, restart, explicit standalone and fast-phone
+  provider waits. Known API and staking readings become retained before their
+  original proof expires and recover without changing source dates.
+- 27 unchanged Python recorder tests and all 816 inherited Node tests.
+  The inherited browser run passed 330 tests; two test-server startups failed
+  because an overlapping development rebuild briefly removed `dist/index.html`.
+  Those exact two passed against frozen output, completing all 332 cases. No
+  application correction was inferred from that verification interference.
+- 180 Android unit tests in each debug/release variant, release lint, signed APK
+  verification and 16 KiB ZIP alignment. Recorder tests reject competing shared
+  owners, previous node bindings, overlapping UUIDs and mismatched actual GPU
+  requests without changing foreign resources.
+- A new disposable API-36 emulator passed native discovery and pairing-screen
+  acceptance: real keyboard input, one selection across filters, identity review,
+  saved-key bypass, 320dp/enlarged-text layouts, secure highlighted pairing,
+  code clearing on cancellation and explicit Retry / Use standalone controls.
+  A clipped pairing hint found there was corrected. Only that emulator's keyboard
+  setting was enabled for the fixture; no physical device settings were changed.
+- A cross-app rehearsal used the actual desktop SQLite owner, restricted IPC and
+  HTTPS gateway with Android's production pinned HTTPS adapter and phone-local
+  API. Both clients received identical dated metadata; measured private IP stayed
+  distinct from verified ingress. Routine GPU summaries and bounded detail reads
+  worked, revocation retained original dates, and local routine provider dispatch
+  remained zero.
+
+The signed APK keeps `com.gridlens.android`, uses the preserved
+release certificate and advances to version code 19. Its archive contains APK,
+manifest, checksums, notes and public verification metadata, with no signing
+material. At the private verification checkpoint, no source push, public release,
+live backend installation or physical phone update had been performed. Publishing
+the Android APK does not install a shared backend or update a phone automatically.
+Physical VPN/lifecycle/battery behavior and an actual
+in-place update on the operator's phone remain separate acceptance work.
+
+Signed APK size: 197400672 bytes. SHA-256:
+`bd416d017b158cf87d9436baa63cb5b0ac15d8276ca20cfa854dbdf768ee4efd`.
+
 Verified locally on October 24, 2026:
 
 - Strict TypeScript checking and self-contained runtime build.

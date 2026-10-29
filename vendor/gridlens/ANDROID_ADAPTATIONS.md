@@ -1,5 +1,21 @@
 # Android snapshot
 
+The shared-backend candidate extends the existing marker-gated `main.ts`,
+`mobile-scenarios.ts` and `styles.css` adaptations. Virtual shared fleets have
+their own identity and roster and do not report native discovery timestamps.
+The source-mode status is independent from per-reading freshness; failed shared
+connections retain dated values and offer explicit native Retry / Use standalone.
+Native SSH setup/repair links are shown only on local fleets. Pairing and bearer
+tokens stay outside WebView, while all remote traffic goes through the phone-local
+TypeScript adapter and the existing bounded snapshot contracts.
+
+The existing `mobile-monitoring.ts` and `pc-observations.ts` adaptations also allow
+an unknown shared GPU summary count. Local native indexes keep their actual count;
+shared indexes use the backend's separately validated summary, with full history
+requested only for host details. `main.ts` handles retained shared envelopes per
+resource so API and nested staking values lose current emphasis without changing
+their original source times, deadlines or other resources' freshness.
+
 This is the current local TypeScript app copied into the Android repository, with
 its source, tests and exact dependency lock. `PROVENANCE.json` identifies the
 upstream repository and base commit and hashes every copied file. The snapshot

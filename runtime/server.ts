@@ -7,6 +7,11 @@ import { startPreviewServer } from "../vendor/gridlens/scripts/preview-server.ts
 import { SavedFleets, atomicPrivateJson, parseUniqueJson } from "./saved-fleets.ts";
 import { PcObservations } from "./pc-observations.ts";
 import { isMetadataAddress } from "../vendor/gridlens/src/fleet/host-metadata.ts";
+import { SharedCache } from "./shared-cache.ts";
+import type { SharedTransport } from "./shared-cache.ts";
+import { FLEET_RESOURCES } from "../vendor/gridlens/src/contracts/fleet.ts";
+import type { FleetResource } from "../vendor/gridlens/src/contracts/fleet.ts";
+import { selectJobHistoryHosts } from "../vendor/gridlens/src/server/job-history-selection.ts";
 
 export const MAX_ROSTER_BYTES = 512 * 1024;
 export const MAX_ROSTER_HOSTS = 10_000;
@@ -21,6 +26,8 @@ export interface RuntimeOptions {
   /** Isolated verification only; production uses the original public readers. */
   providers?: Pick<PreviewOptions, "metadataProvider" | "nodeInfoProvider" | "jobProvider" | "queueProvider" |
     "solProvider" | "nosProvider" | "stakingProvider" | "onlineProvider" | "now">;
+  /** Isolated generated-server verification only. Production always uses verified HTTPS. */
+  sharedTransport?: SharedTransport;
 }
 
 export function parseRoster(value: unknown): string[] {
@@ -82,19 +89,22 @@ async function readBody(request: IncomingMessage, maximum = MAX_ROSTER_BYTES): P
 }
 
 export async function startAndroidRuntime({ dataDirectory, directory = fileURLToPath(new URL("./web/", import.meta.url)),
-  preferredPort = 4173, providers = {} }: RuntimeOptions): Promise<{ server: Server; port: number; token: string }> {
+  preferredPort = 4173, providers = {}, sharedTransport }: RuntimeOptions): Promise<{ server: Server; port: number; token: string }> {
   if (!Number.isInteger(preferredPort) || preferredPort < 0 || preferredPort > 65535) throw new Error("Invalid preferred port.");
   const privateDirectory = resolve(dataDirectory);
   await mkdir(privateDirectory, { recursive: true, mode: 0o700 });
   const token = randomBytes(32).toString("hex");
   const savedFleets = await SavedFleets.load(privateDirectory, providers.now);
   const observations = await PcObservations.load(privateDirectory, providers.now);
+  const shared = await SharedCache.load(privateDirectory, sharedTransport, providers.now);
   const active = new Map<ServerResponse, string>();
   let updateSavedPins: (() => void) | undefined;
   const importedThisProcess = new Set<string>();
   let replaceRoster: ((scenario: Scenario, addresses: readonly string[]) => void) | undefined;
   let importChain = Promise.resolve();
   const rosterFile = (scenario: Scenario): string => join(privateDirectory, scenario === "supplied" ? "hosts.json" : "real200.json");
+  const listing = () => ({ ...savedFleets.list(), fleets: [...savedFleets.list().fleets, ...shared.list()],
+    ...(shared.selected() ? { selectedScenario: `fleet:${shared.selected()}` } : {}), sharedError: shared.warning });
 
   const authorize = (request: IncomingMessage, response: ServerResponse): boolean => {
     response.setHeader("Cache-Control", "no-store");
@@ -114,6 +124,65 @@ export async function startAndroidRuntime({ dataDirectory, directory = fileURLTo
       return false;
     }
     const url = request.url ?? "";
+    if (url === "/mobile/shared/waits" && request.method === "GET") {
+      reply(response, 200, { version: 1, retryAtMs: shared.standaloneWait("all") }); return false;
+    }
+    if ((url === "/mobile/shared" || url.startsWith("/mobile/shared?")) && request.method === "GET") {
+      reply(response, 200, { version: 1, links: shared.list(), selectedLinkId: shared.selected(), error: shared.warning });
+      return false;
+    }
+    if (url === "/mobile/shared" && request.method === "POST" && native) {
+      void readBody(request, 64 * 1024).then(async value => {
+        if (!value || typeof value !== "object" || Array.isArray(value) || !("op" in value)) throw new Error();
+        let scenario: string | undefined;
+        if (value.op === "pair" && "configuration" in value) {
+          const input = value.configuration;
+          if (input && typeof input === "object" && "localFleetId" in input &&
+            (typeof input.localFleetId !== "string" || !savedFleets.get(input.localFleetId))) throw new Error();
+          scenario = `fleet:${await shared.pair(input)}`;
+        } else if ("id" in value && typeof value.id === "string" && shared.has(value.id)) {
+          if (value.op === "retry") { await shared.refreshStatus(value.id); scenario = `fleet:${value.id}`; await shared.select(value.id); }
+          else if (value.op === "standalone") {
+            scenario = await shared.standalone(value.id);
+            if (scenario.startsWith("fleet:") && !savedFleets.get(scenario.slice(6))) scenario = "network-discovery";
+            await savedFleets.mutate({ op: "select", scenario });
+          }
+          else if (value.op === "forget") { await shared.forget(value.id); scenario = savedFleets.list().selectedScenario; }
+          else throw new Error();
+        } else throw new Error();
+        for (const pending of active.keys()) pending.destroy();
+        reply(response, 200, { ok: true, ...listing(), selectedScenario: scenario });
+      }).catch(() => { reply(response, 400, { error: "Shared connection could not be changed. Check the code, trusted certificate and server identity. Existing fleets and credentials remain saved." }); request.resume(); });
+      return false;
+    }
+    if (url.startsWith("/preview/") && request.method === "GET") {
+      const parsed = new URL(url, origin), scenario = parsed.searchParams.get("scenario");
+      const id = scenario?.startsWith("fleet:") ? scenario.slice(6) : "";
+      const resource = parsed.pathname.slice("/preview/".length).replace(/\.json$/, "") as FleetResource;
+      if (shared.has(id)) {
+        const context = shared.context(id);
+        if (parsed.pathname === "/preview/hosts.json") {
+          reply(response, 200, { addresses: context.addresses, error: null, rosterRevision: context.rosterRevision });
+        } else if ((FLEET_RESOURCES as readonly string[]).includes(resource)) {
+          let selected: { addresses: string[]; refresh: boolean } | undefined;
+          try {
+            if (parsed.searchParams.getAll("scenario").length !== 1) throw new Error();
+            if (resource === "job-history") selected = selectJobHistoryHosts(parsed.searchParams, context.addresses, ["scenario"]);
+            else if ([...parsed.searchParams.keys()].some(key => key !== "scenario" && key !== "refresh")) throw new Error();
+          } catch { reply(response, 400, { error: "Choose a bounded selection from this shared fleet." }); return false; }
+          void shared.read(id, resource, selected?.addresses, selected?.refresh).then(value => reply(response, 200, value),
+            () => reply(response, 503, { error: "Shared cache is unavailable. Retry or explicitly choose standalone." }));
+        } else reply(response, 404, { error: "Unknown shared reading." });
+        return false;
+      }
+      if ((FLEET_RESOURCES as readonly string[]).includes(resource)) {
+        const deadline = shared.standaloneWait(resource);
+        if (deadline > (providers.now?.() ?? Date.now())) {
+          response.setHeader("Retry-After", Math.max(1, Math.ceil((deadline - (providers.now?.() ?? Date.now())) / 1000)));
+          reply(response, 429, { error: "A known provider wait remains in effect after switching data sources.", retryAtMs: deadline }); return false;
+        }
+      }
+    }
     if (url === "/mobile/observations" && request.method === "POST" && native) {
       void readBody(request, 2 * 1024 * 1024).then(async (value) => {
         if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== "fleetId,schema,updates"
@@ -129,6 +198,15 @@ export async function startAndroidRuntime({ dataDirectory, directory = fileURLTo
     }
     if ((url === "/mobile/observations" || url.startsWith("/mobile/observations?")) && request.method === "GET") {
       const query = new URL(url, origin).searchParams;
+      const sharedId = query.get("fleet") ?? "";
+      if (shared.has(sharedId)) {
+        if ([...query.keys()].some(key => key !== "fleet" && key !== "address") || query.getAll("fleet").length !== 1 || query.getAll("address").length > 1) {
+          reply(response, 400, { error: "Choose a shared fleet and host." }); return false;
+        }
+        void shared.observations(sharedId, query.get("address") ?? undefined).then(value => reply(response, 200, value),
+          () => reply(response, 503, { error: "Shared observations are unavailable." }));
+        return false;
+      }
       const fleet = savedFleets.get(query.get("fleet") ?? "");
       const address = query.get("address");
       if ([...query.keys()].some(key => key !== "fleet" && key !== "address") || query.getAll("fleet").length !== 1 || query.getAll("address").length > 1
@@ -140,11 +218,18 @@ export async function startAndroidRuntime({ dataDirectory, directory = fileURLTo
       return false;
     }
     if (url === "/mobile/fleets" && request.method === "GET") {
-      reply(response, 200, savedFleets.list());
+      reply(response, 200, listing());
       return false;
     }
     if (url === "/mobile/fleets" && request.method === "POST" && native) {
-      void readBody(request).then(body => savedFleets.mutate(body)).then(result => {
+      void readBody(request).then(async body => {
+        if (body && typeof body === "object" && "op" in body && body.op === "select" && "scenario" in body && typeof body.scenario === "string") {
+          const id = body.scenario.startsWith("fleet:") ? body.scenario.slice(6) : "";
+          if (shared.has(id)) { await shared.select(id); return { listing: listing(), changedId: undefined, fleetId: undefined }; }
+          const result = await savedFleets.mutate(body); await shared.select(null); return result;
+        }
+        return savedFleets.mutate(body);
+      }).then(result => {
         if (result.changedId) {
           for (const [pending, selected] of active) if (selected === `fleet:${result.changedId}`) pending.destroy();
           updateSavedPins?.();
@@ -222,6 +307,7 @@ export async function startAndroidRuntime({ dataDirectory, directory = fileURLTo
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("The private Fleet listener did not start.");
   const port = address.port;
+  server.once("close", () => shared.close());
   try { await atomicPrivateJson(join(privateDirectory, "runtime.json"), { port, token }); }
   catch (error) { server.closeAllConnections(); server.close(); throw error; }
   return { server, port, token };

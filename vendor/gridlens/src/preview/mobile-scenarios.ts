@@ -6,7 +6,19 @@ import type { GpuTelemetry } from "./mobile-telemetry.ts";
 export interface MobilePc {
   pcId: string; pcName: string | null; ipAddresses: string[]; observedAtMs: number; gpuTelemetry?: GpuTelemetry;
 }
-export interface MobileFleet { id: string; name: string; count: number; lastDiscoveredAtMs: number | null; pcs: Record<string, MobilePc> }
+export interface MobileSharedFleet { serverId: string; scopeId: string; rosterRevision: string; status: string; lastContactAtMs: number | null; retryAtMs: number; localFleetId: string | null }
+export interface MobileFleet { id: string; name: string; count: number; lastDiscoveredAtMs: number | null; pcs: Record<string, MobilePc>; shared?: MobileSharedFleet }
+export function parseMobileShared(value: unknown): MobileSharedFleet {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid shared fleet.");
+  const item = value as Record<string, unknown>;
+  if ([item.serverId, item.scopeId, item.rosterRevision].some(part => typeof part !== "string" || !part || part.length > 256 || /[\u0000-\u001f\u007f]/.test(part))
+    || !["connected", "unavailable", "access-denied", "identity-changed", "invalid-response", "provider-wait", "roster-changed"].includes(String(item.status))
+    || !(item.lastContactAtMs === null || Number.isSafeInteger(item.lastContactAtMs) && Number(item.lastContactAtMs) >= 0)
+    || !Number.isSafeInteger(item.retryAtMs) || Number(item.retryAtMs) < 0
+    || !(item.localFleetId === null || typeof item.localFleetId === "string" && isSavedFleetScenario(`fleet:${item.localFleetId}`))) throw new Error("Invalid shared fleet.");
+  return { serverId: item.serverId as string, scopeId: item.scopeId as string, rosterRevision: item.rosterRevision as string,
+    status: item.status as string, lastContactAtMs: item.lastContactAtMs as number | null, retryAtMs: item.retryAtMs as number, localFleetId: item.localFleetId as string | null };
+}
 export function mobilePcAddresses(pc: MobilePc | undefined): { internal: string | null; global: string | null } {
   const local = (ip: string): boolean => /^(?:10\.|192\.168\.|169\.254\.|172\.(?:1[6-9]|2[0-9]|3[01])\.|100\.(?:6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.|f[cd]|fe[89ab])/i.test(ip);
   return { internal: pc?.ipAddresses.find(local) ?? null, global: pc?.ipAddresses.find(ip => !local(ip)) ?? null };
@@ -74,7 +86,7 @@ export async function readMobileScenarios(document: Pick<Document, "querySelecto
     let offset = 0;
     for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
     const value = JSON.parse(new TextDecoder().decode(body)) as Record<string, unknown>;
-    if (value.schema !== 1 || !Array.isArray(value.fleets) || value.fleets.length > 100) throw new Error();
+    if (value.schema !== 1 || !Array.isArray(value.fleets) || value.fleets.length > 120) throw new Error();
     const ids = new Set<string>();
     for (const item of value.fleets) {
       if (typeof item !== "object" || item === null || typeof item.id !== "string" || !isSavedFleetScenario(`fleet:${item.id}`)
@@ -83,6 +95,12 @@ export async function readMobileScenarios(document: Pick<Document, "querySelecto
         || !Number.isSafeInteger(item.updatedAtMs) || item.updatedAtMs < 0) throw new Error();
       ids.add(item.id);
       const pcs: Record<string, MobilePc> = Object.create(null) as Record<string, MobilePc>;
+      if (item.shared !== undefined) {
+        const shared = parseMobileShared(item.shared);
+        if (item.hosts.length > 10_000 || item.hosts.some((host: unknown) => !host || typeof host !== "object" || !("address" in host) || typeof host.address !== "string")) throw new Error();
+        result.fleets.push({ id: item.id, name: item.name, count: item.hosts.length, pcs, lastDiscoveredAtMs: null, shared });
+        continue;
+      }
       const discoveries = item.hosts.map((host: unknown) => {
         if (typeof host !== "object" || host === null || !("lastDiscoveredAtMs" in host)
           || typeof host.lastDiscoveredAtMs !== "number" || !Number.isSafeInteger(host.lastDiscoveredAtMs)
